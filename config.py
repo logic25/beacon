@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # RAG Settings
     rag_enabled: bool = Field(default=True, description="Enable RAG retrieval")
     rag_top_k: int = Field(default=5, ge=1, le=20)
-    rag_min_score: float = Field(default=0.5, ge=0.0, le=1.0)
+    rag_min_score: float = Field(default=0.65, ge=0.0, le=1.0)
 
     # Pinecone Settings
     pinecone_api_key: str = Field(default="", description="Pinecone API key")
