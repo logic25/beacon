@@ -160,6 +160,21 @@ class VectorStore:
         else:
             return self._embed_openai_query(text)
 
+    def _clean_metadata(self, metadata: dict) -> dict:
+        """Remove None values from metadata - Pinecone rejects nulls."""
+        cleaned = {}
+        for k, v in metadata.items():
+            if v is None:
+                continue
+            if isinstance(v, (str, int, float, bool)):
+                cleaned[k] = v
+            elif isinstance(v, list):
+                # Pinecone accepts lists of strings
+                cleaned[k] = [str(item) for item in v]
+            else:
+                cleaned[k] = str(v)
+        return cleaned
+
     def upsert_chunks(self, chunks: list[DocumentChunk]) -> int:
         """Insert or update document chunks in the vector store.
 
@@ -179,17 +194,27 @@ class VectorStore:
         # Prepare vectors for Pinecone
         vectors = []
         for chunk, embedding in zip(chunks, embeddings):
+            # Build metadata dict, excluding None values
+            meta = {
+                "text": chunk.text[:1000],  # Pinecone metadata limit
+                "source_file": chunk.source_file,
+                "source_type": chunk.source_type,
+                "chunk_index": chunk.chunk_index,
+            }
+
+            # Only add page_number if it has a value
+            if chunk.page_number is not None:
+                meta["page_number"] = chunk.page_number
+
+            # Add extra metadata, filtering out None values
+            for k, v in chunk.metadata.items():
+                if v is not None and v != "":
+                    meta[k] = str(v)
+
             vectors.append({
                 "id": chunk.chunk_id,
                 "values": embedding,
-                "metadata": {
-                    "text": chunk.text[:1000],  # Pinecone metadata limit
-                    "source_file": chunk.source_file,
-                    "source_type": chunk.source_type,
-                    "page_number": chunk.page_number,
-                    "chunk_index": chunk.chunk_index,
-                    **{k: str(v) for k, v in chunk.metadata.items() if v},
-                },
+                "metadata": self._clean_metadata(meta),
             })
 
         # Upsert in batches

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Document ingestion script for the RAG knowledge base.
-Use this to add PDFs and other documents to the vector store.
+Document ingestion script for the Beacon RAG knowledge base.
+Supports PDFs and Markdown files.
 
 Usage:
-    python ingest.py path/to/document.pdf
-    python ingest.py path/to/folder/  # Ingest all PDFs in folder
-    python ingest.py --stats           # Show current index stats
+    python ingest.py knowledge/                    # Ingest all docs in folder
+    python ingest.py knowledge/processes/paa_guide.md  # Single file
+    python ingest.py document.pdf                  # Single PDF
+    python ingest.py --stats                       # Show current index stats
 """
 
 import argparse
@@ -24,36 +25,108 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SUPPORTED_EXTENSIONS = {".pdf", ".md", ".txt"}
 
-def ingest_pdf(
+
+def detect_type_from_path(file_path: Path) -> str:
+    """Detect document type from folder structure and filename."""
+    parts = [p.lower() for p in file_path.parts]
+
+    # Check folder names for type hints
+    if "service_notices" in parts:
+        return "service_notice"
+    if "technical_bulletins" in parts:
+        return "technical_bulletin"
+    if "policy_memos" in parts:
+        return "policy_memo"
+    if "objections" in parts:
+        return "objection"
+    if "processes" in parts or "procedures" in parts:
+        return "procedure"
+    if "communication" in parts:
+        return "communication_pattern"
+    if "case_studies" in parts:
+        return "case_study"
+    if "historical" in parts:
+        return "historical_determination"
+    if "building_code" in parts:
+        return "building_code"
+    if "zoning" in parts:
+        return "zoning"
+
+    # Fall back to filename detection
+    return detect_document_type(file_path.name)
+
+
+def extract_md_metadata(text: str) -> dict:
+    """Extract YAML-style metadata from markdown header."""
+    metadata = {}
+    lines = text.split("\n")
+
+    for line in lines:
+        line = line.strip()
+        if ":" in line and not line.startswith("#"):
+            key, _, value = line.partition(":")
+            key = key.strip().lower().replace(" ", "_")
+            value = value.strip()
+            if value and key in {
+                "title", "category", "type", "date_issued",
+                "effective_date", "jurisdiction", "department",
+                "source_url", "status", "notice_number",
+                "added_to_beacon", "tags",
+            }:
+                metadata[key] = value
+        # Stop scanning after first heading or blank line following metadata
+        if line.startswith("# ") or line.startswith("## "):
+            break
+
+    return metadata
+
+
+def ingest_file(
     file_path: Path,
     vector_store: VectorStore,
     processor: DocumentProcessor,
     source_type: str | None = None,
 ) -> int:
-    """Ingest a single PDF file.
-
-    Args:
-        file_path: Path to the PDF file
-        vector_store: Vector store instance
-        processor: Document processor instance
-        source_type: Optional override for document type
+    """Ingest a single file (PDF or Markdown).
 
     Returns:
         Number of chunks ingested
     """
     logger.info(f"Processing: {file_path}")
 
-    # Auto-detect document type if not specified
+    # Auto-detect document type from folder structure
     if source_type is None:
-        source_type = detect_document_type(file_path.name)
+        source_type = detect_type_from_path(file_path)
         logger.info(f"  Detected type: {source_type}")
 
-    # Process the PDF into chunks
-    document = processor.process_pdf(
-        file_path=file_path,
-        source_type=source_type,
-    )
+    ext = file_path.suffix.lower()
+
+    if ext == ".pdf":
+        document = processor.process_pdf(
+            file_path=file_path,
+            source_type=source_type,
+        )
+    elif ext in {".md", ".txt"}:
+        text = file_path.read_text(encoding="utf-8")
+        metadata = {}
+
+        # Extract metadata from markdown headers
+        if ext == ".md":
+            metadata = extract_md_metadata(text)
+
+        metadata["file_path"] = str(file_path)
+
+        document = processor.process_text(
+            text=text,
+            title=metadata.get("title", file_path.stem),
+            source_type=source_type,
+            metadata=metadata,
+        )
+    else:
+        logger.warning(f"  Skipping unsupported file type: {ext}")
+        return 0
 
     logger.info(f"  Created {len(document.chunks)} chunks")
 
@@ -69,29 +142,23 @@ def ingest_folder(
     vector_store: VectorStore,
     processor: DocumentProcessor,
 ) -> tuple[int, int]:
-    """Ingest all PDFs in a folder.
+    """Ingest all supported files in a folder (recursive)."""
+    files = []
+    for ext in SUPPORTED_EXTENSIONS:
+        files.extend(folder_path.glob(f"**/*{ext}"))
 
-    Args:
-        folder_path: Path to the folder
-        vector_store: Vector store instance
-        processor: Document processor instance
-
-    Returns:
-        Tuple of (files processed, total chunks)
-    """
-    pdf_files = list(folder_path.glob("**/*.pdf"))
-    logger.info(f"Found {len(pdf_files)} PDF files in {folder_path}")
+    logger.info(f"Found {len(files)} supported files in {folder_path}")
 
     total_files = 0
     total_chunks = 0
 
-    for pdf_file in pdf_files:
+    for file in sorted(files):
         try:
-            chunks = ingest_pdf(pdf_file, vector_store, processor)
+            chunks = ingest_file(file, vector_store, processor)
             total_files += 1
             total_chunks += chunks
         except Exception as e:
-            logger.error(f"Failed to process {pdf_file}: {e}")
+            logger.error(f"Failed to process {file}: {e}")
 
     return total_files, total_chunks
 
@@ -108,28 +175,22 @@ def show_stats(vector_store: VectorStore) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Ingest documents into the RAG knowledge base",
+        description="Ingest documents into the Beacon knowledge base",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python ingest.py document.pdf                    # Ingest single PDF
-  python ingest.py ./documents/                    # Ingest folder of PDFs
-  python ingest.py doc.pdf --type determination    # Specify document type
-  python ingest.py --stats                         # Show index statistics
-
-Document Types:
-  - determination     DOB determination letters (CCD1, ZRD)
-  - service_notice    Violation notices, service documents
-  - reconsideration   Appeal/reconsideration documents
-  - internal_memo     Internal procedures and notes
-  - document          Generic (auto-detected)
+  python ingest.py knowledge/                          # Ingest all docs
+  python ingest.py knowledge/processes/paa_guide.md    # Single markdown
+  python ingest.py document.pdf                        # Single PDF
+  python ingest.py doc.pdf --type determination        # Specify type
+  python ingest.py --stats                             # Show index stats
         """,
     )
 
     parser.add_argument(
         "path",
         nargs="?",
-        help="Path to PDF file or folder to ingest",
+        help="Path to file or folder to ingest",
     )
     parser.add_argument(
         "--type",
@@ -137,11 +198,18 @@ Document Types:
         choices=[
             "determination",
             "service_notice",
-            "reconsideration",
-            "internal_memo",
+            "technical_bulletin",
+            "policy_memo",
+            "procedure",
+            "objection",
+            "communication_pattern",
+            "case_study",
+            "historical_determination",
+            "building_code",
+            "zoning",
             "document",
         ],
-        help="Document type (auto-detected if not specified)",
+        help="Document type (auto-detected from folder structure if not specified)",
     )
     parser.add_argument(
         "--stats",
@@ -164,7 +232,6 @@ Document Types:
 
     args = parser.parse_args()
 
-    # Validate arguments
     if not args.stats and not args.path:
         parser.error("Either --stats or a path is required")
 
@@ -185,12 +252,10 @@ Document Types:
         logger.error(f"Failed to initialize: {e}")
         sys.exit(1)
 
-    # Handle stats request
     if args.stats:
         show_stats(vector_store)
         return
 
-    # Handle file/folder ingestion
     path = Path(args.path)
 
     if not path.exists():
@@ -198,18 +263,18 @@ Document Types:
         sys.exit(1)
 
     if path.is_file():
-        if not path.suffix.lower() == ".pdf":
-            logger.error("Only PDF files are currently supported")
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            logger.error(f"Unsupported file type: {path.suffix}")
+            logger.error(f"Supported: {', '.join(SUPPORTED_EXTENSIONS)}")
             sys.exit(1)
 
-        chunks = ingest_pdf(path, vector_store, processor, args.type)
+        chunks = ingest_file(path, vector_store, processor, args.type)
         print(f"\n✅ Ingested {chunks} chunks from {path.name}")
 
     elif path.is_dir():
         files, chunks = ingest_folder(path, vector_store, processor)
         print(f"\n✅ Ingested {chunks} chunks from {files} files")
 
-    # Show updated stats
     show_stats(vector_store)
 
 
