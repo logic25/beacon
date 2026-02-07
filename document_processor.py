@@ -13,6 +13,54 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# Doc-type-aware chunk sizes: larger chunks for docs where reasoning/context
+# needs to stay intact, smaller for self-contained notices
+CHUNK_SETTINGS = {
+    # Determinations: legal reasoning must stay intact
+    "determination": {"chunk_size": 2500, "chunk_overlap": 400},
+    "historical_determination": {"chunk_size": 2500, "chunk_overlap": 400},
+    # Building code / zoning: table-heavy, need surrounding context
+    "building_code": {"chunk_size": 1500, "chunk_overlap": 300},
+    "rule": {"chunk_size": 1500, "chunk_overlap": 300},
+    "zoning": {"chunk_size": 1500, "chunk_overlap": 300},
+    # Bulletins: longer technical sections
+    "technical_bulletin": {"chunk_size": 1500, "chunk_overlap": 250},
+    # Procedures: step-by-step, keep steps together
+    "procedure": {"chunk_size": 1500, "chunk_overlap": 250},
+    # Service notices: short, self-contained
+    "service_notice": {"chunk_size": 1000, "chunk_overlap": 200},
+    # Policy memos: medium
+    "policy_memo": {"chunk_size": 1200, "chunk_overlap": 200},
+    # Internal notes / historical: keep context intact
+    "internal_notes": {"chunk_size": 2000, "chunk_overlap": 300},
+    # Corrections: never chunked (injected whole)
+    "correction": {"chunk_size": 5000, "chunk_overlap": 0},
+    # Checklists / reference: keep together
+    "checklist": {"chunk_size": 2000, "chunk_overlap": 200},
+    "reference": {"chunk_size": 1500, "chunk_overlap": 250},
+    # Out-of-NYC filings
+    "out_of_nyc_filing": {"chunk_size": 1500, "chunk_overlap": 200},
+}
+
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 200
+
+
+def get_chunk_settings(source_type: str) -> tuple[int, int]:
+    """Get chunk size and overlap for a given document type.
+
+    Args:
+        source_type: Document type string
+
+    Returns:
+        Tuple of (chunk_size, chunk_overlap)
+    """
+    settings = CHUNK_SETTINGS.get(source_type, {})
+    return (
+        settings.get("chunk_size", DEFAULT_CHUNK_SIZE),
+        settings.get("chunk_overlap", DEFAULT_CHUNK_OVERLAP),
+    )
+
 
 @dataclass
 class DocumentChunk:
@@ -54,10 +102,6 @@ class Document:
 class DocumentProcessor:
     """Process documents for RAG ingestion."""
 
-    # Default chunk settings
-    DEFAULT_CHUNK_SIZE = 1000  # characters
-    DEFAULT_CHUNK_OVERLAP = 200  # characters
-
     def __init__(
         self,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -66,8 +110,8 @@ class DocumentProcessor:
         """Initialize the processor.
 
         Args:
-            chunk_size: Target size for each chunk in characters
-            chunk_overlap: Overlap between consecutive chunks
+            chunk_size: Default target size for each chunk in characters
+            chunk_overlap: Default overlap between consecutive chunks
         """
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
@@ -91,18 +135,30 @@ class DocumentProcessor:
         file_path: str,
         source_type: str,
         base_metadata: dict,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
     ) -> list[DocumentChunk]:
         """Split text into overlapping chunks.
+
+        Uses doc-type-aware chunk sizes if not explicitly provided.
 
         Args:
             text: Full document text
             file_path: Path to source file
             source_type: Type of document
             base_metadata: Metadata to include with each chunk
+            chunk_size: Override chunk size (uses doc-type default if None)
+            chunk_overlap: Override overlap (uses doc-type default if None)
 
         Returns:
             List of DocumentChunk objects
         """
+        # Use doc-type settings if not explicitly overridden
+        if chunk_size is None or chunk_overlap is None:
+            type_size, type_overlap = get_chunk_settings(source_type)
+            chunk_size = chunk_size or type_size
+            chunk_overlap = chunk_overlap or type_overlap
+
         chunks = []
         text = self._clean_text(text)
 
@@ -118,7 +174,7 @@ class DocumentProcessor:
         for sentence in sentences:
             # If adding this sentence would exceed chunk size, save current chunk
             if (
-                len(current_chunk) + len(sentence) > self.chunk_size
+                len(current_chunk) + len(sentence) > chunk_size
                 and current_chunk
             ):
                 chunk = DocumentChunk(
@@ -133,13 +189,16 @@ class DocumentProcessor:
                 chunk_index += 1
 
                 # Keep overlap from end of current chunk
-                overlap_text = current_chunk[-self.chunk_overlap :]
+                overlap_text = current_chunk[-chunk_overlap:] if chunk_overlap > 0 else ""
                 # Find a sentence boundary in the overlap if possible
-                overlap_match = re.search(r"[.!?]\s+", overlap_text)
-                if overlap_match:
-                    current_chunk = overlap_text[overlap_match.end() :]
+                if overlap_text:
+                    overlap_match = re.search(r"[.!?]\s+", overlap_text)
+                    if overlap_match:
+                        current_chunk = overlap_text[overlap_match.end():]
+                    else:
+                        current_chunk = overlap_text
                 else:
-                    current_chunk = overlap_text
+                    current_chunk = ""
 
             current_chunk += " " + sentence
 
@@ -155,7 +214,10 @@ class DocumentProcessor:
             )
             chunks.append(chunk)
 
-        logger.info(f"Created {len(chunks)} chunks from {file_path}")
+        logger.info(
+            f"Created {len(chunks)} chunks from {base_metadata.get('title', file_path)} "
+            f"(type={source_type}, chunk_size={chunk_size})"
+        )
         return chunks
 
     def process_pdf(
