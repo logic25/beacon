@@ -50,3 +50,5 @@ Thumbs.db
 !render.yaml
 !Procfile
 !Dockerfile
+knowledge/
+beacon-env/
