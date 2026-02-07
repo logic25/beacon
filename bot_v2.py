@@ -116,9 +116,18 @@ zoning_analyzer: "ZoningAnalyzer | None" = None
 logger = logging.getLogger(__name__)
 
 
+# Admin whitelist for /correct (only these users can apply corrections immediately)
+# Everyone else uses /suggest which logs for review but doesn't inject into retrieval
+ADMIN_EMAILS = {
+    "manny@greenlightexpediting.com",
+    "chris@greenlightexpediting.com",
+}
+
+
 # Slash command definitions
 SLASH_COMMANDS = {
-    "/correct": "Flag a correction - Usage: /correct <what was wrong> | <correct answer>",
+    "/correct": "Flag a correction (admin only) - Usage: /correct <what was wrong> | <correct answer>",
+    "/suggest": "Suggest a correction for review - Usage: /suggest <what was wrong> | <correct answer>",
     "/tip": "Add a quick tip - Usage: /tip <your tip>",
     "/lookup": "Look up a property - Usage: /lookup <address>, <borough>",
     "/zoning": "Full zoning analysis - Usage: /zoning <address>, <borough>",
@@ -220,7 +229,7 @@ def initialize_app() -> None:
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
 
-def handle_slash_command(command: str, args: str, user_id: str, space_name: str) -> str | None:
+def handle_slash_command(command: str, args: str, user_id: str, space_name: str, user_email: str = "") -> str | None:
     """Handle slash commands from users."""
     command = command.lower().strip()
 
@@ -232,19 +241,26 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str)
 
     elif command == "/correct":
         if not knowledge_base:
-            return "âš ï¸ Knowledge capture is not configured."
+            return "\u26a0\ufe0f Knowledge capture is not configured."
+
+        # Check admin whitelist
+        is_admin = user_email.lower() in ADMIN_EMAILS if user_email else False
+
+        if not is_admin:
+            return ("\u26d4 `/correct` is admin-only. Your correction won't take effect immediately.\n\n"
+                    "Use `/suggest` instead \u2014 it logs your correction for admin review.\n\n"
+                    "Usage: `/suggest <what was wrong> | <correct answer>`")
 
         if "|" not in args:
-            return "âŒ Usage: `/correct <what was wrong> | <correct answer>`\n\nExample: `/correct Claude said MCI is 6% | MCI increases are capped at 2% since 2019`"
+            return "\u274c Usage: `/correct <what was wrong> | <correct answer>`\n\nExample: `/correct Claude said MCI is 6% | MCI increases are capped at 2% since 2019`"
 
         parts = args.split("|", 1)
         wrong = parts[0].strip()
         correct = parts[1].strip()
 
         if not wrong or not correct:
-            return "âŒ Please provide both the wrong response and the correct answer."
+            return "\u274c Please provide both the wrong response and the correct answer."
 
-        # Detect topics
         topics = []
         topic_keywords = {
             "DOB": ["dob", "building", "permit", "violation", "certificate"],
@@ -258,9 +274,50 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str)
                 topics.append(topic)
 
         entry = knowledge_base.add_correction(wrong, correct, topics=topics or ["General"])
-        logger.info(f"Correction captured by {user_id}: {entry.entry_id}")
+        logger.info(f"Correction captured by {user_email or user_id}: {entry.entry_id}")
 
-        return f"âœ… **Correction captured!**\n\n**Wrong:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n**Correct:** {correct[:150]}{'...' if len(correct) > 150 else ''}\n\nTopics: {', '.join(topics or ['General'])}"
+        return f"\u2705 **Correction captured!**\n\n**Wrong:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n**Correct:** {correct[:150]}{'...' if len(correct) > 150 else ''}\n\nTopics: {', '.join(topics or ['General'])}"
+
+    elif command == "/suggest":
+        if not knowledge_base:
+            return "\u26a0\ufe0f Knowledge capture is not configured."
+
+        if "|" not in args:
+            return ("\u274c Usage: `/suggest <what was wrong> | <correct answer>`\n\n"
+                    "Example: `/suggest Beacon said the fee is $305 | The fee increased to $485 as of Feb 2, 2026`")
+
+        parts = args.split("|", 1)
+        wrong = parts[0].strip()
+        suggested = parts[1].strip()
+
+        if not wrong or not suggested:
+            return "\u274c Please provide both the issue and your suggested correction."
+
+        topics = []
+        topic_keywords = {
+            "DOB": ["dob", "building", "permit", "violation", "certificate"],
+            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease"],
+            "Zoning": ["zoning", "use group", "far", "setback", "variance"],
+            "HPD": ["hpd", "housing", "habitability"],
+        }
+        combined = (wrong + " " + suggested).lower()
+        for topic, keywords in topic_keywords.items():
+            if any(kw in combined for kw in keywords):
+                topics.append(topic)
+
+        entry = knowledge_base.add_qa(
+            question=f"SUGGESTION from {user_email or user_id}: {wrong}",
+            answer=suggested,
+            context="Pending admin review via /correct",
+            topics=topics or ["General"],
+            source="suggestion",
+        )
+        logger.info(f"Suggestion captured by {user_email or user_id}: {entry.entry_id}")
+
+        return (f"\U0001f4dd **Suggestion logged for review!**\n\n"
+                f"**Issue:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n"
+                f"**Suggested fix:** {suggested[:150]}{'...' if len(suggested) > 150 else ''}\n\n"
+                f"An admin will review and approve this. Thanks for flagging it!")
 
     elif command == "/tip":
         if not knowledge_base:
@@ -589,6 +646,7 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
 
         user_data = data.get("user", {})
         user_id = user_data.get("name") or user_data.get("email", "unknown")
+        user_email = user_data.get("email", "")
         space_name = data.get("space", {}).get("name", "")
 
         if not space_name:
@@ -603,7 +661,7 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
             command = parts[0]
             args = parts[1] if len(parts) > 1 else ""
 
-            response = handle_slash_command(command, args, user_id, space_name)
+            response = handle_slash_command(command, args, user_id, space_name, user_email=user_email)
             if response:
                 chat_client.send_message(space_name, response)
                 return "", 204

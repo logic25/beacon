@@ -231,6 +231,7 @@ class VectorStore:
         query: str,
         top_k: int = 5,
         source_type_filter: Optional[str] = None,
+        jurisdiction_filter: Optional[str] = None,
     ) -> list[dict]:
         """Search for relevant documents.
 
@@ -238,6 +239,7 @@ class VectorStore:
             query: Search query text
             top_k: Number of results to return
             source_type_filter: Optional filter by source type
+            jurisdiction_filter: Optional filter by jurisdiction (e.g., "NYC", "Tampa, FL")
 
         Returns:
             List of search results with metadata
@@ -245,10 +247,20 @@ class VectorStore:
         # Embed the query
         query_embedding = self.embed_query(query)
 
-        # Build filter if specified
+        # Build filter — combine multiple conditions with $and
         filter_dict = None
+        conditions = []
+
         if source_type_filter:
-            filter_dict = {"source_type": {"$eq": source_type_filter}}
+            conditions.append({"source_type": {"$eq": source_type_filter}})
+
+        if jurisdiction_filter:
+            conditions.append({"jurisdiction": {"$eq": jurisdiction_filter}})
+
+        if len(conditions) == 1:
+            filter_dict = conditions[0]
+        elif len(conditions) > 1:
+            filter_dict = {"$and": conditions}
 
         # Query Pinecone
         results = self.index.query(
@@ -268,6 +280,7 @@ class VectorStore:
                 "source_file": match.metadata.get("source_file", "Unknown"),
                 "source_type": match.metadata.get("source_type", "document"),
                 "page_number": match.metadata.get("page_number"),
+                "jurisdiction": match.metadata.get("jurisdiction", ""),
                 "metadata": match.metadata,
             })
 
