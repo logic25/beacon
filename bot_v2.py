@@ -707,5 +707,8 @@ def main() -> None:
     )
 
 
+# Initialize when imported by gunicorn (production)
+initialize_app()
+
 if __name__ == "__main__":
     main()
