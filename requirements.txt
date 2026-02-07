@@ -1,0 +1,30 @@
+# Core dependencies
+flask>=3.0.0
+anthropic>=0.40.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+gunicorn>=21.0.0           # Production WSGI server
+
+# Google Auth
+google-auth>=2.25.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+
+# RAG / Vector Store
+pinecone>=5.0.0
+voyageai>=0.3.0          # Anthropic-recommended embeddings
+pymupdf>=1.24.0          # PDF processing
+python-docx>=1.1.0       # Google Chat export parsing
+
+# Optional: Alternative embedding providers
+# openai>=1.0.0          # If using OpenAI embeddings instead of Voyage
+
+# Development dependencies
+pytest>=8.0.0
+pytest-cov>=4.1.0
+
+# Type checking (optional)
+mypy>=1.8.0
+types-requests>=2.31.0
