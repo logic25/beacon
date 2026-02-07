@@ -61,15 +61,32 @@ class GoogleChatClient:
             Valid credentials or None if unavailable.
         """
         try:
-            service_account_path = Path(self.settings.google_service_account_file)
+            import json
+            import os
 
-            if not service_account_path.exists():
-                logger.error(f"Service account file not found: {service_account_path}")
-                return None
+            # First try: load from environment variable (Railway/production)
+            sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+            if sa_json:
+                try:
+                    sa_info = json.loads(sa_json)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        sa_info, scopes=SCOPES
+                    )
+                    logger.debug("Loaded credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse GOOGLE_SERVICE_ACCOUNT_JSON: {e}")
+                    return None
+            else:
+                # Fallback: load from file (local development)
+                service_account_path = Path(self.settings.google_service_account_file)
 
-            credentials = service_account.Credentials.from_service_account_file(
-                str(service_account_path), scopes=SCOPES
-            )
+                if not service_account_path.exists():
+                    logger.error(f"Service account file not found: {service_account_path}")
+                    return None
+
+                credentials = service_account.Credentials.from_service_account_file(
+                    str(service_account_path), scopes=SCOPES
+                )
 
             # Refresh to ensure valid token
             credentials.refresh(Request())
