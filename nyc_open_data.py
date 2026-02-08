@@ -276,6 +276,62 @@ class NYCOpenDataClient:
         logger.warning(f"No PLUTO match for {house_num} {street}, {borough}")
         return None
 
+    # DOB Jobs/Permits use full borough names
+    BOROUGH_FULL_NAMES = {
+        "MANHATTAN": "MANHATTAN", "MN": "MANHATTAN", "NEW YORK": "MANHATTAN",
+        "BRONX": "BRONX", "BX": "BRONX", "THE BRONX": "BRONX",
+        "BROOKLYN": "BROOKLYN", "BK": "BROOKLYN", "KINGS": "BROOKLYN",
+        "QUEENS": "QUEENS", "QN": "QUEENS",
+        "STATEN ISLAND": "STATEN ISLAND", "SI": "STATEN ISLAND", "RICHMOND": "STATEN ISLAND",
+    }
+
+    def lookup_bin_by_address(self, address: str, borough: str) -> Optional[str]:
+        """Find BIN via DOB Jobs dataset. More reliable than PLUTO for address matching."""
+        house_num, street = self._normalize_address(address)
+        boro_full = self.BOROUGH_FULL_NAMES.get(borough.upper().strip(), borough.upper())
+
+        if not house_num:
+            return None
+
+        # DOB Jobs — has real street addresses
+        for variant in self._street_variants(street):
+            where = (
+                f"house__ = '{house_num}' AND "
+                f"upper(street_name) LIKE '{variant[:20]}%' AND "
+                f"borough = '{boro_full}'"
+            )
+            results = self._query(
+                DATASETS["dob_jobs"],
+                where=where,
+                select="bin__,house__,street_name,block,lot,existing_zoning_sqft,proposed_zoning_sqft",
+                limit=1,
+            )
+            if results and results[0].get("bin__"):
+                logger.info(f"BIN found via DOB jobs: {results[0]['bin__']}")
+                return results[0]  # Return full record, not just BIN
+
+        # Fallback: DOB Permits
+        for variant in self._street_variants(street):
+            where = (
+                f"house__ = '{house_num}' AND "
+                f"upper(street_name) LIKE '{variant[:20]}%' AND "
+                f"borough = '{boro_full}'"
+            )
+            results = self._query(
+                DATASETS["dob_permits"],
+                where=where,
+                select="bin__,house__,street_name,block,lot",
+                limit=1,
+            )
+            if results and results[0].get("bin__"):
+                logger.info(f"BIN found via DOB permits: {results[0]['bin__']}")
+                return results[0]
+
+        logger.warning(f"Could not find BIN for {house_num} {street}, {borough}")
+        return None
+
+
+
     def get_dob_violations(
         self,
         bin_number: Optional[str] = None,
@@ -451,7 +507,7 @@ class NYCOpenDataClient:
         """
         info = PropertyInfo(address=address, borough=borough)
 
-        # Start with PLUTO lookup
+        # Start with PLUTO lookup for zoning data
         pluto = self.lookup_pluto(address, borough)
         if pluto:
             info.bbl = pluto.get("bbl")
@@ -464,10 +520,22 @@ class NYCOpenDataClient:
             info.year_built = self._safe_int(pluto.get("yearbuilt"))
             info.lot_area = self._safe_float(pluto.get("lotarea"))
             info.raw_data["pluto"] = pluto
-
             logger.info(f"Found PLUTO data for {address}: BBL={info.bbl}, BIN={info.bin}")
-        else:
-            logger.warning(f"No PLUTO data found for {address}, {borough}")
+
+        # If PLUTO didn't give us a BIN, find it via DOB filings
+        if not info.bin:
+            dob_record = self.lookup_bin_by_address(address, borough)
+            if dob_record and isinstance(dob_record, dict):
+                info.bin = dob_record.get("bin__")
+                # Also grab block/lot to construct BBL if we don't have it
+                if not info.bbl and dob_record.get("block") and dob_record.get("lot"):
+                    borough_code = self._get_borough_code(borough)
+                    block = dob_record["block"].lstrip("0").zfill(5)
+                    lot = dob_record["lot"].lstrip("0").zfill(4)
+                    info.bbl = f"{borough_code}{block}{lot}"
+                logger.info(f"Found BIN via DOB: {info.bin}, BBL: {info.bbl}")
+            else:
+                logger.warning(f"No BIN found for {address}, {borough}")
 
         # Get violations if we have identifiers
         if info.bin or info.bbl:
