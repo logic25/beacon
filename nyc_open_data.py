@@ -68,7 +68,7 @@ class PropertyInfo:
     def to_context_string(self) -> str:
         """Format property info as context for the LLM."""
         lines = [
-            f"📍 **Property: {self.address}, {self.borough}**",
+            f"\U0001f4cd *Property: {self.address}, {self.borough}*",
             f"BBL: {self.bbl or 'Unknown'} | BIN: {self.bin or 'Unknown'}",
         ]
 
@@ -84,6 +84,9 @@ class PropertyInfo:
         if self.building_class:
             lines.append(f"Building Class: {self.building_class}")
 
+        if self.lot_area:
+            lines.append(f"Lot Area: {self.lot_area:,.0f} SF")
+
         # Violation summary
         total_violations = (
             self.active_dob_violations +
@@ -91,36 +94,40 @@ class PropertyInfo:
             self.active_hpd_violations
         )
         if total_violations > 0:
-            lines.append(f"\n⚠️ **Active Violations: {total_violations}**")
+            lines.append(f"\n\u26a0\ufe0f *Active Violations: {total_violations}*")
             if self.active_dob_violations:
                 lines.append(f"  - DOB: {self.active_dob_violations}")
             if self.active_ecb_violations:
                 lines.append(f"  - ECB: {self.active_ecb_violations}")
             if self.active_hpd_violations:
                 lines.append(f"  - HPD: {self.active_hpd_violations}")
+        else:
+            lines.append(f"\n\u2705 No active violations")
 
         # Recent violations detail
         if self.recent_violations:
-            lines.append("\n📋 **Recent Violations:**")
+            lines.append(f"\n\U0001f4cb *Recent Violations:*")
             for v in self.recent_violations[:5]:
                 desc = v.get("description", "No description")[:80]
                 date = v.get("issue_date", "Unknown date")
-                lines.append(f"  • {date}: {desc}")
+                vtype = v.get("type", "")
+                lines.append(f"  \u2022 [{vtype}] {date}: {desc}")
 
         # Recent permits
         if self.recent_permits:
-            lines.append("\n🔨 **Recent Permits:**")
+            lines.append(f"\n\U0001f528 *Recent Permits:*")
             for p in self.recent_permits[:5]:
                 job_type = p.get("job_type", "Unknown")
                 desc = p.get("job_description", "No description")[:60]
-                lines.append(f"  • {job_type}: {desc}")
+                date = p.get("issuance_date", "")
+                lines.append(f"  \u2022 {job_type}: {desc}" + (f" ({date})" if date else ""))
 
         # Open complaints
         if self.open_complaints:
-            lines.append(f"\n📞 **Open Complaints: {len(self.open_complaints)}**")
+            lines.append(f"\n\U0001f4de *Open Complaints: {len(self.open_complaints)}*")
             for c in self.open_complaints[:3]:
                 desc = c.get("complaint_category", "Unknown")
-                lines.append(f"  • {desc}")
+                lines.append(f"  \u2022 {desc}")
 
         return "\n".join(lines)
 
