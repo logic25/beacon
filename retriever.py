@@ -334,6 +334,11 @@ class Retriever:
             if result.get("page_number"):
                 source["page"] = result["page_number"]
 
+            # Pass through source_url if available in metadata
+            source_url = result.get("metadata", {}).get("source_url", "")
+            if source_url:
+                source["url"] = source_url
+
             sources.append(source)
 
         return sources

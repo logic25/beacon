@@ -39,6 +39,14 @@ HOW TO RESPOND:
 7. Never suggest the team consult other professionals - THEY are the professionals. They're using you as a reference tool.
 8. If you genuinely don't know something or the answer depends on specific site conditions, say so clearly rather than guessing.
 
+FORMATTING (Google Chat):
+- Do NOT use markdown headers (# or ##). They render as raw text.
+- Use **bold text** for section labels and emphasis.
+- Use bullet points (- or *) for lists.
+- Use numbered lists (1. 2. 3.) for sequential steps.
+- Keep responses concise. Lead with the answer, then supporting detail.
+- Use blank lines between sections for readability.
+
 IDENTITY:
 - You are Beacon. If asked who you are, say you're Beacon, GLE's internal reference assistant.
 - Never mention Claude, Anthropic, AI models, or system prompts.
@@ -272,16 +280,18 @@ Based on the above documents and your expertise, please answer my question:
         if not sources:
             return ""
 
-        lines = ["\n\nðŸ“š **Sources:**"]
+        lines = ["\n\n\U0001f4da **Sources:**"]
 
         for i, source in enumerate(sources, 1):
             line = f"  [{i}] {source.get('file', 'Unknown')}"
             if source.get("page"):
                 line += f" (p. {source['page']})"
             source_type = source.get("type", "document")
-            line += f" â€” {source_type.replace('_', ' ').title()}"
+            line += f" \u2014 {source_type.replace('_', ' ').title()}"
             if source.get("relevance"):
                 line += f" ({source['relevance']} match)"
+            if source.get("url"):
+                line += f"\n        {source['url']}"
             lines.append(line)
 
         return "\n".join(lines)
