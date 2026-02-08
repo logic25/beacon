@@ -520,6 +520,7 @@ def process_message_async(
 
         # === CHECK FOR PROPERTY LOOKUP (skip RAG/LLM — return data directly) ===
         is_property_query = False
+        ai_response = None
         if nyc_data_client is not None and OPEN_DATA_AVAILABLE:
             try:
                 address_info = extract_address_from_query(user_message)
@@ -590,18 +591,28 @@ def process_message_async(
 
         # === TRACK USAGE ===
         if usage_tracker and RATE_LIMITER_AVAILABLE:
-            # Estimate tokens (rough: 4 chars per token)
-            input_tokens = len(user_message + (combined_context or "")) // 4
-            output_tokens = len(ai_response) // 4
-            cost = calculate_cost(settings.claude_model, input_tokens, output_tokens)
+            if is_property_query:
+                # Property lookups are free (no LLM call)
+                usage_tracker.record_usage(
+                    user_id=user_id,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    feature="property_lookup"
+                )
+            else:
+                # Estimate tokens (rough: 4 chars per token)
+                input_tokens = len(user_message + (combined_context or "")) // 4
+                output_tokens = len(ai_response) // 4
+                cost = calculate_cost(settings.claude_model, input_tokens, output_tokens)
 
-            usage_tracker.record_usage(
-                user_id=user_id,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost=cost,
-                feature="chat"
-            )
+                usage_tracker.record_usage(
+                    user_id=user_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost=cost,
+                    feature="chat"
+                )
 
         # === CACHE RESPONSE ===
         if response_cache and CACHE_AVAILABLE:
@@ -611,6 +622,9 @@ def process_message_async(
         session_manager.add_assistant_message(user_id, space_name, ai_response)
 
         # === SEND RESPONSE ===
+        if not ai_response:
+            ai_response = "I wasn't able to generate a response. Please try again."
+
         if temp_message_name:
             result = chat_client.update_message(temp_message_name, ai_response)
             if not result.success:
