@@ -186,25 +186,51 @@ class NYCOpenDataClient:
             logger.error(f"NYC Open Data query failed: {e}")
             return []
 
+    # Street abbreviation mappings for address normalization
+    STREET_ABBREVS = {
+        "AVE": "AVENUE", "ST": "STREET", "BLVD": "BOULEVARD",
+        "RD": "ROAD", "PL": "PLACE", "DR": "DRIVE", "LN": "LANE",
+        "CT": "COURT", "PKWY": "PARKWAY", "HWY": "HIGHWAY",
+        "CIR": "CIRCLE", "TER": "TERRACE", "EXPY": "EXPRESSWAY",
+    }
+    STREET_FULL_TO_ABBREV = {v: k for k, v in STREET_ABBREVS.items()}
+
     def _normalize_address(self, address: str) -> tuple[str, str]:
-        """Parse address into house number and street name.
-
-        Args:
-            address: Full address string
-
-        Returns:
-            Tuple of (house_number, street_name)
-        """
-        # Remove apartment/unit info
+        """Parse address into house number and street name."""
         address = re.sub(r'\s*(apt|unit|#|suite|fl|floor)\.?\s*\w*', '', address, flags=re.IGNORECASE)
         address = address.strip().upper()
 
-        # Parse house number and street
         match = re.match(r'^(\d+[\-\d]*[A-Z]?)\s+(.+)$', address)
         if match:
             return match.group(1), match.group(2)
 
         return "", address
+
+    def _street_variants(self, street: str) -> list[str]:
+        """Generate street name variants (abbreviated and full)."""
+        street = street.upper().strip()
+        variants = [street]
+
+        # Try expanding abbreviation: AVE -> AVENUE
+        for abbrev, full in self.STREET_ABBREVS.items():
+            pattern = r'\b' + abbrev + r'\b'
+            if re.search(pattern, street):
+                variants.append(re.sub(pattern, full, street))
+                break
+
+        # Try abbreviating: AVENUE -> AVE
+        for full, abbrev in self.STREET_FULL_TO_ABBREV.items():
+            pattern = r'\b' + full + r'\b'
+            if re.search(pattern, street):
+                variants.append(re.sub(pattern, abbrev, street))
+                break
+
+        # Also try just the core street name (first 15 chars) for LIKE matching
+        core = re.sub(r'\b(STREET|AVENUE|BOULEVARD|ROAD|PLACE|DRIVE|LANE|COURT|AVE|ST|BLVD|RD|PL|DR|LN|CT)\b', '', street).strip()
+        if core and core != street:
+            variants.append(core)
+
+        return variants
 
     def _get_borough_code(self, borough: str) -> str:
         """Convert borough name to code."""
@@ -218,29 +244,24 @@ class NYCOpenDataClient:
         return borough_map.get(borough.upper().strip(), "")
 
     def lookup_pluto(self, address: str, borough: str) -> Optional[dict]:
-        """Look up property in PLUTO dataset.
-
-        Args:
-            address: Street address
-            borough: Borough name
-
-        Returns:
-            PLUTO record or None
-        """
+        """Look up property in PLUTO dataset."""
         house_num, street = self._normalize_address(address)
         borough_upper = borough.upper()
+        borough_code = self._get_borough_code(borough)
 
-        # Try different query approaches
-        where_clauses = [
-            f"upper(address) LIKE '%{house_num}%{street[:20]}%' AND upper(borough) = '{borough_upper}'",
-            f"upper(address) LIKE '{house_num} {street[:15]}%' AND upper(borough) = '{borough_upper}'",
-        ]
+        # Try each street name variant
+        for variant in self._street_variants(street):
+            where_clauses = [
+                f"upper(address) LIKE '{house_num} {variant[:20]}%' AND upper(borough) = '{borough_upper}'",
+                f"upper(address) LIKE '%{house_num}%{variant[:15]}%' AND upper(borough) = '{borough_upper}'",
+            ]
+            for where in where_clauses:
+                results = self._query(DATASETS["pluto"], where=where, limit=5)
+                if results:
+                    logger.info(f"PLUTO match on variant: {variant}")
+                    return results[0]
 
-        for where in where_clauses:
-            results = self._query(DATASETS["pluto"], where=where, limit=5)
-            if results:
-                return results[0]
-
+        logger.warning(f"No PLUTO match for {house_num} {street}, {borough}")
         return None
 
     def get_dob_violations(

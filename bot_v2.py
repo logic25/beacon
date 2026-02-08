@@ -158,7 +158,7 @@ def initialize_app() -> None:
     if KNOWLEDGE_CAPTURE_AVAILABLE:
         try:
             knowledge_base = KnowledgeBase()
-            logger.info("âœ… Knowledge capture initialized")
+            logger.info("✅ Knowledge capture initialized")
         except Exception as e:
             logger.warning(f"Knowledge capture initialization failed: {e}")
             knowledge_base = None
@@ -169,7 +169,7 @@ def initialize_app() -> None:
             response_cache = SemanticCache(
                 voyage_api_key=settings.voyage_api_key if hasattr(settings, 'voyage_api_key') else None
             )
-            logger.info("âœ… Response cache initialized")
+            logger.info("✅ Response cache initialized")
         except Exception as e:
             logger.warning(f"Response cache initialization failed: {e}")
             response_cache = None
@@ -178,7 +178,7 @@ def initialize_app() -> None:
     if RATE_LIMITER_AVAILABLE:
         try:
             usage_tracker = get_tracker()
-            logger.info("âœ… Rate limiter initialized")
+            logger.info("✅ Rate limiter initialized")
         except Exception as e:
             logger.warning(f"Rate limiter initialization failed: {e}")
             usage_tracker = None
@@ -187,7 +187,7 @@ def initialize_app() -> None:
     if OBJECTIONS_AVAILABLE:
         try:
             objections_kb = ObjectionsKB()
-            logger.info("âœ… Objections KB initialized")
+            logger.info("✅ Objections KB initialized")
         except Exception as e:
             logger.warning(f"Objections KB initialization failed: {e}")
             objections_kb = None
@@ -196,7 +196,7 @@ def initialize_app() -> None:
     if settings.rag_enabled and RAG_AVAILABLE and settings.pinecone_api_key:
         try:
             retriever = Retriever(settings=settings)
-            logger.info("âœ… RAG retriever initialized")
+            logger.info("✅ RAG retriever initialized")
         except Exception as e:
             logger.warning(f"RAG initialization failed: {e}")
             retriever = None
@@ -212,7 +212,7 @@ def initialize_app() -> None:
     if OPEN_DATA_AVAILABLE:
         try:
             nyc_data_client = NYCOpenDataClient(settings)
-            logger.info("âœ… NYC Open Data client initialized")
+            logger.info("✅ NYC Open Data client initialized")
         except Exception as e:
             logger.warning(f"NYC Open Data initialization failed: {e}")
             nyc_data_client = None
@@ -221,7 +221,7 @@ def initialize_app() -> None:
     if ZONING_AVAILABLE:
         try:
             zoning_analyzer = ZoningAnalyzer()
-            logger.info("âœ… Zoning analyzer initialized")
+            logger.info("✅ Zoning analyzer initialized")
         except Exception as e:
             logger.warning(f"Zoning analyzer initialization failed: {e}")
             zoning_analyzer = None
@@ -234,7 +234,7 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
     command = command.lower().strip()
 
     if command == "/help":
-        lines = ["ðŸ“‹ **Available Commands:**"]
+        lines = ["📋 **Available Commands:**"]
         for cmd, desc in SLASH_COMMANDS.items():
             lines.append(f"  `{cmd}` - {desc}")
         return "\n".join(lines)
@@ -321,10 +321,10 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
 
     elif command == "/tip":
         if not knowledge_base:
-            return "âš ï¸ Knowledge capture is not configured."
+            return "⚠️ Knowledge capture is not configured."
 
         if not args.strip():
-            return "âŒ Usage: `/tip <your tip>`\n\nExample: `/tip Always check BIS for the latest CO before filing`"
+            return "❌ Usage: `/tip <your tip>`\n\nExample: `/tip Always check BIS for the latest CO before filing`"
 
         topics = []
         topic_keywords = {
@@ -339,56 +339,56 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
         entry = knowledge_base.add_tip(args.strip(), topics=topics or ["General"])
         logger.info(f"Tip captured by {user_id}: {entry.entry_id}")
 
-        return f"âœ… **Tip captured!** Thanks for sharing your knowledge.\n\nðŸ’¡ {args.strip()}"
+        return f"✅ **Tip captured!** Thanks for sharing your knowledge.\n\n💡 {args.strip()}"
 
     elif command == "/lookup":
         if not nyc_data_client:
-            return "âš ï¸ NYC Open Data is not configured."
+            return "⚠️ NYC Open Data is not configured."
 
         if "," not in args:
-            return "âŒ Usage: `/lookup <address>, <borough>`\n\nExample: `/lookup 123 Main Street, Brooklyn`"
+            return "❌ Usage: `/lookup <address>, <borough>`\n\nExample: `/lookup 123 Main Street, Brooklyn`"
 
         parts = args.rsplit(",", 1)
         address = parts[0].strip()
         borough = parts[1].strip()
 
         if not address or not borough:
-            return "âŒ Please provide both address and borough."
+            return "❌ Please provide both address and borough."
 
         try:
             property_info = nyc_data_client.get_property_info(address, borough)
             return property_info.to_context_string()
         except Exception as e:
             logger.error(f"Property lookup failed: {e}")
-            return f"âŒ Could not find property: {address}, {borough}"
+            return f"❌ Could not find property: {address}, {borough}"
 
     elif command == "/zoning":
         if not zoning_analyzer:
-            return "âš ï¸ Zoning analyzer is not configured."
+            return "⚠️ Zoning analyzer is not configured."
 
         if "," not in args:
-            return "âŒ Usage: `/zoning <address>, <borough>`\n\nExample: `/zoning 2410 White Plains Rd, Bronx`"
+            return "❌ Usage: `/zoning <address>, <borough>`\n\nExample: `/zoning 2410 White Plains Rd, Bronx`"
 
         parts = args.rsplit(",", 1)
         address = parts[0].strip()
         borough = parts[1].strip()
 
         if not address or not borough:
-            return "âŒ Please provide both address and borough."
+            return "❌ Please provide both address and borough."
 
         try:
             analysis = zoning_analyzer.analyze(address, borough)
             return analysis.to_report()
         except Exception as e:
             logger.error(f"Zoning analysis failed: {e}")
-            return f"âŒ Zoning analysis failed for: {address}, {borough}\n\nError: {str(e)[:100]}"
+            return f"❌ Zoning analysis failed for: {address}, {borough}\n\nError: {str(e)[:100]}"
 
     elif command == "/objections":
         if not objections_kb:
-            return "âš ï¸ Objections knowledge base is not configured."
+            return "⚠️ Objections knowledge base is not configured."
 
         if not args.strip():
-            return "âŒ Usage: `/objections <filing type>`\n\nExamples:\n  `/objections ALT1`\n  `/objections ALT2`\n  `/objections NB`\n  `/objections DM`"
+            return "❌ Usage: `/objections <filing type>`\n\nExamples:\n  `/objections ALT1`\n  `/objections ALT2`\n  `/objections NB`\n  `/objections DM`"
 
         filing_type = args.strip().upper()
         return get_objections_response(filing_type)
@@ -397,10 +397,10 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
         if PLAN_READER_AVAILABLE:
             return get_plan_capabilities()
         else:
-            return "âš ï¸ Plan reader module is not available."
+            return "⚠️ Plan reader module is not available."
 
     elif command == "/stats":
-        lines = ["ðŸ“Š **Bot Statistics:**"]
+        lines = ["📊 **Bot Statistics:**"]
 
         if knowledge_base:
             stats = knowledge_base.get_stats()
@@ -448,17 +448,17 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
                 pass
 
         lines.append(f"\n**Model:** {settings.claude_model}")
-        lines.append(f"**NYC Open Data:** {'âœ…' if nyc_data_client else 'âŒ'}")
-        lines.append(f"**Zoning Analyzer:** {'âœ…' if zoning_analyzer else 'âŒ'}")
+        lines.append(f"**NYC Open Data:** {'✅' if nyc_data_client else '❌'}")
+        lines.append(f"**Zoning Analyzer:** {'✅' if zoning_analyzer else '❌'}")
 
         return "\n".join(lines)
 
     elif command == "/usage":
         if not usage_tracker:
-            return "âš ï¸ Usage tracking is not configured."
+            return "⚠️ Usage tracking is not configured."
 
         usage = usage_tracker.get_usage_summary(user_id)
-        return f"""ðŸ“ˆ **Your Usage Today:**
+        return f"""📈 **Your Usage Today:**
 
   Requests: {usage['requests_today']}
   Remaining: {usage['requests_remaining_today']}
@@ -486,9 +486,9 @@ def process_message_async(
             allowed, limit_msg = usage_tracker.check_limits(user_id)
             if not allowed:
                 if temp_message_name:
-                    chat_client.update_message(temp_message_name, f"âš ï¸ {limit_msg}")
+                    chat_client.update_message(temp_message_name, f"⚠️ {limit_msg}")
                 else:
-                    chat_client.send_message(space_name, f"âš ï¸ {limit_msg}")
+                    chat_client.send_message(space_name, f"⚠️ {limit_msg}")
                 return
 
         # === OFF-TOPIC FILTER (FREE - no API call) ===
