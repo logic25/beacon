@@ -243,23 +243,35 @@ class NYCOpenDataClient:
         }
         return borough_map.get(borough.upper().strip(), "")
 
+    # PLUTO borough values can be full name OR abbreviation depending on dataset version
+    BOROUGH_VARIANTS = {
+        "MANHATTAN": ["MANHATTAN", "MN", "1"],
+        "BRONX": ["BRONX", "BX", "2"],
+        "BROOKLYN": ["BROOKLYN", "BK", "3"],
+        "QUEENS": ["QUEENS", "QN", "4"],
+        "STATEN ISLAND": ["STATEN ISLAND", "SI", "5"],
+    }
+
     def lookup_pluto(self, address: str, borough: str) -> Optional[dict]:
         """Look up property in PLUTO dataset."""
         house_num, street = self._normalize_address(address)
-        borough_upper = borough.upper()
-        borough_code = self._get_borough_code(borough)
+        borough_upper = borough.upper().strip()
 
-        # Try each street name variant
+        # Get all possible borough values for the query
+        boro_variants = self.BOROUGH_VARIANTS.get(borough_upper, [borough_upper])
+
+        # Try each street name variant x borough variant
         for variant in self._street_variants(street):
-            where_clauses = [
-                f"upper(address) LIKE '{house_num} {variant[:20]}%' AND upper(borough) = '{borough_upper}'",
-                f"upper(address) LIKE '%{house_num}%{variant[:15]}%' AND upper(borough) = '{borough_upper}'",
-            ]
-            for where in where_clauses:
-                results = self._query(DATASETS["pluto"], where=where, limit=5)
-                if results:
-                    logger.info(f"PLUTO match on variant: {variant}")
-                    return results[0]
+            for boro in boro_variants:
+                where_clauses = [
+                    f"upper(address) LIKE '{house_num} {variant[:20]}%' AND upper(borough) = '{boro}'",
+                    f"upper(address) LIKE '%{house_num}%{variant[:15]}%' AND upper(borough) = '{boro}'",
+                ]
+                for where in where_clauses:
+                    results = self._query(DATASETS["pluto"], where=where, limit=5)
+                    if results:
+                        logger.info(f"PLUTO match: variant={variant}, borough={boro}")
+                        return results[0]
 
         logger.warning(f"No PLUTO match for {house_num} {street}, {borough}")
         return None
