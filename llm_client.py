@@ -41,8 +41,8 @@ HOW TO RESPOND:
 
 FORMATTING (Google Chat):
 - Do NOT use markdown headers (# or ##). They render as raw text.
-- Use **bold text** for section labels and emphasis.
-- Use bullet points (- or *) for lists.
+- Use *single asterisks* for bold text (NOT **double**). Google Chat only supports *bold*.
+- Use bullet points with dash (- item) for lists.
 - Use numbered lists (1. 2. 3.) for sequential steps.
 - Keep responses concise. Lead with the answer, then supporting detail.
 - Use blank lines between sections for readability.
@@ -201,6 +201,10 @@ class ClaudeClient:
             # Apply response filtering
             filtered_response = self.filter.filter_response(raw_response)
 
+            # Convert **double asterisks** to *single* for Google Chat bold
+            import re as _re
+            filtered_response = _re.sub(r'\*\*(.+?)\*\*', r'**', filtered_response)
+
             # Add source citations if available
             if rag_sources:
                 filtered_response += self._format_citations(rag_sources)
@@ -280,7 +284,7 @@ Based on the above documents and your expertise, please answer my question:
         if not sources:
             return ""
 
-        lines = ["\n\n\U0001f4da **Sources:**"]
+        lines = ["\n\n\U0001f4da *Sources:*"]
 
         for i, source in enumerate(sources, 1):
             line = f"  [{i}] {source.get('file', 'Unknown')}"
