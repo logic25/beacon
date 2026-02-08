@@ -518,13 +518,8 @@ def process_message_async(
         # === GET CONVERSATION HISTORY ===
         session = session_manager.get_or_create_session(user_id, space_name)
 
-        # === GATHER CONTEXT ===
-        rag_context = None
-        rag_sources = None
-        property_context = None
-        objections_context = None
-
-        # NYC Open Data property lookup (if address detected)
+        # === CHECK FOR PROPERTY LOOKUP (skip RAG/LLM — return data directly) ===
+        is_property_query = False
         if nyc_data_client is not None and OPEN_DATA_AVAILABLE:
             try:
                 address_info = extract_address_from_query(user_message)
@@ -532,60 +527,66 @@ def process_message_async(
                     address, borough = address_info
                     logger.info(f"Detected property query: {address}, {borough}")
                     property_info = nyc_data_client.get_property_info(address, borough)
-                    property_context = property_info.to_context_string()
+                    ai_response = property_info.to_context_string()
+                    is_property_query = True
+                    logger.info(f"Property lookup — no LLM call needed")
             except Exception as e:
                 logger.warning(f"Property lookup failed: {e}")
 
-        # Objections context (if filing type mentioned)
-        if objections_kb and OBJECTIONS_AVAILABLE:
-            filing_types = ["ALT1", "ALT2", "ALT3", "NB", "DM", "SIGN", "PAA"]
-            msg_upper = user_message.upper()
-            for ft in filing_types:
-                if ft in msg_upper or f"ALT {ft[-1]}" in msg_upper:
-                    try:
-                        objections = objections_kb.get_objections_for_filing(ft)
-                        if objections:
-                            objections_context = f"Common {ft} objections:\n"
-                            for obj in objections[:3]:
-                                objections_context += f"- {obj.objection} (Resolve: {obj.typical_resolution})\n"
-                    except Exception as e:
-                        logger.warning(f"Objections lookup failed: {e}")
-                    break
+        # === STANDARD RAG + LLM FLOW (only if not a property lookup) ===
+        if not is_property_query:
+            rag_context = None
+            rag_sources = None
+            objections_context = None
 
-        # RAG retrieval
-        if retriever is not None:
-            try:
-                retrieval_result = retriever.retrieve(
-                    query=user_message,
-                    top_k=settings.rag_top_k,
-                    min_score=settings.rag_min_score,
-                )
-                if retrieval_result.num_results > 0:
-                    rag_context = retrieval_result.context
-                    rag_sources = retrieval_result.sources
-                    logger.info(f"Retrieved {retrieval_result.num_results} documents")
-            except Exception as e:
-                logger.warning(f"RAG retrieval failed: {e}")
+            # Objections context (if filing type mentioned)
+            if objections_kb and OBJECTIONS_AVAILABLE:
+                filing_types = ["ALT1", "ALT2", "ALT3", "NB", "DM", "SIGN", "PAA"]
+                msg_upper = user_message.upper()
+                for ft in filing_types:
+                    if ft in msg_upper or f"ALT {ft[-1]}" in msg_upper:
+                        try:
+                            objections = objections_kb.get_objections_for_filing(ft)
+                            if objections:
+                                objections_context = f"Common {ft} objections:\n"
+                                for obj in objections[:3]:
+                                    objections_context += f"- {obj.objection} (Resolve: {obj.typical_resolution})\n"
+                        except Exception as e:
+                            logger.warning(f"Objections lookup failed: {e}")
+                        break
 
-        # Combine all context
-        combined_context = None
-        context_parts = []
-        if property_context:
-            context_parts.append(f"LIVE PROPERTY DATA:\n{property_context}")
-        if objections_context:
-            context_parts.append(f"RELEVANT OBJECTIONS:\n{objections_context}")
-        if rag_context:
-            context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
-        if context_parts:
-            combined_context = "\n\n---\n\n".join(context_parts)
+            # RAG retrieval
+            if retriever is not None:
+                try:
+                    retrieval_result = retriever.retrieve(
+                        query=user_message,
+                        top_k=settings.rag_top_k,
+                        min_score=settings.rag_min_score,
+                    )
+                    if retrieval_result.num_results > 0:
+                        rag_context = retrieval_result.context
+                        rag_sources = retrieval_result.sources
+                        logger.info(f"Retrieved {retrieval_result.num_results} documents")
+                except Exception as e:
+                    logger.warning(f"RAG retrieval failed: {e}")
 
-        # === GET RESPONSE FROM CLAUDE ===
-        ai_response = claude_client.get_response(
-            user_message=user_message,
-            conversation_history=session.chat_history,
-            rag_context=combined_context,
-            rag_sources=rag_sources,
-        )
+            # Combine all context
+            combined_context = None
+            context_parts = []
+            if objections_context:
+                context_parts.append(f"RELEVANT OBJECTIONS:\n{objections_context}")
+            if rag_context:
+                context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
+            if context_parts:
+                combined_context = "\n\n---\n\n".join(context_parts)
+
+            # === GET RESPONSE FROM CLAUDE ===
+            ai_response = claude_client.get_response(
+                user_message=user_message,
+                conversation_history=session.chat_history,
+                rag_context=combined_context,
+                rag_sources=rag_sources,
+            )
 
         # === TRACK USAGE ===
         if usage_tracker and RATE_LIMITER_AVAILABLE:

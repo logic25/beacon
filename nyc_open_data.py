@@ -111,22 +111,37 @@ class PropertyInfo:
         else:
             lines.append(f"\n\u2705 No active violations")
 
-        # Recent violations with violation numbers
+        # Recent violations with links, descriptions, hearing dates
         if self.recent_violations:
             lines.append(f"\n*Recent Violations:*")
             for v in self.recent_violations[:5]:
                 vtype = v.get("type", "")
                 vnum = v.get("violation_number", "")
                 date = v.get("issue_date", "")
-                desc = v.get("description", "")[:60]
-                line = f"  \u2022 [{vtype}]"
-                if vnum:
-                    line += f" {vnum}"
+                desc = v.get("description", "")[:80]
+                hearing = v.get("hearing_date", "")
+                severity = v.get("severity", "")
+
+                # Build violation number as clickable BIS link
+                if vtype == "ECB" and vnum:
+                    vnum_display = f"<https://a810-bisweb.nyc.gov/bisweb/ECBQueryByNumberServlet?ecession={vnum}|{vnum}>"
+                elif vtype == "DOB" and vnum:
+                    vnum_display = f"{vnum}"
+                else:
+                    vnum_display = vnum or "N/A"
+
+                line = f"  \u2022 *{vtype}* {vnum_display}"
                 if date:
                     line += f" ({date})"
+                if severity:
+                    line += f" [{severity}]"
                 if desc:
-                    line += f" - {desc}"
-                lines.append(line)
+                    lines.append(line)
+                    lines.append(f"    {desc}")
+                else:
+                    lines.append(line)
+                if hearing:
+                    lines.append(f"    Hearing: {hearing}")
 
         # Recent permits — just top 3
         if self.recent_permits:
@@ -574,6 +589,7 @@ class NYCOpenDataClient:
                     "violation_number": v.get("number", v.get("violation_number", "")),
                     "description": v.get("violation_category", v.get("description", "")),
                     "issue_date": v.get("issue_date", "")[:10] if v.get("issue_date") else "",
+                    "disposition_comments": v.get("disposition_comments", ""),
                 }
                 for v in dob_violations[:10]
             ])
@@ -590,8 +606,9 @@ class NYCOpenDataClient:
                 {
                     "type": "ECB",
                     "violation_number": v.get("ecb_violation_number", ""),
-                    "description": v.get("violation_type", ""),
+                    "description": v.get("violation_description", v.get("violation_type", "")),
                     "issue_date": v.get("issue_date", "")[:10] if v.get("issue_date") else "",
+                    "hearing_date": v.get("hearing_date", "")[:10] if v.get("hearing_date") else "",
                     "severity": v.get("severity", ""),
                 }
                 for v in ecb_violations[:10]
