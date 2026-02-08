@@ -69,8 +69,16 @@ class PropertyInfo:
         """Format property info as context for the LLM."""
         lines = [
             f"\U0001f4cd *Property: {self.address}, {self.borough}*",
-            f"BBL: {self.bbl or 'Unknown'} | BIN: {self.bin or 'Unknown'}",
         ]
+
+        # Core identifiers
+        id_parts = []
+        if self.bbl:
+            id_parts.append(f"BBL: {self.bbl}")
+        if self.bin:
+            id_parts.append(f"BIN: {self.bin}")
+        if id_parts:
+            lines.append(" | ".join(id_parts))
 
         if self.zoning_district:
             zoning = self.zoning_district
@@ -78,14 +86,13 @@ class PropertyInfo:
                 zoning += f" / {self.overlay}"
             lines.append(f"Zoning: {zoning}")
 
-        if self.year_built:
-            lines.append(f"Year Built: {self.year_built} | Floors: {self.num_floors or 'Unknown'}")
-
         if self.building_class:
-            lines.append(f"Building Class: {self.building_class}")
-
-        if self.lot_area:
-            lines.append(f"Lot Area: {self.lot_area:,.0f} SF")
+            details = f"Building Class: {self.building_class}"
+            if self.num_floors:
+                details += f" | {self.num_floors} floors"
+            if self.year_built:
+                details += f" | Built {self.year_built}"
+            lines.append(details)
 
         # Violation summary
         total_violations = (
@@ -96,38 +103,53 @@ class PropertyInfo:
         if total_violations > 0:
             lines.append(f"\n\u26a0\ufe0f *Active Violations: {total_violations}*")
             if self.active_dob_violations:
-                lines.append(f"  - DOB: {self.active_dob_violations}")
+                lines.append(f"  \u2022 DOB: {self.active_dob_violations}")
             if self.active_ecb_violations:
-                lines.append(f"  - ECB: {self.active_ecb_violations}")
+                lines.append(f"  \u2022 ECB: {self.active_ecb_violations}")
             if self.active_hpd_violations:
-                lines.append(f"  - HPD: {self.active_hpd_violations}")
+                lines.append(f"  \u2022 HPD: {self.active_hpd_violations}")
         else:
             lines.append(f"\n\u2705 No active violations")
 
-        # Recent violations detail
+        # Recent violations with violation numbers
         if self.recent_violations:
-            lines.append(f"\n\U0001f4cb *Recent Violations:*")
+            lines.append(f"\n*Recent Violations:*")
             for v in self.recent_violations[:5]:
-                desc = v.get("description", "No description")[:80]
-                date = v.get("issue_date", "Unknown date")
                 vtype = v.get("type", "")
-                lines.append(f"  \u2022 [{vtype}] {date}: {desc}")
+                vnum = v.get("violation_number", "")
+                date = v.get("issue_date", "")
+                desc = v.get("description", "")[:60]
+                line = f"  \u2022 [{vtype}]"
+                if vnum:
+                    line += f" {vnum}"
+                if date:
+                    line += f" ({date})"
+                if desc:
+                    line += f" - {desc}"
+                lines.append(line)
 
-        # Recent permits
+        # Recent permits — just top 3
         if self.recent_permits:
-            lines.append(f"\n\U0001f528 *Recent Permits:*")
-            for p in self.recent_permits[:5]:
-                job_type = p.get("job_type", "Unknown")
-                desc = p.get("job_description", "No description")[:60]
+            lines.append(f"\n*Recent Permits:*")
+            for p in self.recent_permits[:3]:
+                job_type = p.get("job_type", "")
+                desc = p.get("job_description", "")[:50]
                 date = p.get("issuance_date", "")
                 lines.append(f"  \u2022 {job_type}: {desc}" + (f" ({date})" if date else ""))
 
-        # Open complaints
+        # Open complaints — only if any
         if self.open_complaints:
-            lines.append(f"\n\U0001f4de *Open Complaints: {len(self.open_complaints)}*")
-            for c in self.open_complaints[:3]:
-                desc = c.get("complaint_category", "Unknown")
-                lines.append(f"  \u2022 {desc}")
+            lines.append(f"\n*Open Complaints: {len(self.open_complaints)}*")
+
+        # BIS link
+        if self.bin:
+            boro_code = self.bbl[0] if self.bbl else ""
+            if boro_code:
+                block = self.bbl[1:6] if self.bbl else ""
+                lot = self.bbl[6:10] if self.bbl else ""
+                lines.append(f"\n\U0001f517 <https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?boro={boro_code}&block={block}&lot={lot}|View on BIS>")
+            else:
+                lines.append(f"\n\U0001f517 <https://a810-bisweb.nyc.gov/bisweb/PropertyProfileOverviewServlet?allbin={self.bin}|View on BIS>")
 
         return "\n".join(lines)
 
@@ -484,7 +506,7 @@ class NYCOpenDataClient:
             return []
 
         if open_only:
-            conditions.append("status != 'CLOSED'")
+            conditions.append("status IN ('ACTIVE','OPEN','PARTIAL')")
 
         where = " AND ".join(conditions)
 
@@ -549,9 +571,9 @@ class NYCOpenDataClient:
             info.recent_violations.extend([
                 {
                     "type": "DOB",
-                    "description": v.get("description", ""),
+                    "violation_number": v.get("number", v.get("violation_number", "")),
+                    "description": v.get("violation_category", v.get("description", "")),
                     "issue_date": v.get("issue_date", "")[:10] if v.get("issue_date") else "",
-                    "violation_type": v.get("violation_type", ""),
                 }
                 for v in dob_violations[:10]
             ])
@@ -567,9 +589,10 @@ class NYCOpenDataClient:
             info.recent_violations.extend([
                 {
                     "type": "ECB",
-                    "description": v.get("violation_description", ""),
+                    "violation_number": v.get("ecb_violation_number", ""),
+                    "description": v.get("violation_type", ""),
                     "issue_date": v.get("issue_date", "")[:10] if v.get("issue_date") else "",
-                    "violation_type": v.get("violation_type", ""),
+                    "severity": v.get("severity", ""),
                 }
                 for v in ecb_violations[:10]
             ])
@@ -624,17 +647,17 @@ class NYCOpenDataClient:
 
 
 def extract_address_from_query(query: str) -> Optional[tuple[str, str]]:
-    """Try to extract an address and borough from a user query.
-
-    Args:
-        query: User's question text
-
-    Returns:
-        Tuple of (address, borough) or None if not found
+    """Extract address and borough from natural language query.
+    
+    Handles patterns like:
+    - "violations at 21 West End Ave Manhattan"
+    - "what's going on at 620 W 30th St in Brooklyn?"
+    - "look up 123-45 Queens Blvd, Queens"
+    - "tell me about 100 Broadway Manhattan"
     """
     query_upper = query.upper()
 
-    # Detect borough
+    # Detect borough (including common abbreviations and zip-implied boroughs)
     borough = None
     borough_patterns = [
         (r'\bMANHATTAN\b', 'Manhattan'),
@@ -642,6 +665,11 @@ def extract_address_from_query(query: str) -> Optional[tuple[str, str]]:
         (r'\bBROOKLYN\b', 'Brooklyn'),
         (r'\bQUEENS\b', 'Queens'),
         (r'\bSTATEN\s*ISLAND\b', 'Staten Island'),
+        (r'\bBK\b', 'Brooklyn'),
+        (r'\bBX\b', 'Bronx'),
+        (r'\bSI\b', 'Staten Island'),
+        (r'\bQN\b', 'Queens'),
+        (r'\bMN\b', 'Manhattan'),
     ]
 
     for pattern, boro_name in borough_patterns:
@@ -652,13 +680,26 @@ def extract_address_from_query(query: str) -> Optional[tuple[str, str]]:
     if not borough:
         return None
 
-    # Try to find an address pattern
-    # Common patterns: "123 Main Street", "456 W 42nd St"
-    address_pattern = r'\b(\d+[\-\d]*[A-Z]?)\s+((?:EAST|WEST|NORTH|SOUTH|E\.?|W\.?|N\.?|S\.?)?\s*\d*(?:ST|ND|RD|TH)?\s*(?:STREET|ST|AVENUE|AVE|ROAD|RD|BOULEVARD|BLVD|PLACE|PL|DRIVE|DR|LANE|LN|WAY|COURT|CT)[A-Z]*)'
+    # Address patterns — ordered by specificity
+    address_patterns = [
+        # Hyphenated Queens/Bronx style: 123-45 Queens Blvd
+        r'\b(\d+\-\d+)\s+((?:(?:EAST|WEST|NORTH|SOUTH|E\.?|W\.?|N\.?|S\.?)\s+)?[A-Z0-9]+(?:\s+[A-Z0-9]+)*\s*(?:STREET|ST|AVENUE|AVE|ROAD|RD|BOULEVARD|BLVD|PLACE|PL|DRIVE|DR|LANE|LN|WAY|COURT|CT|PKWY|PARKWAY|TERRACE|TER|BROADWAY))\b',
+        # Standard with direction: 620 W 30th St, 100 E 42nd Street
+        r'\b(\d+)\s+((?:EAST|WEST|NORTH|SOUTH|E\.?|W\.?)\s+\d+(?:ST|ND|RD|TH)?\s*(?:STREET|ST|AVENUE|AVE)?)\b',
+        # Standard: 21 West End Ave, 100 Broadway
+        r'\b(\d+)\s+((?:(?:EAST|WEST|NORTH|SOUTH|E\.?|W\.?|N\.?|S\.?)\s+)?[A-Z]+(?:\s+[A-Z]+)*\s*(?:STREET|ST|AVENUE|AVE|ROAD|RD|BOULEVARD|BLVD|PLACE|PL|DRIVE|DR|LANE|LN|WAY|COURT|CT|PKWY|PARKWAY|TERRACE|TER))\b',
+        # Named street without suffix: 100 BROADWAY, 200 PARK
+        r'\b(\d+)\s+(BROADWAY|PARK\s+AVE(?:NUE)?|FIFTH\s+AVE(?:NUE)?|MADISON\s+AVE(?:NUE)?|LEXINGTON\s+AVE(?:NUE)?|RIVERSIDE\s+(?:DRIVE|DR|BLVD|BOULEVARD)|WEST\s+END\s+AVE(?:NUE)?|AMSTERDAM\s+AVE(?:NUE)?|COLUMBUS\s+AVE(?:NUE)?)\b',
+    ]
 
-    match = re.search(address_pattern, query_upper)
-    if match:
-        address = f"{match.group(1)} {match.group(2)}"
-        return address, borough
+    for pattern in address_patterns:
+        match = re.search(pattern, query_upper)
+        if match:
+            address = f"{match.group(1)} {match.group(2)}".strip()
+            # Clean up trailing borough name that might be captured
+            for boro in ["MANHATTAN", "BROOKLYN", "BRONX", "QUEENS", "STATEN ISLAND"]:
+                address = address.replace(boro, "").strip()
+            if address and len(address) > 3:
+                return address, borough
 
     return None
