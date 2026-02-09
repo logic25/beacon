@@ -18,6 +18,7 @@ import logging
 import sys
 import threading
 import time
+import json
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
@@ -712,14 +713,17 @@ def process_message_async(
                     user_name=user_display_name or "Unknown User",
                     space_name=space_name or "DM",
                     question=user_message,
+                    response=ai_response,  # NEW for v2
                     command=None,
                     answered=True,
                     response_length=len(ai_response),
                     had_sources=has_sources,
+                    sources_used=json.dumps([s.get('file', '') for s in rag_sources]) if rag_sources else None,  # NEW for v2
                     tokens_used=tokens_used,
                     cost_usd=cost_usd,
                     response_time_ms=response_time,
                     confidence=None,
+                    topic=None,  # Auto-categorized by analytics v2
                 )
                 
                 analytics_db.log_interaction(interaction)
