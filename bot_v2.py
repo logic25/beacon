@@ -139,6 +139,72 @@ SLASH_COMMANDS = {
 }
 
 
+def should_skip_rag(message: str) -> bool:
+    """
+    Check if message needs RAG retrieval.
+    
+    Skip RAG for:
+    - Pure greetings (hi, hello, thanks)
+    - Test messages
+    - Meta questions about the bot itself
+    
+    Use RAG for:
+    - Questions with industry terms (permit, zoning, DOB, etc.)
+    - Questions about NYC properties/addresses
+    - Technical permit/building questions
+    
+    Returns:
+        True if RAG should be skipped (greeting/test/casual)
+    """
+    import re
+    
+    message_lower = message.lower().strip()
+    
+    # Pure greetings/tests (no industry context)
+    simple_patterns = [
+        r'^(hi|hey|hello|sup|yo)[\s!?]*$',
+        r'^(test|testing)[\s!?]*$',
+        r'^(good\s+(morning|afternoon|evening))[\s!?]*$',
+        r'^(thanks|thank you|thx)[\s!?]*$',
+        r'^(ok|okay|got it)[\s!?]*$',
+    ]
+    
+    if any(re.match(pattern, message_lower) for pattern in simple_patterns):
+        return True  # Skip RAG
+    
+    # Check for industry keywords - if present, USE RAG
+    industry_keywords = [
+        "dob", "permit", "filing", "zoning", "code", "violation", 
+        "building", "property", "address", "bbl", "bin",
+        "alt", "nb", "dm", "certificate", "occupancy", "co", "tco",
+        "fdny", "dep", "lpc", "landmark", "sprinkler", "egress",
+        "far", "setback", "lot", "residential", "commercial",
+        "manhattan", "brooklyn", "bronx", "queens", "staten island",
+        "borough", "block", "floor", "apartment"
+    ]
+    
+    has_industry_term = any(keyword in message_lower for keyword in industry_keywords)
+    
+    if has_industry_term:
+        return False  # Use RAG - this is about NYC real estate
+    
+    # Meta questions about the bot - skip RAG
+    meta_patterns = [
+        r'what (can|do) you (do|know)',
+        r'how (do|can) you (help|work)',
+        r'tell me about (yourself|you)',
+        r'who are you',
+        r'what are you',
+    ]
+    
+    if any(re.search(pattern, message_lower) for pattern in meta_patterns):
+        return True  # Skip RAG - they're asking about the bot
+    
+    # Default: use RAG for anything else
+    # (Conservative approach - better to retrieve than miss relevant context)
+    return False
+
+
 def initialize_app() -> None:
     """Initialize all application components."""
     global settings, claude_client, chat_client, session_manager
@@ -556,8 +622,8 @@ def process_message_async(
                             logger.warning(f"Objections lookup failed: {e}")
                         break
 
-            # RAG retrieval
-            if retriever is not None:
+            # RAG retrieval (skip for greetings/tests)
+            if retriever is not None and not should_skip_rag(user_message):
                 try:
                     retrieval_result = retriever.retrieve(
                         query=user_message,
