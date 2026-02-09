@@ -86,6 +86,14 @@ try:
 except ImportError:
     PLAN_READER_AVAILABLE = False
 
+# Analytics and Dashboard (optional)
+try:
+    from analytics import AnalyticsDB, Interaction, get_analytics_db
+    from dashboard import add_dashboard_routes
+    ANALYTICS_AVAILABLE = True
+except ImportError:
+    ANALYTICS_AVAILABLE = False
+
 
 def setup_logging(settings: Settings) -> None:
     """Configure application logging."""
@@ -113,6 +121,7 @@ response_cache: "SemanticCache | None" = None
 usage_tracker: "UsageTracker | None" = None
 objections_kb: "ObjectionsKB | None" = None
 zoning_analyzer: "ZoningAnalyzer | None" = None
+analytics_db: "AnalyticsDB | None" = None
 logger = logging.getLogger(__name__)
 
 
@@ -136,73 +145,8 @@ SLASH_COMMANDS = {
     "/help": "Show available commands",
     "/stats": "Show knowledge base and usage statistics",
     "/usage": "Show your usage stats",
+    "/feedback": "Suggest a new feature or improvement - Usage: /feedback <your idea>",
 }
-
-
-def should_skip_rag(message: str) -> bool:
-    """
-    Check if message needs RAG retrieval.
-    
-    Skip RAG for:
-    - Pure greetings (hi, hello, thanks)
-    - Test messages
-    - Meta questions about the bot itself
-    
-    Use RAG for:
-    - Questions with industry terms (permit, zoning, DOB, etc.)
-    - Questions about NYC properties/addresses
-    - Technical permit/building questions
-    
-    Returns:
-        True if RAG should be skipped (greeting/test/casual)
-    """
-    import re
-    
-    message_lower = message.lower().strip()
-    
-    # Pure greetings/tests (no industry context)
-    simple_patterns = [
-        r'^(hi|hey|hello|sup|yo)[\s!?]*$',
-        r'^(test|testing)[\s!?]*$',
-        r'^(good\s+(morning|afternoon|evening))[\s!?]*$',
-        r'^(thanks|thank you|thx)[\s!?]*$',
-        r'^(ok|okay|got it)[\s!?]*$',
-    ]
-    
-    if any(re.match(pattern, message_lower) for pattern in simple_patterns):
-        return True  # Skip RAG
-    
-    # Check for industry keywords - if present, USE RAG
-    industry_keywords = [
-        "dob", "permit", "filing", "zoning", "code", "violation", 
-        "building", "property", "address", "bbl", "bin",
-        "alt", "nb", "dm", "certificate", "occupancy", "co", "tco",
-        "fdny", "dep", "lpc", "landmark", "sprinkler", "egress",
-        "far", "setback", "lot", "residential", "commercial",
-        "manhattan", "brooklyn", "bronx", "queens", "staten island",
-        "borough", "block", "floor", "apartment"
-    ]
-    
-    has_industry_term = any(keyword in message_lower for keyword in industry_keywords)
-    
-    if has_industry_term:
-        return False  # Use RAG - this is about NYC real estate
-    
-    # Meta questions about the bot - skip RAG
-    meta_patterns = [
-        r'what (can|do) you (do|know)',
-        r'how (do|can) you (help|work)',
-        r'tell me about (yourself|you)',
-        r'who are you',
-        r'what are you',
-    ]
-    
-    if any(re.search(pattern, message_lower) for pattern in meta_patterns):
-        return True  # Skip RAG - they're asking about the bot
-    
-    # Default: use RAG for anything else
-    # (Conservative approach - better to retrieve than miss relevant context)
-    return False
 
 
 def initialize_app() -> None:
@@ -210,6 +154,7 @@ def initialize_app() -> None:
     global settings, claude_client, chat_client, session_manager
     global retriever, nyc_data_client, knowledge_base
     global response_cache, usage_tracker, objections_kb, zoning_analyzer
+    global analytics_db
 
     settings = get_settings()
     setup_logging(settings)
@@ -292,6 +237,16 @@ def initialize_app() -> None:
             logger.warning(f"Zoning analyzer initialization failed: {e}")
             zoning_analyzer = None
 
+    # Initialize analytics and dashboard
+    if ANALYTICS_AVAILABLE:
+        try:
+            analytics_db = get_analytics_db()
+            add_dashboard_routes(app, analytics_db)
+            logger.info("✅ Analytics and dashboard initialized")
+        except Exception as e:
+            logger.warning(f"Analytics initialization failed: {e}")
+            analytics_db = None
+
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
 
@@ -342,7 +297,20 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
         entry = knowledge_base.add_correction(wrong, correct, topics=topics or ["General"])
         logger.info(f"Correction captured by {user_email or user_id}: {entry.entry_id}")
 
-        return f"\u2705 **Correction captured!**\n\n**Wrong:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n**Correct:** {correct[:150]}{'...' if len(correct) > 150 else ''}\n\nTopics: {', '.join(topics or ['General'])}"
+        # Log to analytics
+        if analytics_db and ANALYTICS_AVAILABLE:
+            try:
+                analytics_db.log_correction(
+                    user_id=user_id,
+                    user_name=user_id.split('/')[-1],
+                    wrong=wrong,
+                    correct=correct,
+                    topics=topics or ["General"],
+                )
+            except Exception as e:
+                logger.error(f"Failed to log correction: {e}")
+
+        return f"✅ **Correction captured!**\n\n**Wrong:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n**Correct:** {correct[:150]}{'...' if len(correct) > 150 else ''}\n\nTopics: {', '.join(topics or ['General'])}"
 
     elif command == "/suggest":
         if not knowledge_base:
@@ -380,7 +348,20 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
         )
         logger.info(f"Suggestion captured by {user_email or user_id}: {entry.entry_id}")
 
-        return (f"\U0001f4dd **Suggestion logged for review!**\n\n"
+        # Log to analytics
+        if analytics_db and ANALYTICS_AVAILABLE:
+            try:
+                analytics_db.log_suggestion(
+                    user_id=user_id,
+                    user_name=user_id.split('/')[-1],
+                    wrong=wrong,
+                    correct=suggested,
+                    topics=topics or ["General"],
+                )
+            except Exception as e:
+                logger.error(f"Failed to log suggestion: {e}")
+
+        return (f"📝 **Suggestion logged for review!**\n\n"
                 f"**Issue:** {wrong[:100]}{'...' if len(wrong) > 100 else ''}\n"
                 f"**Suggested fix:** {suggested[:150]}{'...' if len(suggested) > 150 else ''}\n\n"
                 f"An admin will review and approve this. Thanks for flagging it!")
@@ -533,6 +514,26 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
 
 Daily limits: 100 requests, 100K tokens"""
 
+    elif command == "/feedback":
+        if not analytics_db:
+            return "⚠️ Feedback tracking is not configured."
+        
+        if not args.strip():
+            return "❌ Usage: `/feedback <your feedback>`\n\nExample: `/feedback Can we add permit expiration dates to /lookup?`"
+        
+        try:
+            from datetime import datetime
+            feedback_id = analytics_db.log_feedback(
+                user_id=user_id,
+                user_name=user_id.split('/')[-1],
+                feedback=args.strip(),
+            )
+            logger.info(f"Feedback {feedback_id} captured from {user_id}")
+            return f"✅ **Feedback received!** Thanks for helping us improve Beacon.\n\n💡 {args.strip()}"
+        except Exception as e:
+            logger.error(f"Failed to log feedback: {e}")
+            return "❌ Sorry, couldn't save your feedback. Please try again."
+
     return None  # Not a recognized command
 
 
@@ -543,6 +544,8 @@ def process_message_async(
     temp_message_name: str | None,
 ) -> None:
     """Process a message in a background thread."""
+    request_start_time = time.time()
+    
     try:
         # Small delay to ensure temp message is sent
         time.sleep(0.3)
@@ -622,8 +625,8 @@ def process_message_async(
                             logger.warning(f"Objections lookup failed: {e}")
                         break
 
-            # RAG retrieval (skip for greetings/tests)
-            if retriever is not None and not should_skip_rag(user_message):
+            # RAG retrieval
+            if retriever is not None:
                 try:
                     retrieval_result = retriever.retrieve(
                         query=user_message,
@@ -686,6 +689,42 @@ def process_message_async(
 
         # === STORE IN SESSION ===
         session_manager.add_assistant_message(user_id, space_name, ai_response)
+
+        # === LOG TO ANALYTICS ===
+        if analytics_db and ANALYTICS_AVAILABLE:
+            try:
+                from datetime import datetime
+                
+                # Calculate metrics
+                response_time = int((time.time() - request_start_time) * 1000)
+                has_sources = bool(rag_sources)
+                
+                # Estimate tokens (rough: 4 chars = 1 token)
+                tokens_used = (len(user_message) + len(ai_response)) // 4
+                
+                # Estimate cost (Haiku: ~$0.25 per 1M input, ~$1.25 per 1M output)
+                cost_usd = (tokens_used / 1_000_000) * 0.75
+                
+                interaction = Interaction(
+                    timestamp=datetime.now().isoformat(),
+                    user_id=user_id,
+                    user_name=user_id.split('/')[-1],
+                    space_name=space_name or "DM",
+                    question=user_message,
+                    command=None,
+                    answered=True,
+                    response_length=len(ai_response),
+                    had_sources=has_sources,
+                    tokens_used=tokens_used,
+                    cost_usd=cost_usd,
+                    response_time_ms=response_time,
+                    confidence=None,
+                )
+                
+                analytics_db.log_interaction(interaction)
+                logger.info(f"Logged interaction to analytics")
+            except Exception as e:
+                logger.error(f"Failed to log analytics: {e}")
 
         # === SEND RESPONSE ===
         if not ai_response:
