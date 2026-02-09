@@ -92,8 +92,10 @@ try:
     from analytics import AnalyticsDB, Interaction, get_analytics_db
     from dashboard import add_dashboard_routes
     ANALYTICS_AVAILABLE = True
-except ImportError:
+except Exception as e:
     ANALYTICS_AVAILABLE = False
+    import logging
+    logging.error(f"Failed to import analytics/dashboard: {e}", exc_info=True)
 
 
 def setup_logging(settings: Settings) -> None:
