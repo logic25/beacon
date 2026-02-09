@@ -1,6 +1,6 @@
 """
-Analytics tracking for Beacon bot.
-Logs every question, answer, and user interaction for dashboard.
+Enhanced Analytics v2 for Beacon bot.
+Tracks everything: interactions, costs, topics, failed queries, document citations.
 """
 
 import json
@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -22,25 +23,40 @@ class Interaction:
     user_name: str
     space_name: str
     question: str
-    command: Optional[str]  # /lookup, /correct, etc. or None for chat
-    answered: bool  # Did bot provide an answer?
+    response: str  # NEW - full response text
+    command: Optional[str]
+    answered: bool
     response_length: int
-    had_sources: bool  # Did response include RAG sources?
+    had_sources: bool
+    sources_used: Optional[str]  # NEW - JSON list of sources cited
     tokens_used: int
     cost_usd: float
     response_time_ms: int
-    confidence: Optional[float]  # 0.0-1.0 if we can estimate
+    confidence: Optional[float]
+    topic: Optional[str]  # NEW - auto-categorized topic
+
+
+@dataclass
+class APIUsage:
+    """Track usage across all APIs."""
+    timestamp: str
+    api_name: str  # "anthropic", "pinecone", "voyage"
+    operation: str  # "chat", "search", "embed"
+    tokens_used: int
+    cost_usd: float
 
 
 class AnalyticsDB:
     """
-    SQLite database for tracking bot usage.
+    Enhanced SQLite database for comprehensive bot analytics.
     
-    Tables:
-    - interactions: Every question asked
-    - suggestions: Team suggestions via /suggest
-    - corrections: Admin corrections via /correct
-    - feedback: Feature requests via /feedback
+    New Features:
+    - Full conversation storage
+    - Multi-API cost tracking
+    - Topic categorization
+    - Failed query tracking
+    - Document citation analytics
+    - Slash command usage
     """
     
     def __init__(self, db_path: str = "beacon_analytics.db"):
@@ -52,7 +68,7 @@ class AnalyticsDB:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Interactions table
+        # Enhanced interactions table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS interactions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,18 +77,33 @@ class AnalyticsDB:
                 user_name TEXT,
                 space_name TEXT,
                 question TEXT NOT NULL,
+                response TEXT,
                 command TEXT,
                 answered BOOLEAN NOT NULL,
                 response_length INTEGER,
                 had_sources BOOLEAN,
+                sources_used TEXT,
                 tokens_used INTEGER,
                 cost_usd REAL,
                 response_time_ms INTEGER,
-                confidence REAL
+                confidence REAL,
+                topic TEXT
             )
         """)
         
-        # Suggestions table (from /suggest)
+        # API usage tracking
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                api_name TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                tokens_used INTEGER,
+                cost_usd REAL
+            )
+        """)
+        
+        # Suggestions table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS suggestions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,7 +119,7 @@ class AnalyticsDB:
             )
         """)
         
-        # Corrections table (from /correct)
+        # Corrections table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS corrections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,7 +133,7 @@ class AnalyticsDB:
             )
         """)
         
-        # Feedback table (from /feedback)
+        # Feedback table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS feedback (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,62 +147,93 @@ class AnalyticsDB:
             )
         """)
         
-        # Create indexes for common queries
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_interactions_timestamp 
-            ON interactions(timestamp)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_interactions_user 
-            ON interactions(user_id)
-        """)
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_suggestions_status 
-            ON suggestions(status)
-        """)
+        # Create indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_user ON interactions(user_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_topic ON interactions(topic)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_answered ON interactions(answered)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_timestamp ON api_usage(timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_usage_name ON api_usage(api_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status)")
         
         conn.commit()
         conn.close()
-        logger.info(f"Analytics database initialized at {self.db_path}")
+        logger.info(f"Enhanced analytics database initialized at {self.db_path}")
+    
+    def _categorize_topic(self, question: str, response: str = "") -> str:
+        """Auto-categorize question into topics."""
+        combined = (question + " " + response).lower()
+        
+        # Topic keywords
+        topics = {
+            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "contextual"],
+            "DOB": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
+            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+            "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation"],
+            "Certificate of Occupancy": ["co", "certificate of occupancy", "tco", "temporary co"],
+            "Property Lookup": ["lookup", "address", "bin", "block", "lot"],
+            "Building Code": ["building code", "egress", "fire", "occupancy group", "sprinkler"],
+            "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
+            "Plans": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
+        }
+        
+        for topic, keywords in topics.items():
+            if any(kw in combined for kw in keywords):
+                return topic
+        
+        return "General"
     
     def log_interaction(self, interaction: Interaction) -> None:
-        """Log a user interaction."""
+        """Log a user interaction with enhanced tracking."""
+        # Auto-categorize if not provided
+        if not interaction.topic:
+            interaction.topic = self._categorize_topic(interaction.question, interaction.response)
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         cursor.execute("""
             INSERT INTO interactions (
-                timestamp, user_id, user_name, space_name, question,
-                command, answered, response_length, had_sources,
-                tokens_used, cost_usd, response_time_ms, confidence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                timestamp, user_id, user_name, space_name, question, response,
+                command, answered, response_length, had_sources, sources_used,
+                tokens_used, cost_usd, response_time_ms, confidence, topic
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             interaction.timestamp,
             interaction.user_id,
             interaction.user_name,
             interaction.space_name,
             interaction.question,
+            interaction.response,
             interaction.command,
             interaction.answered,
             interaction.response_length,
             interaction.had_sources,
+            interaction.sources_used,
             interaction.tokens_used,
             interaction.cost_usd,
             interaction.response_time_ms,
             interaction.confidence,
+            interaction.topic,
         ))
         
         conn.commit()
         conn.close()
     
-    def log_suggestion(
-        self,
-        user_id: str,
-        user_name: str,
-        wrong: str,
-        correct: str,
-        topics: list[str],
-    ) -> int:
+    def log_api_usage(self, api_name: str, operation: str, tokens: int, cost: float) -> None:
+        """Log API usage for cost tracking."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO api_usage (timestamp, api_name, operation, tokens_used, cost_usd)
+            VALUES (?, ?, ?, ?, ?)
+        """, (datetime.now().isoformat(), api_name, operation, tokens, cost))
+        
+        conn.commit()
+        conn.close()
+    
+    def log_suggestion(self, user_id: str, user_name: str, wrong: str, correct: str, topics: list[str]) -> int:
         """Log a correction suggestion from team."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -196,14 +258,7 @@ class AnalyticsDB:
         
         return suggestion_id
     
-    def log_correction(
-        self,
-        user_id: str,
-        user_name: str,
-        wrong: str,
-        correct: str,
-        topics: list[str],
-    ) -> int:
+    def log_correction(self, user_id: str, user_name: str, wrong: str, correct: str, topics: list[str]) -> int:
         """Log an admin correction."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -228,12 +283,7 @@ class AnalyticsDB:
         
         return correction_id
     
-    def log_feedback(
-        self,
-        user_id: str,
-        user_name: str,
-        feedback: str,
-    ) -> int:
+    def log_feedback(self, user_id: str, user_name: str, feedback: str) -> int:
         """Log a feature request / feedback."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -255,89 +305,207 @@ class AnalyticsDB:
         
         return feedback_id
     
-    def get_stats(self, days: int = 7) -> dict:
-        """Get usage statistics for the last N days."""
+    def get_stats(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        days: Optional[int] = None
+    ) -> dict:
+        """
+        Get comprehensive statistics for a date range.
+        
+        Args:
+            start_date: ISO format datetime string
+            end_date: ISO format datetime string
+            days: Number of days to look back (alternative to start/end)
+        """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        # Determine date range
+        if days:
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+            where_clause = "WHERE timestamp > ?"
+            params = (cutoff,)
+        elif start_date and end_date:
+            where_clause = "WHERE timestamp BETWEEN ? AND ?"
+            params = (start_date, end_date)
+        elif start_date:
+            where_clause = "WHERE timestamp > ?"
+            params = (start_date,)
+        else:
+            where_clause = ""
+            params = ()
         
         # Total questions
-        cursor.execute("""
-            SELECT COUNT(*) FROM interactions WHERE timestamp > ?
-        """, (cutoff,))
+        cursor.execute(f"SELECT COUNT(*) FROM interactions {where_clause}", params)
         total_questions = cursor.fetchone()[0]
         
         # Success rate
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT COUNT(*) FROM interactions 
-            WHERE timestamp > ? AND answered = 1
-        """, (cutoff,))
+            {where_clause} {"AND" if where_clause else "WHERE"} answered = 1
+        """, params)
         answered = cursor.fetchone()[0]
         success_rate = (answered / total_questions * 100) if total_questions > 0 else 0
         
         # Active users
-        cursor.execute("""
-            SELECT COUNT(DISTINCT user_id) FROM interactions 
-            WHERE timestamp > ?
-        """, (cutoff,))
+        cursor.execute(f"""
+            SELECT COUNT(DISTINCT user_id) FROM interactions {where_clause}
+        """, params)
         active_users = cursor.fetchone()[0]
         
-        # Total cost
-        cursor.execute("""
-            SELECT SUM(cost_usd) FROM interactions 
-            WHERE timestamp > ?
-        """, (cutoff,))
-        total_cost = cursor.fetchone()[0] or 0.0
+        # Total cost (all APIs)
+        cursor.execute(f"""
+            SELECT SUM(cost_usd) FROM interactions {where_clause}
+        """, params)
+        interaction_cost = cursor.fetchone()[0] or 0.0
+        
+        # API costs breakdown
+        api_where = where_clause.replace("timestamp", "api_usage.timestamp") if where_clause else ""
+        cursor.execute(f"""
+            SELECT api_name, SUM(cost_usd) FROM api_usage 
+            {api_where}
+            GROUP BY api_name
+        """, params)
+        api_costs = {row[0]: row[1] for row in cursor.fetchall()}
+        
+        total_cost = interaction_cost + sum(api_costs.values())
         
         # Top users
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT user_name, COUNT(*) as count 
             FROM interactions 
-            WHERE timestamp > ?
+            {where_clause}
             GROUP BY user_id 
             ORDER BY count DESC 
             LIMIT 10
-        """, (cutoff,))
+        """, params)
         top_users = [{"name": row[0], "count": row[1]} for row in cursor.fetchall()]
         
         # Top questions
-        cursor.execute("""
+        cursor.execute(f"""
             SELECT question, COUNT(*) as count 
             FROM interactions 
-            WHERE timestamp > ? AND command IS NULL
+            {where_clause} {"AND" if where_clause else "WHERE"} command IS NULL
             GROUP BY question 
             ORDER BY count DESC 
             LIMIT 20
-        """, (cutoff,))
+        """, params)
         top_questions = [{"question": row[0], "count": row[1]} for row in cursor.fetchall()]
         
+        # Questions by topic
+        cursor.execute(f"""
+            SELECT topic, COUNT(*) as count 
+            FROM interactions 
+            {where_clause}
+            GROUP BY topic 
+            ORDER BY count DESC
+        """, params)
+        topics = [{"topic": row[0], "count": row[1]} for row in cursor.fetchall()]
+        
+        # Failed queries (not answered or low confidence)
+        cursor.execute(f"""
+            SELECT question, response, confidence 
+            FROM interactions 
+            {where_clause} {"AND" if where_clause else "WHERE"} 
+            (answered = 0 OR confidence < 0.7)
+            ORDER BY timestamp DESC
+            LIMIT 20
+        """, params)
+        failed_queries = [{
+            "question": row[0],
+            "response": row[1][:100] if row[1] else "",
+            "confidence": row[2]
+        } for row in cursor.fetchall()]
+        
+        # Slash command usage
+        cursor.execute(f"""
+            SELECT command, COUNT(*) as count 
+            FROM interactions 
+            {where_clause} {"AND" if where_clause else "WHERE"} command IS NOT NULL
+            GROUP BY command 
+            ORDER BY count DESC
+        """, params)
+        command_usage = [{"command": row[0], "count": row[1]} for row in cursor.fetchall()]
+        
+        # Response time stats
+        cursor.execute(f"""
+            SELECT AVG(response_time_ms), MIN(response_time_ms), MAX(response_time_ms)
+            FROM interactions {where_clause}
+        """, params)
+        rt_row = cursor.fetchone()
+        response_time_stats = {
+            "avg_ms": int(rt_row[0]) if rt_row[0] else 0,
+            "min_ms": int(rt_row[1]) if rt_row[1] else 0,
+            "max_ms": int(rt_row[2]) if rt_row[2] else 0,
+        }
+        
         # Pending suggestions
-        cursor.execute("""
-            SELECT COUNT(*) FROM suggestions WHERE status = 'pending'
-        """)
+        cursor.execute("SELECT COUNT(*) FROM suggestions WHERE status = 'pending'")
         pending_suggestions = cursor.fetchone()[0]
         
         # New feedback
-        cursor.execute("""
-            SELECT COUNT(*) FROM feedback WHERE status = 'new'
-        """)
+        cursor.execute("SELECT COUNT(*) FROM feedback WHERE status = 'new'")
         new_feedback = cursor.fetchone()[0]
         
         conn.close()
         
         return {
-            "period_days": days,
+            "date_range": {
+                "start": start_date or (datetime.now() - timedelta(days=days or 7)).isoformat() if days else "all time",
+                "end": end_date or datetime.now().isoformat(),
+                "days": days
+            },
             "total_questions": total_questions,
             "answered": answered,
             "success_rate": round(success_rate, 1),
             "active_users": active_users,
             "total_cost_usd": round(total_cost, 4),
+            "api_costs": {k: round(v, 4) for k, v in api_costs.items()},
             "top_users": top_users,
             "top_questions": top_questions,
+            "topics": topics,
+            "failed_queries": failed_queries,
+            "command_usage": command_usage,
+            "response_time": response_time_stats,
             "pending_suggestions": pending_suggestions,
             "new_feedback": new_feedback,
         }
+    
+    def get_recent_conversations(self, limit: int = 20, user_id: Optional[str] = None) -> list[dict]:
+        """Get recent Q&A conversations with full responses."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        where_clause = "WHERE user_id = ?" if user_id else ""
+        params = (user_id, limit) if user_id else (limit,)
+        
+        cursor.execute(f"""
+            SELECT timestamp, user_name, question, response, sources_used, 
+                   topic, confidence, response_time_ms, cost_usd
+            FROM interactions 
+            {where_clause}
+            ORDER BY timestamp DESC 
+            LIMIT ?
+        """, params)
+        
+        conversations = []
+        for row in cursor.fetchall():
+            conversations.append({
+                "timestamp": row[0],
+                "user_name": row[1],
+                "question": row[2],
+                "response": row[3],
+                "sources": json.loads(row[4]) if row[4] else [],
+                "topic": row[5],
+                "confidence": row[6],
+                "response_time_ms": row[7],
+                "cost_usd": row[8],
+            })
+        
+        conn.close()
+        return conversations
     
     def get_pending_suggestions(self) -> list[dict]:
         """Get all pending suggestions for review."""
@@ -366,16 +534,11 @@ class AnalyticsDB:
         conn.close()
         return suggestions
     
-    def approve_suggestion(
-        self,
-        suggestion_id: int,
-        reviewed_by: str,
-    ) -> dict:
+    def approve_suggestion(self, suggestion_id: int, reviewed_by: str) -> dict:
         """Approve a suggestion and return the correction data."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Get suggestion data
         cursor.execute("""
             SELECT wrong_answer, correct_answer, topics 
             FROM suggestions WHERE id = ?
@@ -388,7 +551,6 @@ class AnalyticsDB:
         
         wrong, correct, topics = row
         
-        # Mark as approved
         cursor.execute("""
             UPDATE suggestions 
             SET status = 'approved', 
@@ -406,11 +568,7 @@ class AnalyticsDB:
             "topics": json.loads(topics) if topics else [],
         }
     
-    def reject_suggestion(
-        self,
-        suggestion_id: int,
-        reviewed_by: str,
-    ) -> None:
+    def reject_suggestion(self, suggestion_id: int, reviewed_by: str) -> None:
         """Reject a suggestion."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -427,7 +585,6 @@ class AnalyticsDB:
         conn.close()
 
 
-# Convenience function for bot_v2.py
 def get_analytics_db() -> AnalyticsDB:
     """Get the analytics database instance."""
     return AnalyticsDB()
