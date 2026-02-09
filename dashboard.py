@@ -5,7 +5,7 @@ Full-featured dashboard with date ranges, conversations, topics, and insights.
 
 from flask import render_template_string, jsonify, request
 from datetime import datetime, timedelta
-from analytics_v2 import AnalyticsDB
+from analytics import AnalyticsDB
 
 # Dashboard HTML template with all features
 DASHBOARD_V2_HTML = """
