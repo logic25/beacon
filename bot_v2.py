@@ -250,7 +250,7 @@ def initialize_app() -> None:
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
 
-def handle_slash_command(command: str, args: str, user_id: str, space_name: str, user_email: str = "") -> str | None:
+def handle_slash_command(command: str, args: str, user_id: str, space_name: str, user_email: str = "", user_display_name: str = "") -> str | None:
     """Handle slash commands from users."""
     command = command.lower().strip()
 
@@ -302,7 +302,7 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
             try:
                 analytics_db.log_correction(
                     user_id=user_id,
-                    user_name=user_id.split('/')[-1],
+                    user_name=user_display_name or user_email or "Unknown User",
                     wrong=wrong,
                     correct=correct,
                     topics=topics or ["General"],
@@ -353,7 +353,7 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
             try:
                 analytics_db.log_suggestion(
                     user_id=user_id,
-                    user_name=user_id.split('/')[-1],
+                    user_name=user_display_name or user_email or "Unknown User",
                     wrong=wrong,
                     correct=suggested,
                     topics=topics or ["General"],
@@ -525,7 +525,7 @@ Daily limits: 100 requests, 100K tokens"""
             from datetime import datetime
             feedback_id = analytics_db.log_feedback(
                 user_id=user_id,
-                user_name=user_id.split('/')[-1],
+                user_name=user_display_name or user_email or "Unknown User",
                 feedback=args.strip(),
             )
             logger.info(f"Feedback {feedback_id} captured from {user_id}")
@@ -539,6 +539,7 @@ Daily limits: 100 requests, 100K tokens"""
 
 def process_message_async(
     user_id: str,
+    user_display_name: str,
     space_name: str,
     user_message: str,
     temp_message_name: str | None,
@@ -708,7 +709,7 @@ def process_message_async(
                 interaction = Interaction(
                     timestamp=datetime.now().isoformat(),
                     user_id=user_id,
-                    user_name=user_id.split('/')[-1],
+                    user_name=user_display_name or "Unknown User",
                     space_name=space_name or "DM",
                     question=user_message,
                     command=None,
@@ -767,6 +768,7 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
         user_data = data.get("user", {})
         user_id = user_data.get("name") or user_data.get("email", "unknown")
         user_email = user_data.get("email", "")
+        user_display_name = user_data.get("displayName", user_email or "Unknown User")
         space_name = data.get("space", {}).get("name", "")
 
         if not space_name:
@@ -781,7 +783,7 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
             command = parts[0]
             args = parts[1] if len(parts) > 1 else ""
 
-            response = handle_slash_command(command, args, user_id, space_name, user_email=user_email)
+            response = handle_slash_command(command, args, user_id, space_name, user_email=user_email, user_display_name=user_display_name)
             if response:
                 chat_client.send_message(space_name, response)
                 return "", 204
@@ -796,7 +798,7 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
         # Process in background thread
         thread = threading.Thread(
             target=process_message_async,
-            args=(user_id, space_name, user_message, temp_message_name),
+            args=(user_id, user_display_name, space_name, user_message, temp_message_name),
             daemon=True,
         )
         thread.start()
