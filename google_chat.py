@@ -186,10 +186,10 @@ class GoogleChatClient:
         if not message_name:
             return MessageResult(success=False, error="No message name provided")
 
-        url = f"{self.BASE_URL}/{message_name}"
+        url = f"{self.BASE_URL}/{message_name}?updateMask=text"
 
         try:
-            response = self._make_request("PUT", url, {"text": text})
+            response = self._make_request("PATCH", url, {"text": text})
 
             if response.status_code == 200:
                 logger.info(f"Message updated successfully: {message_name}")
