@@ -706,7 +706,7 @@ DASHBOARD_V2_HTML = """
 """
 
 
-def add_dashboard_v2_routes(app, analytics_db: AnalyticsDB):
+def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     """Add enhanced dashboard routes to Flask app."""
     
     @app.route("/dashboard")
