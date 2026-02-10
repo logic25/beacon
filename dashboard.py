@@ -1953,7 +1953,13 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     @require_auth
     def roadmap_page():
         """Roadmap page."""
-        roadmap = analytics_db.get_roadmap_summary()
+        try:
+            roadmap = analytics_db.get_roadmap_summary()
+            if roadmap is None:
+                roadmap = {"by_status": {}, "items": []}
+        except Exception as e:
+            logger.error(f"Error getting roadmap: {e}")
+            roadmap = {"by_status": {}, "items": []}
         return render_template_string(ROADMAP_PAGE,
             active_page='roadmap',
             page_title='Roadmap',
