@@ -165,10 +165,15 @@ class ContentEngine:
             
             # Get angle with Claude
             if len(questions) > 0:
+                from session_manager import Message
+                from datetime import datetime
+                
                 angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
+                angle_msg = Message(role="user", content=angle_prompt, timestamp=datetime.now().isoformat())
+                
                 angle = self.claude.get_response(
                     user_message=angle_prompt,
-                    conversation_history=[]
+                    conversation_history=[angle_msg]
                 )
             else:
                 angle = None
@@ -210,12 +215,20 @@ Respond JSON:
   "review_question": "question if uncertain"
 }}"""
         
-        # Import Message class for conversation history
+        # Import Message class and create a proper conversation history
         from session_manager import Message
+        from datetime import datetime
+        
+        # Create a message object with the prompt as user message
+        user_msg = Message(
+            role="user",
+            content=prompt,
+            timestamp=datetime.now().isoformat()
+        )
         
         response = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[]  # Empty list is fine, llm_client handles it
+            conversation_history=[user_msg]  # Pass the message in history
         )
         
         # Parse JSON
@@ -329,9 +342,14 @@ Write 1200-1500 words:
 
 Format: Markdown with # headers"""
 
+        from session_manager import Message
+        from datetime import datetime
+        
+        prompt_msg = Message(role="user", content=prompt, timestamp=datetime.now().isoformat())
+        
         content = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[]
+            conversation_history=[prompt_msg]
         )
         
         # Save generated content
@@ -374,9 +392,14 @@ Format: Markdown with # headers"""
 
 Tone: Direct, actionable"""
 
+        from session_manager import Message
+        from datetime import datetime
+        
+        prompt_msg = Message(role="user", content=prompt, timestamp=datetime.now().isoformat())
+        
         content = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[]
+            conversation_history=[prompt_msg]
         )
         
         # Save
