@@ -419,8 +419,11 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
 </body>
 </html>'''
 
-# Main analytics dashboard - using your existing data structure
-DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
+# ============================================================================
+# SHARED BASE TEMPLATE - Exported for use by other blueprints (content_routes, etc)
+# ============================================================================
+
+BASE_TEMPLATE = '''<!DOCTYPE html>
 <div class="page-header">
     <div class="page-title">📊 Analytics</div>
     <div class="page-subtitle">Beacon bot performance · Auto-refreshes every 30 seconds · {{ user_email }}</div>
