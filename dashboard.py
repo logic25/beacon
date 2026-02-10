@@ -910,8 +910,8 @@ DASHBOARD_V2_HTML = """
         });
         
         function editRoadmapItem(feedbackId) {
-            // Get current values from the row
-            const newStatus = prompt("Roadmap Status:\n- backlog (default)\n- planned\n- in-progress\n- shipped\n- archived", "backlog");
+            // Simpler prompts to avoid rendering issues
+            const newStatus = prompt("Roadmap Status (backlog/planned/in-progress/shipped/archived):", "backlog");
             if (!newStatus) return;
             
             const newPriority = prompt("Priority (low/medium/high):", "medium");
