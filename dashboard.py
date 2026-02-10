@@ -590,7 +590,6 @@ async function rejectSuggestion(id) {
     }
 }
 </script>
-{% endblock %}
 {% endblock %}''')
 
 # Roadmap page (NEW)
@@ -601,7 +600,7 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
 </div>
 
 <div class="grid grid-2">
-    {% for item in roadmap %}
+    {% for item in roadmap.items %}
     <div class="card" style="cursor: pointer;">
         <div style="margin-bottom: 8px;">
             <span class="badge {{ 'badge-success' if item.status == 'shipped' else ('badge-warning' if item.status == 'in_progress' else 'badge-info') }}">
@@ -817,7 +816,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         
         # Get recent conversations
         conversations = []
-        recent = analytics_db.get_conversations(limit=10)
+        recent = analytics_db.get_recent_conversations(limit=10)
         for conv in recent:
             conversations.append({
                 'question': conv.question,
@@ -844,7 +843,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             'api_cost': stats.get('api_cost', '0.00'),
             'avg_response_time': stats.get('avg_response_time', 0),
             'time_range': stats.get('time_range', 'N/A'),
-            'pending_reviews': len(analytics_db.get_suggestions(status='pending')),
+            'pending_reviews': len(analytics_db.get_pending_suggestions()),
             'feedback_count': f"{len(analytics_db.get_suggestions(status='pending'))} new feedback",
             'conversations': conversations,
             'topics': topics,
@@ -855,7 +854,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     @require_auth
     def conversations():
         """Conversations page."""
-        convs = analytics_db.get_conversations(limit=100)
+        convs = analytics_db.get_recent_conversations(limit=100)
         return render_template_string(CONVERSATIONS_PAGE,
             active_page='conversations',
             page_title='Conversations',
@@ -865,7 +864,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     @require_auth
     def feedback_page():
         """Feedback page."""
-        suggestions = analytics_db.get_suggestions(status='pending')
+        suggestions = analytics_db.get_pending_suggestions()
         return render_template_string(FEEDBACK_PAGE,
             active_page='feedback',
             page_title='Feedback',
@@ -875,7 +874,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     @require_auth
     def roadmap_page():
         """Roadmap page."""
-        roadmap_items = analytics_db.get_roadmap() or []
+        roadmap = analytics_db.get_roadmap_summary()
         return render_template_string(ROADMAP_PAGE,
             active_page='roadmap',
             page_title='Roadmap',
