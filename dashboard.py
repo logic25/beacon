@@ -850,18 +850,24 @@ DASHBOARD_V2_HTML = """
                 document.getElementById('command-usage').innerHTML = commandHtml || '<tr><td colspan="2">No commands used</td></tr>';
                 
                 // Suggestions
-                const suggestionsHtml = data.suggestions.map(s => `
-                    <tr onclick="viewSuggestion(${s.id}, \'${s.wrong_answer.replace(/'/g, "\\'")}\', \'${s.correct_answer.replace(/'/g, "\\'")}\', \'${s.user_name}\', \'${s.timestamp}\')" style="cursor: pointer;">
-                    <td>${s.user_name}</td>
-                    <td>${new Date(s.timestamp).toLocaleDateString()}</td>
-                    <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
-                    <td>${s.correct_answer.substring(0, 100)}${s.correct_answer.length > 100 ? '...' : ''}</td>
-                    <td onclick="event.stopPropagation();">
-                        <button class="approve-btn" onclick="approveSuggestion(${s.id})">✓</button>
-                        <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
-                    </td>
-                </tr>
-                `).join('');
+                const suggestionsHtml = data.suggestions.map(s => {
+                    // Escape quotes in text for safe HTML
+                    const wrongEscaped = s.wrong_answer.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+                    const correctEscaped = s.correct_answer.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
+                    
+                    return `
+                    <tr onclick="viewSuggestion(${s.id}, '${wrongEscaped}', '${correctEscaped}', '${s.user_name}', '${s.timestamp}')" style="cursor: pointer;">
+                        <td>${s.user_name}</td>
+                        <td>${new Date(s.timestamp).toLocaleDateString()}</td>
+                        <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
+                        <td>${s.correct_answer.substring(0, 100)}${s.correct_answer.length > 100 ? '...' : ''}</td>
+                        <td onclick="event.stopPropagation();">
+                            <button class="approve-btn" onclick="approveSuggestion(${s.id})">✓</button>
+                            <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
+                        </td>
+                    </tr>
+                `;
+                }).join('');
                 document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
                 
             } catch (error) {
