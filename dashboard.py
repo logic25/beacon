@@ -1144,18 +1144,6 @@ DASHBOARD_V2_HTML = """
                 // Store suggestions data for modal access
                 window.suggestionsData = data.suggestions;
                 
-                // User Feedback - truncated preview
-                const feedbackHtml = data.feedback && data.feedback.length > 0 
-                    ? data.feedback.map(f => `
-                        <tr>
-                            <td>${f.user_name}</td>
-                            <td>${new Date(f.timestamp).toLocaleDateString()}</td>
-                            <td>${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
-                            <td><span class="badge badge-${f.status === 'new' ? 'warning' : 'info'}">${f.status}</span></td>
-                        </tr>
-                    `).join('')
-                    : '<tr><td colspan="4">No feedback yet</td></tr>';
-                document.getElementById('user-feedback').innerHTML = feedbackHtml;
                 
                 // Approved Corrections History - use data attributes for click to expand
                 const correctionsHtml = data.approved_corrections && data.approved_corrections.length > 0

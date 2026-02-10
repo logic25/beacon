@@ -97,6 +97,13 @@ except Exception as e:
     import logging
     logging.error(f"Failed to import analytics/dashboard: {e}", exc_info=True)
 
+# Content Intelligence (optional)
+try:
+    from content_routes import content_bp
+    CONTENT_INTELLIGENCE_AVAILABLE = True
+except ImportError:
+    CONTENT_INTELLIGENCE_AVAILABLE = False
+
 
 def setup_logging(settings: Settings) -> None:
     """Configure application logging."""
@@ -253,6 +260,14 @@ def initialize_app() -> None:
         except Exception as e:
             logger.warning(f"Analytics initialization failed: {e}")
             analytics_db = None
+
+    # Register Content Intelligence blueprint
+    if CONTENT_INTELLIGENCE_AVAILABLE:
+        try:
+            app.register_blueprint(content_bp)
+            logger.info("✅ Content Intelligence dashboard registered at /content-intelligence")
+        except Exception as e:
+            logger.warning(f"Content Intelligence registration failed: {e}")
 
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
