@@ -929,8 +929,14 @@ def health_check() -> tuple[Response, int]:
 
 
 @app.route("/analytics", methods=["GET"])
-def analytics() -> tuple[Response, int]:
-    """Analytics endpoint for dashboard."""
+def analytics() -> str:
+    """Public analytics page with Lovable styling."""
+    return ANALYTICS_PUBLIC_HTML
+
+
+@app.route("/analytics-data", methods=["GET"])
+def analytics_data() -> tuple[Response, int]:
+    """JSON endpoint for analytics data."""
     analytics_data = {
         "status": "ok",
     }
@@ -983,4 +989,205 @@ def main() -> None:
 initialize_app()
 
 if __name__ == "__main__":
-    main()
+    main()# Add this to bot_v2.py - Public analytics page (no OAuth)
+
+ANALYTICS_PUBLIC_HTML = '''<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Beacon Analytics</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --border: #e2e8f0;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --primary: #f59e0b;
+            --success: #22c55e;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            padding: 32px 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            margin-bottom: 32px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .header p {
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 32px;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.2s;
+        }
+        .card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            transform: translateY(-2px);
+        }
+        .card-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .card-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+        .card-sublabel {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .section {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+        .section h2 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+        .question-item {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .question-item:last-child {
+            border-bottom: none;
+        }
+        .question-text {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 8px;
+        }
+        .question-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .badge {
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            background: #fef3c7;
+            color: var(--primary);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔥 Beacon Analytics</h1>
+        <p>Real-time bot performance metrics</p>
+    </div>
+    
+    <div class="grid">
+        <div class="card">
+            <div class="card-label">Total Requests</div>
+            <div class="card-value" id="total-requests">-</div>
+            <div class="card-sublabel">Today</div>
+        </div>
+        
+        <div class="card">
+            <div class="card-label">Active Users</div>
+            <div class="card-value" id="active-users">-</div>
+            <div class="card-sublabel">Unique today</div>
+        </div>
+        
+        <div class="card">
+            <div class="card-label">API Cost</div>
+            <div class="card-value" id="total-cost">$0.00</div>
+            <div class="card-sublabel">Today</div>
+        </div>
+        
+        <div class="card">
+            <div class="card-label">Cache Hit Rate</div>
+            <div class="card-value" id="cache-rate">-%</div>
+            <div class="card-sublabel" id="cache-entries">-</div>
+        </div>
+    </div>
+    
+    <div class="section">
+        <h2>🔥 Top Questions</h2>
+        <div id="top-questions">
+            <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+                Loading...
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function loadAnalytics() {
+            try {
+                const response = await fetch('/analytics-data');
+                const data = await response.json();
+                
+                // Update metrics
+                document.getElementById('total-requests').textContent = data.usage?.total_requests || 0;
+                document.getElementById('active-users').textContent = data.usage?.active_users || 0;
+                document.getElementById('total-cost').textContent = '$' + (data.usage?.total_cost || 0).toFixed(4);
+                
+                const cacheRate = data.cache?.hit_rate || 0;
+                document.getElementById('cache-rate').textContent = (cacheRate * 100).toFixed(0) + '%';
+                document.getElementById('cache-entries').textContent = (data.cache?.total_entries || 0) + ' entries cached';
+                
+                // Render top questions
+                const container = document.getElementById('top-questions');
+                if (data.top_questions && data.top_questions.length > 0) {
+                    container.innerHTML = data.top_questions.slice(0, 10).map(q => `
+                        <div class="question-item">
+                            <div class="question-text">${q.question}</div>
+                            <div class="question-meta">
+                                <span class="badge">${q.category || 'general'}</span>
+                                <span>Asked ${q.count}× today</span>
+                                <span>Last: ${new Date(q.last_asked).toLocaleTimeString()}</span>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    container.innerHTML = '<div style="text-align: center; padding: 40px; color: var(--text-muted);">No questions yet today</div>';
+                }
+                
+            } catch (error) {
+                console.error('Failed to load analytics:', error);
+            }
+        }
+        
+        loadAnalytics();
+        setInterval(loadAnalytics, 30000); // Refresh every 30s
+    </script>
+</body>
+</html>'''
+
+
+
+

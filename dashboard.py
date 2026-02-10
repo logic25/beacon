@@ -1064,40 +1064,6 @@ def require_auth(f):
     return decorated_function
 
 
-def add_dashboard_routes(app, analytics_db: AnalyticsDB):
-    """Add OAuth-protected dashboard routes to Flask app."""
-    
-    @app.route("/login")
-    def login():
-        """Login page with Google OAuth."""
-        if not OAUTH_CONFIGURED:
-            return "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables."
-        
-        # Build OAuth authorization URL
-        from urllib.parse import urlencode
-        
-        params = {
-            'client_id': GOOGLE_OAUTH_CLIENT_ID,
-            'redirect_uri': url_for('oauth_callback', _external=True),
-            'response_type': 'code',
-            'scope': 'openid email profile',
-            'access_type': 'offline',
-            'prompt': 'select_account'
-        }
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
-        return render_template_string(LOGIN_HTML, auth_url=auth_url, error=None)
-    
-    @app.route("/oauth/callback")
-    def oauth_callback():
-        """Handle Google OAuth callback."""
-        if not OAUTH_CONFIGURED:
-            return "OAuth not configured"
-        
-        code = request.args.get('code')
-        if not code:
-            return render_template_string(LOGIN_HTML,
-                error="No authorization code received",
-                auth_url=url_for('login'))
 
 
 
@@ -1216,6 +1182,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         user_email = session.get('user_email', 'Unknown')
         return render_template_string(DASHBOARD_V2_HTML, user_email=user_email)
     
+
     @app.route("/conversations")
     @require_auth
     def conversations():
@@ -1246,7 +1213,6 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             page_title='Roadmap',
             roadmap=roadmap)
     
-
     @app.route("/api/dashboard")
     @require_auth
     def api_dashboard():
