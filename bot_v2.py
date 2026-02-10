@@ -22,7 +22,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from flask import Flask, Response, jsonify, request
+from flask import Flask, redirect, url_for, Response, jsonify, request
 
 from config import Settings, get_settings
 from google_chat import GoogleChatClient
@@ -929,9 +929,9 @@ def health_check() -> tuple[Response, int]:
 
 
 @app.route("/analytics", methods=["GET"])
-def analytics() -> str:
-    """Public analytics page with Lovable styling."""
-    return ANALYTICS_PUBLIC_HTML
+def analytics():
+    """Redirect to OAuth-protected dashboard."""
+    return redirect(url_for('dashboard'))
 
 
 @app.route("/analytics-data", methods=["GET"])
