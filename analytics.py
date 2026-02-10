@@ -534,6 +534,114 @@ class AnalyticsDB:
         conn.close()
         return suggestions
     
+    
+    def get_question_clusters(self, threshold: float = 0.85, min_questions: int = 2) -> list[dict]:
+        """Group similar questions using semantic similarity with Voyage AI."""
+        try:
+            import os
+            voyage_api_key = os.getenv("VOYAGE_API_KEY")
+            if not voyage_api_key:
+                return self._get_exact_questions_fallback()
+            
+            try:
+                from voyageai import Client as VoyageClient
+            except ImportError:
+                logger.warning("voyageai not installed, using exact matching")
+                return self._get_exact_questions_fallback()
+            
+            voyage = VoyageClient(api_key=voyage_api_key)
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT question, COUNT(*) as count
+                FROM interactions
+                WHERE command IS NULL AND question IS NOT NULL AND question != ''
+                GROUP BY question
+                ORDER BY count DESC
+                LIMIT 50
+            """)
+            questions_data = cursor.fetchall()
+            conn.close()
+            
+            if len(questions_data) < min_questions:
+                return self._get_exact_questions_fallback()
+            
+            question_texts = [q[0] for q in questions_data]
+            question_counts = {q[0]: q[1] for q in questions_data}
+            
+            result = voyage.embed(question_texts, model="voyage-2", input_type="document")
+            embeddings = result.embeddings
+            
+            clusters = []
+            used = set()
+            
+            for i, q1 in enumerate(question_texts):
+                if i in used:
+                    continue
+                
+                cluster = {
+                    "representative": q1,
+                    "variations": [q1],
+                    "total_count": question_counts[q1],
+                    "example_variations": [q1]
+                }
+                used.add(i)
+                
+                for j in range(i + 1, len(question_texts)):
+                    if j in used:
+                        continue
+                    
+                    q2 = question_texts[j]
+                    similarity = self._cosine_similarity(embeddings[i], embeddings[j])
+                    
+                    if similarity >= threshold:
+                        cluster["variations"].append(q2)
+                        cluster["total_count"] += question_counts[q2]
+                        if len(cluster["example_variations"]) < 3:
+                            cluster["example_variations"].append(q2)
+                        used.add(j)
+                
+                clusters.append(cluster)
+            
+            clusters.sort(key=lambda x: x["total_count"], reverse=True)
+            return clusters[:20]
+        
+        except Exception as e:
+            logger.error(f"Question clustering failed: {e}", exc_info=True)
+            return self._get_exact_questions_fallback()
+    
+    def _cosine_similarity(self, a: list, b: list) -> float:
+        """Calculate cosine similarity between two vectors."""
+        import math
+        dot_product = sum(x * y for x, y in zip(a, b))
+        mag_a = math.sqrt(sum(x * x for x in a))
+        mag_b = math.sqrt(sum(y * y for y in b))
+        return dot_product / (mag_a * mag_b) if mag_a and mag_b else 0.0
+    
+    def _get_exact_questions_fallback(self) -> list[dict]:
+        """Fallback to exact matching when clustering unavailable."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT question, COUNT(*) as count
+            FROM interactions
+            WHERE command IS NULL AND question IS NOT NULL
+            GROUP BY question
+            ORDER BY count DESC
+            LIMIT 20
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [{
+            "representative": row[0],
+            "variations": [row[0]],
+            "total_count": row[1],
+            "example_variations": [row[0]]
+        } for row in rows]
+
+
     def approve_suggestion(self, suggestion_id: int, reviewed_by: str) -> dict:
         """Approve a suggestion and return the correction data."""
         conn = sqlite3.connect(self.db_path)

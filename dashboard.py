@@ -630,6 +630,41 @@ DASHBOARD_V2_HTML = """
             <div id="conversation-detail"></div>
         </div>
     </div>
+        
+        <!-- Suggestion Detail Modal -->
+        <div class="modal" id="suggestion-modal">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeSuggestionModal()">&times;</span>
+                <h2>📝 Suggestion Details</h2>
+                
+                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                    <strong>Submitted by:</strong> <span id="suggestion-user"></span><br>
+                    <strong>Date:</strong> <span id="suggestion-date"></span>
+                </div>
+                
+                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
+                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
+                    <div class="response-box" id="suggestion-wrong" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
+                    <h3 style="color: #166534;">✅ Correct Answer:</h3>
+                    <div class="response-box" id="suggestion-correct" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div style="margin-top: 20px; text-align: right;">
+                    <button onclick="approveSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
+                            style="background: #22c55e; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px;">
+                        ✓ Approve
+                    </button>
+                    <button onclick="rejectSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
+                            style="background: #ef4444; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;">
+                        ✗ Reject
+                    </button>
+                </div>
+            </div>
+        </div>
+
     
     <script>
         let currentRange = { days: 7 };
@@ -662,6 +697,76 @@ DASHBOARD_V2_HTML = """
             loadData();
         }
         
+        
+        // Clean up response text - remove escape characters and format nicely
+        function cleanResponseText(text) {
+            if (!text) return '';
+            
+            // Remove escape characters
+            text = text.replace(/\\n/g, '\n')
+                      .replace(/\\"/g, '"')
+                      .replace(/\\/g, '');
+            
+            // Remove JSON structure artifacts
+            text = text.replace(/^["']|["']$/g, '');
+            
+            // Truncate to reasonable length for preview
+            const maxLength = 200;
+            if (text.length > maxLength) {
+                text = text.substring(0, maxLength) + '...';
+            }
+            
+            return text;
+        }
+        
+        // Parse sources and extract filenames
+        function formatSources(sourcesJson) {
+            if (!sourcesJson) return 'No sources';
+            
+            try {
+                const sources = JSON.parse(sourcesJson);
+                if (!Array.isArray(sources) || sources.length === 0) {
+                    return 'No sources';
+                }
+                
+                // Extract unique filenames or document titles
+                const sourceNames = sources.map(s => {
+                    // Try to extract filename from path
+                    if (s.metadata && s.metadata.source) {
+                        const path = s.metadata.source;
+                        const filename = path.split('/').pop();
+                        return filename;
+                    }
+                    // Fallback to document number
+                    return s.document || 'Unknown';
+                }).filter((v, i, a) => a.indexOf(v) === i); // unique only
+                
+                return sourceNames.slice(0, 3).join(', ');
+            } catch (e) {
+                return 'Sources available';
+            }
+        }
+
+        
+        // Suggestion modal functions
+        window.currentSuggestionId = null;
+        
+        function viewSuggestion(id, wrongText, correctText, userName, timestamp) {
+            window.currentSuggestionId = id;
+            const modal = document.getElementById('suggestion-modal');
+            document.getElementById('suggestion-user').textContent = userName;
+            document.getElementById('suggestion-date').textContent = new Date(timestamp).toLocaleString();
+            document.getElementById('suggestion-wrong').textContent = wrongText;
+            document.getElementById('suggestion-correct').textContent = correctText;
+            modal.classList.add('active');
+        }
+        
+        function closeSuggestionModal() {
+            document.getElementById('suggestion-modal').classList.remove('active');
+            window.currentSuggestionId = null;
+        }
+        
+
         async function loadData() {
             try {
                 const params = new URLSearchParams(currentRange);
@@ -746,16 +851,16 @@ DASHBOARD_V2_HTML = """
                 
                 // Suggestions
                 const suggestionsHtml = data.suggestions.map(s => `
-                    <tr>
-                        <td>${s.user_name}</td>
-                        <td>${new Date(s.timestamp).toLocaleDateString()}</td>
-                        <td>${s.wrong_answer.substring(0, 50)}...</td>
-                        <td>${s.correct_answer.substring(0, 50)}...</td>
-                        <td>
-                            <button class="btn btn-approve" onclick="approveSuggestion(${s.id})">✓</button>
-                            <button class="btn btn-reject" onclick="rejectSuggestion(${s.id})">✗</button>
-                        </td>
-                    </tr>
+                    <tr onclick="viewSuggestion(${s.id}, \'${s.wrong_answer.replace(/'/g, "\\'")}\', \'${s.correct_answer.replace(/'/g, "\\'")}\', \'${s.user_name}\', \'${s.timestamp}\')" style="cursor: pointer;">
+                    <td>${s.user_name}</td>
+                    <td>${new Date(s.timestamp).toLocaleDateString()}</td>
+                    <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
+                    <td>${s.correct_answer.substring(0, 100)}${s.correct_answer.length > 100 ? '...' : ''}</td>
+                    <td onclick="event.stopPropagation();">
+                        <button class="approve-btn" onclick="approveSuggestion(${s.id})">✓</button>
+                        <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
+                    </td>
+                </tr>
                 `).join('');
                 document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
                 
@@ -1043,6 +1148,14 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             days=days
         )
         
+        # Get question clusters for better grouping
+        try:
+            question_clusters = analytics_db.get_question_clusters(threshold=0.85)
+        except Exception as e:
+            logger.warning(f"Question clustering failed: {e}")
+            question_clusters = []
+
+        
         conversations = analytics_db.get_recent_conversations(limit=20)
         suggestions = analytics_db.get_pending_suggestions()
         
@@ -1050,7 +1163,8 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             **stats,
             "conversations": conversations,
             "suggestions": suggestions,
-        })
+        ,
+            "question_clusters": question_clusters})
     
     @app.route("/api/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     @require_auth

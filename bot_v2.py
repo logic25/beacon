@@ -358,7 +358,23 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
         # Log to analytics
         if analytics_db and ANALYTICS_AVAILABLE:
             try:
-                analytics_db.log_suggestion(
+                # Auto-capture context from last interaction
+                context_info = ""
+                if analytics_db:
+                    try:
+                        recent = analytics_db.get_recent_conversations(limit=1, user_id=user_id)
+                        if recent and len(recent) > 0:
+                            last_q = recent[0]
+                            context_info = (
+                                f"\n\n─── CONTEXT ───\n"
+                                f"Original Question: {last_q['question']}\n"
+                                f"Beacon's Response: {last_q['response'][:300]}...\n"
+                                f"───────────────"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Could not capture context: {e}")
+                
+                                analytics_db.log_suggestion(
                     user_id=user_id,
                     user_name=user_display_name or user_email or "Unknown User",
                     wrong=wrong,
@@ -541,6 +557,31 @@ Daily limits: 100 requests, 100K tokens"""
             logger.error(f"Failed to log feedback: {e}")
             return "❌ Sorry, couldn't save your feedback. Please try again."
 
+
+    # Log slash command interaction
+    if analytics_db and ANALYTICS_AVAILABLE:
+        try:
+            analytics_db.log_interaction(Interaction(
+                timestamp=datetime.now().isoformat(),
+                user_id=user_id,
+                user_name=user_display_name,
+                space_name=space_name or "DM",
+                question=user_message,
+                response=response_text,
+                command=command,
+                answered=True,
+                response_length=len(response_text),
+                had_sources=False,
+                sources_used=None,
+                tokens_used=0,
+                cost_usd=0.0,
+                response_time_ms=0,
+                confidence=None,
+                topic="Command"
+            ))
+        except Exception as log_err:
+            logger.warning(f"Failed to log command interaction: {log_err}")
+    
     return None  # Not a recognized command
 
 
