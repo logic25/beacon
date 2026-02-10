@@ -146,7 +146,7 @@ DASHBOARD_V2_HTML = """
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            background: #f5f7fa;
+            background: #f9fafb;
             padding: 20px;
         }
         .container { max-width: 1600px; margin: 0 auto; }
@@ -217,9 +217,14 @@ DASHBOARD_V2_HTML = """
         }
         .metric-card {
             background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            border: 1px solid #e8ecef;
+            transition: all 0.2s ease;
+        }
+        .metric-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         }
         .metric-value {
             font-size: 36px;
@@ -239,16 +244,20 @@ DASHBOARD_V2_HTML = """
         
         .section {
             background: white;
-            padding: 25px;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 28px;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            border: 1px solid #e8ecef;
             margin-bottom: 20px;
         }
         .section-title {
-            font-size: 20px;
-            color: #2c3e50;
-            margin-bottom: 15px;
+            font-size: 18px;
+            color: #1f2937;
+            margin-bottom: 20px;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
         
         table {
@@ -257,17 +266,26 @@ DASHBOARD_V2_HTML = """
         }
         th {
             text-align: left;
-            padding: 12px;
-            background: #f8f9fa;
-            color: #2c3e50;
+            padding: 14px 16px;
+            background: #f9fafb;
+            color: #374151;
             font-weight: 600;
-            border-bottom: 2px solid #dee2e6;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #e5e7eb;
         }
         td {
-            padding: 12px;
-            border-bottom: 1px solid #dee2e6;
+            padding: 14px 16px;
+            border-bottom: 1px solid #f3f4f6;
+            color: #1f2937;
         }
-        tr:hover { background: #f8f9fa; }
+        tr:hover { 
+            background: #f9fafb;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
         
         .badge {
             display: inline-block;
@@ -350,26 +368,57 @@ DASHBOARD_V2_HTML = """
         .modal-close:hover { color: #2c3e50; }
         
         .conversation-item {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 15px;
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 12px;
             cursor: pointer;
-            border-left: 4px solid #3498db;
+            border: 1px solid #e8ecef;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            transition: all 0.2s ease;
         }
         .conversation-item:hover {
-            background: #e9ecef;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border-color: #d0d7de;
+            transform: translateY(-1px);
         }
         .conversation-question {
             font-weight: 600;
-            color: #2c3e50;
+            color: #1f2937;
             margin-bottom: 8px;
+            font-size: 15px;
+            line-height: 1.5;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .conversation-response-preview {
+            color: #6b7280;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 10px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
         .conversation-meta {
             font-size: 12px;
-            color: #7f8c8d;
+            color: #9ca3af;
             display: flex;
             gap: 15px;
+            align-items: center;
+        }
+        .conversation-meta-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            background: #f3f4f6;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #4b5563;
         }
         
         .response-box {
