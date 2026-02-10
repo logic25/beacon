@@ -529,7 +529,7 @@ def auto_generate_candidates():
         c.execute("""
             SELECT topic, COUNT(*) as count, GROUP_CONCAT(question, '|||') as questions
             FROM analytics
-            WHERE topic IS NOT NULL AND answered = 1
+            WHERE topic IS NOT NULL
             GROUP BY topic
             HAVING count >= 2
             ORDER BY count DESC
