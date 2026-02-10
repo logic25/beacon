@@ -702,18 +702,11 @@ DASHBOARD_V2_HTML = """
         function cleanResponseText(text) {
             if (!text) return '';
             
-            // Remove escape characters
-            text = text.replace(/\\\\n/g, '\n')
-                      .replace(/\\\\"/g, '"')
-                      .replace(/\\\\/g, '');
-            
-            // Remove JSON structure artifacts
-            text = text.replace(/^["']|["']$/g, '');
-            
-            // Truncate to reasonable length for preview
+            // Simply truncate - don't try to clean escape characters
+            // The text should already be properly formatted from the API
             const maxLength = 200;
             if (text.length > maxLength) {
-                text = text.substring(0, maxLength) + '...';
+                return text.substring(0, maxLength) + '...';
             }
             
             return text;
@@ -750,14 +743,18 @@ DASHBOARD_V2_HTML = """
         
         // Suggestion modal functions
         window.currentSuggestionId = null;
+        window.suggestionsData = [];
         
-        function viewSuggestion(id, wrongText, correctText, userName, timestamp) {
+        function viewSuggestion(id) {
+            const suggestion = window.suggestionsData.find(s => s.id === id);
+            if (!suggestion) return;
+            
             window.currentSuggestionId = id;
             const modal = document.getElementById('suggestion-modal');
-            document.getElementById('suggestion-user').textContent = userName;
-            document.getElementById('suggestion-date').textContent = new Date(timestamp).toLocaleString();
-            document.getElementById('suggestion-wrong').textContent = wrongText;
-            document.getElementById('suggestion-correct').textContent = correctText;
+            document.getElementById('suggestion-user').textContent = suggestion.user_name;
+            document.getElementById('suggestion-date').textContent = new Date(suggestion.timestamp).toLocaleString();
+            document.getElementById('suggestion-wrong').textContent = suggestion.wrong_answer;
+            document.getElementById('suggestion-correct').textContent = suggestion.correct_answer;
             modal.classList.add('active');
         }
         
@@ -765,6 +762,15 @@ DASHBOARD_V2_HTML = """
             document.getElementById('suggestion-modal').classList.remove('active');
             window.currentSuggestionId = null;
         }
+        
+        // Add click handler for suggestion rows
+        document.addEventListener('click', function(e) {
+            const row = e.target.closest('.suggestion-row');
+            if (row) {
+                const id = parseInt(row.dataset.id);
+                viewSuggestion(id);
+            }
+        });
         
 
         async function loadData() {
@@ -869,14 +875,13 @@ DASHBOARD_V2_HTML = """
                 `).join('');
                 document.getElementById('command-usage').innerHTML = commandHtml || '<tr><td colspan="2">No commands used</td></tr>';
                 
-                // Suggestions
-                const suggestionsHtml = data.suggestions.map(s => {
-                    // Escape quotes in text for safe HTML
-                    const wrongEscaped = s.wrong_answer.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
-                    const correctEscaped = s.correct_answer.replace(/'/g, "&apos;").replace(/"/g, "&quot;");
-                    
-                    return `
-                    <tr onclick="viewSuggestion(${s.id}, '${wrongEscaped}', '${correctEscaped}', '${s.user_name}', '${s.timestamp}')" style="cursor: pointer;">
+                // Suggestions - use data attributes to avoid escaping issues
+                const suggestionsHtml = data.suggestions.map(s => `
+                    <tr class="suggestion-row" 
+                        data-id="${s.id}"
+                        data-user="${s.user_name}"
+                        data-timestamp="${s.timestamp}"
+                        style="cursor: pointer;">
                         <td>${s.user_name}</td>
                         <td>${new Date(s.timestamp).toLocaleDateString()}</td>
                         <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
@@ -886,9 +891,11 @@ DASHBOARD_V2_HTML = """
                             <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
                         </td>
                     </tr>
-                `;
-                }).join('');
+                `).join('');
                 document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
+                
+                // Store suggestions data for modal access
+                window.suggestionsData = data.suggestions;
                 
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
