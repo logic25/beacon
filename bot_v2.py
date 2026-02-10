@@ -112,6 +112,10 @@ def setup_logging(settings: Settings) -> None:
 # Initialize Flask app
 app = Flask(__name__)
 
+# Configure Flask secret key for sessions (required for OAuth)
+import os
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
+
 # Initialize components (will be set up in main)
 settings: Settings | None = None
 claude_client: ClaudeClient | None = None
