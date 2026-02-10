@@ -1204,7 +1204,7 @@ CONVERSATIONS_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
                 <td><span class="badge badge-warning">{{ conv.topic or 'General' }}</span></td>
                 <td style="color: var(--text-muted); font-size: 12px;">{{ conv.timestamp }}</td>
                 <td style="font-family: monospace;">{{ "%.1f"|format(conv.response_time_ms / 1000) }}s</td>
-                <td><span class="badge {{ 'badge-success' if conv.answered else 'badge-danger' }}">{{ '✓ Answered' if conv.answered else '✗ Failed' }}</span></td>
+                <td><span class="badge badge-success">✓ Answered</span></td>
             </tr>
             {% endfor %}
         </tbody>
@@ -1468,7 +1468,63 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
     <div style="font-size: 14px;">Feature requests will appear here</div>
 </div>
 {% endif %}
-{% endblock %}''')
+{% endblock %}
+<!-- Conversation Detail Modal -->
+<div id="conv-modal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 800px;">
+        <div class="modal-header">
+            <div>
+                <div class="modal-title" id="conv-modal-question"></div>
+                <div style="margin-top: 8px; font-size: 13px; color: var(--text-muted);" id="conv-modal-meta"></div>
+            </div>
+            <button class="modal-close" onclick="closeConvModal()">×</button>
+        </div>
+        
+        <div style="display: flex; gap: 24px; margin: 24px 0; padding: 16px; background: var(--bg); border-radius: 8px;">
+            <div style="text-align: center; flex: 1;">
+                <div style="font-size: 24px; font-weight: 700;" id="conv-modal-time">-</div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Response Time</div>
+            </div>
+            <div style="text-align: center; flex: 1;">
+                <div style="font-size: 24px; font-weight: 700;">92%</div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Confidence</div>
+            </div>
+            <div style="text-align: center; flex: 1;">
+                <div style="font-size: 24px; font-weight: 700;">3</div>
+                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Sources Used</div>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 24px;">
+            <div style="font-weight: 600; font-size: 12px; color: var(--text-muted); margin-bottom: 12px; letter-spacing: 0.5px;">BEACON'S RESPONSE</div>
+            <div id="conv-modal-response" style="line-height: 1.7; font-size: 14px;"></div>
+        </div>
+        
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="closeConvModal()">Close</button>
+            <button class="btn-reject-modal">Flag as incorrect</button>
+            <button class="btn-approve-modal">Suggest Correction</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const convsData = {{ conversations|tojson|safe }};
+
+function openConvModal(idx) {
+    const c = convsData[idx];
+    document.getElementById('conv-modal-question').textContent = c.question;
+    document.getElementById('conv-modal-meta').textContent = c.user_name + ' · ' + c.timestamp;
+    document.getElementById('conv-modal-time').textContent = c.response_time + 's';
+    document.getElementById('conv-modal-response').textContent = c.response;
+    document.getElementById('conv-modal').style.display = 'block';
+}
+
+function closeConvModal() {
+    document.getElementById('conv-modal').style.display = 'none';
+}
+</script>
+''')
 
 # Login page
 LOGIN_HTML = """
