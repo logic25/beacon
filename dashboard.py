@@ -208,6 +208,62 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         .grid { display: grid; gap: 16px; }
         .grid-6 { grid-template-columns: repeat(6, 1fr); }
         .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        
+        /* Mobile Responsive */
+        @media (max-width: 1024px) {
+            .sidebar { width: var(--sidebar-collapsed); }
+            .sidebar .nav-label, .sidebar .sidebar-title { opacity: 0; width: 0; }
+            .main { margin-left: var(--sidebar-collapsed); }
+            .grid-6 { grid-template-columns: repeat(3, 1fr); }
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar { 
+                position: fixed;
+                left: -240px;
+                width: 240px;
+                z-index: 1000;
+                transition: left 0.3s;
+            }
+            .sidebar.mobile-open { left: 0; }
+            .main { margin-left: 0; padding: 16px; }
+            .grid-6 { grid-template-columns: repeat(2, 1fr); }
+            .grid-2 { grid-template-columns: 1fr; }
+            .page-title { font-size: 20px; }
+            table { font-size: 12px; }
+            th, td { padding: 8px; }
+            
+            /* Mobile menu button */
+            .mobile-menu-btn {
+                display: block;
+                position: fixed;
+                top: 16px;
+                left: 16px;
+                z-index: 999;
+                background: var(--card);
+                border: 1px solid var(--border);
+                border-radius: 8px;
+                padding: 8px;
+                cursor: pointer;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .grid-6 { grid-template-columns: 1fr; }
+            .metric-value { font-size: 24px; }
+        }
+        
+        .mobile-menu-btn { display: none; }
+        
+        /* Mobile overlay */
+        .mobile-overlay {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+        }
+        .mobile-overlay.active { display: block; }
         .mb-6 { margin-bottom: 24px; }
         
         .section { background: var(--card); padding: 28px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border: 1px solid var(--border); margin-bottom: 24px; }
@@ -224,6 +280,13 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
     </style>
 </head>
 <body>
+    <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileMenu()"></div>
+    <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
+        <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+    </button>
+    
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
             <div class="logo">B</div>
@@ -317,6 +380,13 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         
         if (localStorage.getItem('darkMode') === 'true') {
             toggleDarkMode();
+        }
+        
+        function toggleMobileMenu() {
+            const sidebar = document.getElementById('sidebar');
+            const overlay = document.getElementById('mobileOverlay');
+            sidebar.classList.toggle('mobile-open');
+            overlay.classList.toggle('active');
         }
         
         {% block extra_js %}{% endblock %}
@@ -924,3 +994,4 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         if suggestion_id:
             analytics_db.reject_suggestion(suggestion_id, session.get('user_email', 'unknown'))
         return jsonify({'status': 'success'})
+
