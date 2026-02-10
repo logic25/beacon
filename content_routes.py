@@ -539,7 +539,6 @@ def auto_generate_candidates():
                     return topic
             return "General"
         
-        import sqlite3
         import json
         from datetime import datetime
         import uuid
@@ -548,19 +547,19 @@ def auto_generate_candidates():
         c = conn.cursor()
         
         # First check total questions
-        c.execute("SELECT COUNT(*) FROM analytics")
+        c.execute("SELECT COUNT(*) FROM interactions")
         total_count = c.fetchone()[0]
         print(f"DEBUG: Total questions in analytics: {total_count}")
         
         # Check questions with topics
-        c.execute("SELECT COUNT(*) FROM analytics WHERE topic IS NOT NULL")
+        c.execute("SELECT COUNT(*) FROM interactions WHERE topic IS NOT NULL")
         with_topics = c.fetchone()[0]
         print(f"DEBUG: Questions with topics: {with_topics}")
         
         # Get topic breakdown
         c.execute("""
             SELECT topic, COUNT(*) as count
-            FROM analytics
+            FROM interactions
             WHERE topic IS NOT NULL
             GROUP BY topic
             ORDER BY count DESC
@@ -569,7 +568,7 @@ def auto_generate_candidates():
         print(f"DEBUG: All topics: {all_topics}")
         
         # Get all questions and detect topics on the fly
-        c.execute("SELECT question FROM analytics")
+        c.execute("SELECT question FROM interactions")
         all_questions = c.fetchall()
         
         # Group by detected topic

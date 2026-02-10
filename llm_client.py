@@ -14,6 +14,29 @@ from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _format_for_google_chat(text: str) -> str:
+    """Format text for Google Chat's limited markdown support."""
+    # Convert ## headers to *bold*
+    text = re.sub(r'^###+\s*(.+)$', r'*\1*', text, flags=re.MULTILINE)
+    
+    # Convert **bold** to *bold*
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    
+    # Remove --- dividers
+    text = re.sub(r'^---+$', '', text, flags=re.MULTILINE)
+    
+    # Convert tables to simple text (remove pipe formatting)
+    text = re.sub(r'\|', ' ', text)
+    
+    # Fix bullet points
+    text = re.sub(r'^\s*[-\*]\s+', '• ', text, flags=re.MULTILINE)
+    
+    # Remove excess blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    
+    return text.strip()
+
 # Expert system prompt for NYC real estate
 SYSTEM_PROMPT = """You are THE definitive expert in all aspects of NYC real estate regulation, including:
 - NYC permit expediting
@@ -220,17 +243,20 @@ class ClaudeClient:
 
             # Apply response filtering
             filtered_response = self.filter.filter_response(raw_response)
+            
+            # Format for Google Chat (strip unsupported markdown)
+            formatted_response = _format_for_google_chat(filtered_response)
 
             # Add source citations if available
             if rag_sources:
-                filtered_response += self._format_citations(rag_sources)
+                formatted_response += self._format_citations(rag_sources)
 
             logger.info(
-                f"Received response: {len(filtered_response)} chars, "
+                f"Received response: {len(formatted_response)} chars, "
                 f"usage: {response.usage.input_tokens} in / {response.usage.output_tokens} out"
             )
 
-            return filtered_response
+            return formatted_response
 
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e}")
@@ -246,16 +272,18 @@ class ClaudeClient:
 DOCUMENT RETRIEVAL CONTEXT - HYBRID APPROACH:
 You have been provided with potentially relevant documents from our internal knowledge base. Use a hybrid strategy:
 
+CRITICAL: Do NOT manually add source citations or references (like "Source: Document 1" or "📚 Source:") in your response. The system automatically appends sources after your answer.
+
 1. **When documents are VERY HIGH relevance (>85% match):**
    - Prioritize document information over your general knowledge
-   - Cite document numbers when using specific facts
+   - Use the information naturally without citing document numbers
    - This is proprietary GLE knowledge that trumps general industry knowledge
 
 2. **When documents are MODERATE relevance (70-85% match):**
    - Use documents to add context to your general knowledge
-   - Note when you're combining document insights with general expertise
-   - Example: "Based on GLE's procedures (Document 1) and general FDNY timelines..."
-   - DO NOT cite these unless they directly support a specific claim
+   - Integrate insights naturally without attribution
+   - Example: "FDNY withdrawal timelines typically run 7-14 business days for fire alarms..."
+   - NOT: "Based on Document 1, FDNY withdrawal timelines..."
 
 3. **When documents are LOW relevance (<70% match):**
    - Ignore these documents completely
@@ -309,27 +337,32 @@ Based on the above documents and your expertise, please answer my question:
         return messages[:-1] + [{"role": "user", "content": enhanced_content}]
 
     def _format_citations(self, sources: list[dict]) -> str:
-        """Format source citations for the response.
+        """Format source citations for Google Chat.
 
         Args:
             sources: List of source document dictionaries
 
         Returns:
-            Formatted citation string
+            Formatted citation string for Google Chat
         """
         if not sources:
             return ""
 
-        lines = ["\n\nðŸ“š **Sources:**"]
+        lines = ["\n\n📚 *Sources:*"]
 
         for i, source in enumerate(sources, 1):
-            line = f"  [{i}] {source.get('file', 'Unknown')}"
-            if source.get("page"):
-                line += f" (p. {source['page']})"
+            # Clean filename for display
+            filename = source.get('file', 'Unknown')
+            display_name = filename.replace('.md', '').replace('_', ' ').title()
+            
+            line = f"• [{i}] {display_name}"
+            
             source_type = source.get("type", "document")
-            line += f" â€” {source_type.replace('_', ' ').title()}"
+            line += f" — {source_type.replace('_', ' ').title()}"
+            
             if source.get("relevance"):
                 line += f" ({source['relevance']} match)"
+                
             lines.append(line)
 
         return "\n".join(lines)
