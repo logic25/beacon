@@ -210,9 +210,12 @@ Respond JSON:
   "review_question": "question if uncertain"
 }}"""
         
+        # Import Message class for conversation history
+        from session_manager import Message
+        
         response = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[]
+            conversation_history=[]  # Empty list is fine, llm_client handles it
         )
         
         # Parse JSON
