@@ -547,8 +547,8 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         if not OAUTH_ENABLED:
             return "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables."
         
-        # Generate Google OAuth URL
-        redirect_uri = url_for('auth_callback', _external=True)
+        # Hardcode redirect URI to fix the redirect_uri_mismatch error
+        redirect_uri = "https://web-production-44b7c.up.railway.app/auth/callback"
         auth_url = (
             f"https://accounts.google.com/o/oauth2/v2/auth?"
             f"client_id={GOOGLE_CLIENT_ID}&"
@@ -573,7 +573,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         try:
             # Exchange code for token
             token_url = "https://oauth2.googleapis.com/token"
-            redirect_uri = url_for('auth_callback', _external=True)
+            redirect_uri = "https://web-production-44b7c.up.railway.app/auth/callback"
             
             token_data = {
                 'code': code,
