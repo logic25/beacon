@@ -199,6 +199,31 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         .badge-danger { background: #fee2e2; color: var(--danger); }
         .badge-warning { background: #fef3c7; color: var(--primary); }
         
+        .tabs {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 24px;
+        }
+        
+        .tab {
+            padding: 12px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .tab:hover { color: var(--text); background: var(--bg); border-radius: 8px 8px 0 0; }
+        .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
         .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.2s; }
         .btn-success { background: var(--success); color: white; }
         .btn-success:hover { background: #16a34a; }
@@ -588,40 +613,78 @@ CONVERSATIONS_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
 </div>
 {% endblock %}''')
 
-# Feedback page (NEW)
+# Feedback page with tabs
 FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
 <div class="page-header">
     <div class="page-title">✅ Feedback & Corrections</div>
     <div class="page-subtitle">Review team suggestions and correction history</div>
 </div>
 
-<div class="section">
-    <h2>Suggestions Queue ({{ suggestions|length }} pending)</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>User</th>
-                <th>When</th>
-                <th>Wrong Answer</th>
-                <th>Correct Answer</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for s in suggestions %}
-            <tr>
-                <td><strong>{{ s.user_name }}</strong></td>
-                <td style="color: var(--text-muted); font-size: 12px;">{{ s.timestamp }}</td>
-                <td style="color: var(--danger); font-size: 13px;">❌ {{ s.wrong_answer }}</td>
-                <td style="color: var(--success); font-size: 13px;">✅ {{ s.correct_answer }}</td>
-                <td>
-                    <button class="btn btn-success" style="margin-right: 8px; font-size: 11px; padding: 6px 12px;" onclick="approveSuggestion({{ s.id }})">Approve</button>
-                    <button class="btn btn-danger" style="font-size: 11px; padding: 6px 12px;" onclick="rejectSuggestion({{ s.id }})">Reject</button>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="tabs mb-6">
+    <button class="tab active" onclick="showTab('pending')">📝 Pending Review <span style="background: #fef3c7; color: #f59e0b; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-left: 4px;">{{ suggestions|length }}</span></button>
+    <button class="tab" onclick="showTab('approved')">✅ Approved History</button>
+    <button class="tab" onclick="showTab('digests')">📧 Weekly Digests</button>
+</div>
+
+<!-- Pending Review Tab -->
+<div id="pending-tab" class="tab-content active">
+    <div class="section">
+        {% if suggestions|length > 0 %}
+        <table>
+            <thead>
+                <tr>
+                    <th>USER</th>
+                    <th>WHEN</th>
+                    <th>WRONG ANSWER</th>
+                    <th>CORRECT ANSWER</th>
+                    <th>ACTIONS</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in suggestions %}
+                <tr>
+                    <td><strong>{{ s.user_name }}</strong></td>
+                    <td style="color: var(--text-muted); font-size: 12px;">{{ s.timestamp }}</td>
+                    <td style="font-size: 13px;"><span style="color: var(--danger); margin-right: 4px;">✗</span><span style="background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">WRONG ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.wrong_answer }}</span></td>
+                    <td style="font-size: 13px;"><span style="color: var(--success); margin-right: 4px;">✓</span><span style="background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-size: 12px;">CORRECT ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.correct_answer }}</span></td>
+                    <td>
+                        <button class="btn btn-success" style="margin-right: 8px; font-size: 11px; padding: 6px 12px;" onclick="approveSuggestion({{ s.id }})">✓ Approve</button>
+                        <button class="btn btn-danger" style="font-size: 11px; padding: 6px 12px;" onclick="rejectSuggestion({{ s.id }})">✗ Reject</button>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
+            <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 16px;">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No pending suggestions</div>
+            <div style="font-size: 14px;">Team corrections will appear here</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Approved History Tab -->
+<div id="approved-tab" class="tab-content">
+    <div class="section">
+        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
+            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Approved corrections history</div>
+            <div style="font-size: 14px;">Coming soon</div>
+        </div>
+    </div>
+</div>
+
+<!-- Weekly Digests Tab -->
+<div id="digests-tab" class="tab-content">
+    <div class="section">
+        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
+            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Weekly digest emails</div>
+            <div style="font-size: 14px;">Coming soon</div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -656,10 +719,17 @@ async function rejectSuggestion(id) {
         alert('Error rejecting suggestion');
     }
 }
+
+function showTab(tabName) {
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
+    document.getElementById(tabName + '-tab').classList.add('active');
+    event.target.classList.add('active');
+}
 </script>
 {% endblock %}''')
 
-# Roadmap page (NEW)
+# Roadmap page with status summary cards
 ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
 <div class="page-header">
     <div class="page-title">🗺️ Product Roadmap</div>
@@ -668,34 +738,41 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
 
 <div class="grid grid-4 mb-6">
     <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('shipped', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">✅ Shipped</div>
+        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('shipped', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted);">✅ Shipped</div>
     </div>
     <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('in-progress', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">🚧 In Progress</div>
+        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('in-progress', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted);">🚧 In Progress</div>
     </div>
     <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('planned', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">📅 Planned</div>
+        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('planned', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted);">📅 Planned</div>
     </div>
     <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('backlog', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">📋 Backlog</div>
+        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('backlog', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted);">📋 Backlog</div>
     </div>
 </div>
 
+{% if roadmap.items_by_status %}
 <div class="grid grid-2">
     {% for status, items in roadmap.items_by_status.items() %}
         {% for item in items %}
         <div class="card" style="cursor: pointer;">
             <div style="margin-bottom: 8px;">
-                <span class="badge {{ 'badge-success' if status == 'shipped' else ('badge-warning' if status == 'in-progress' else 'badge-info') }}">
-                    {{ status.replace('-', ' ').title() }}
-                </span>
+                {% if status == 'shipped' %}
+                <span class="badge badge-success">✅ Shipped</span>
+                {% elif status == 'in-progress' %}
+                <span class="badge badge-warning">🚧 In Progress</span>
+                {% elif status == 'planned' %}
+                <span class="badge" style="background: #dbeafe; color: #3b82f6;">📅 Planned</span>
+                {% else %}
+                <span class="badge" style="background: #f3f4f6; color: #6b7280;">📋 {{ status|title }}</span>
+                {% endif %}
                 {% if item.priority %}
-                <span class="badge {{ 'badge-danger' if item.priority == 'high' else 'badge-warning' }}">
-                    {{ item.priority.title() }} Priority
+                <span class="badge {{ 'badge-danger' if item.priority == 'high' else 'badge-warning' }}" style="margin-left: 4px;">
+                    {{ item.priority|title }} Priority
                 </span>
                 {% endif %}
             </div>
@@ -708,6 +785,15 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
         {% endfor %}
     {% endfor %}
 </div>
+{% else %}
+<div class="section" style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
+    <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 16px;">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+    </svg>
+    <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No roadmap items yet</div>
+    <div style="font-size: 14px;">Feature requests will appear here</div>
+</div>
+{% endif %}
 {% endblock %}''')
 
 # Login page
