@@ -703,9 +703,9 @@ DASHBOARD_V2_HTML = """
             if (!text) return '';
             
             // Remove escape characters
-            text = text.replace(/\\n/g, '\n')
-                      .replace(/\\"/g, '"')
-                      .replace(/\\/g, '');
+            text = text.replace(/\\\\n/g, '\n')
+                      .replace(/\\\\"/g, '"')
+                      .replace(/\\\\/g, '');
             
             // Remove JSON structure artifacts
             text = text.replace(/^["']|["']$/g, '');
