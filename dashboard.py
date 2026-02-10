@@ -135,1237 +135,617 @@ LOGIN_HTML = """
 """
 
 # Dashboard HTML template
-DASHBOARD_V2_HTML = """
-<!DOCTYPE html>
+BASE_TEMPLATE = '''<!DOCTYPE html>
 <html>
 <head>
-    <title>Beacon Analytics Dashboard v2</title>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="UTF-8">
+    <title>Beacon - {{ page_title }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        :root {
+            --bg: #f8fafc;
+            --card: #ffffff;
+            --border: #e2e8f0;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --primary: #f59e0b;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --sidebar-width: 240px;
+            --sidebar-collapsed: 72px;
+        }
+        
+        body.dark {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --border: #334155;
+            --text: #f1f5f9;
+            --text-muted: #cbd5e1;
+        }
+        
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
-            background: #f9fafb;
-            padding: 20px;
-        }
-        .container { max-width: 1600px; margin: 0 auto; }
-        .header-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 10px;
-        }
-        .user-info {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-        }
-        .user-email {
-            font-size: 14px;
-            color: #7f8c8d;
-        }
-        .logout-btn {
-            padding: 8px 16px;
-            background: #e74c3c;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            text-decoration: none;
-        }
-        .logout-btn:hover {
-            background: #c0392b;
-        }
-        h1 { color: #2c3e50; margin-bottom: 10px; font-size: 32px; }
-        .subtitle { color: #7f8c8d; margin-bottom: 20px; font-size: 14px; }
-        
-        /* Date Range Controls */
-        .date-controls {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-            display: flex;
-            gap: 10px;
-            align-items: center;
-            flex-wrap: wrap;
-        }
-        .date-preset {
-            padding: 8px 16px;
-            border: 1px solid #dee2e6;
-            border-radius: 4px;
-            background: white;
-            cursor: pointer;
-            font-size: 14px;
-            transition: all 0.2s;
-        }
-        .date-preset:hover { background: #f8f9fa; }
-        .date-preset.active {
-            background: #3498db;
-            color: white;
-            border-color: #3498db;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            transition: background 0.2s, color 0.2s;
         }
         
-        .metrics {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin-bottom: 30px;
-        }
-        .metric-card {
-            background: white;
-            padding: 24px;
-            border-radius: 12px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-            border: 1px solid #e8ecef;
-            transition: all 0.2s ease;
-        }
-        .metric-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-        }
-        .metric-value {
-            font-size: 36px;
-            font-weight: bold;
-            color: #3498db;
-            margin-bottom: 5px;
-        }
-        .metric-label {
-            color: #7f8c8d;
-            font-size: 14px;
-        }
-        .metric-sublabel {
-            color: #95a5a6;
-            font-size: 12px;
-            margin-top: 4px;
-        }
-        
-        .section {
-            background: white;
-            padding: 28px;
-            border-radius: 12px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-            border: 1px solid #e8ecef;
-            margin-bottom: 20px;
-        }
-        .section-title {
-            font-size: 18px;
-            color: #1f2937;
-            margin-bottom: 20px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th {
-            text-align: left;
-            padding: 14px 16px;
-            background: #f9fafb;
-            color: #374151;
-            font-weight: 600;
-            font-size: 13px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        td {
-            padding: 14px 16px;
-            border-bottom: 1px solid #f3f4f6;
-            color: #1f2937;
-        }
-        tr:hover { 
-            background: #f9fafb;
-        }
-        tr:last-child td {
-            border-bottom: none;
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .badge-pending { background: #fff3cd; color: #856404; }
-        .badge-success { background: #d4edda; color: #155724; }
-        .badge-danger { background: #f8d7da; color: #721c24; }
-        .badge-info { background: #d1ecf1; color: #0c5460; }
-        
-        .btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: opacity 0.2s;
-        }
-        .btn:hover { opacity: 0.9; }
-        .btn-approve { background: #28a745; color: white; }
-        .btn-reject { background: #dc3545; color: white; }
-        .btn-view { background: #17a2b8; color: white; }
-        
-        .refresh-btn {
-            background: #3498db;
-            color: white;
-            padding: 10px 20px;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 14px;
-        }
-        
-        .success-rate {
-            font-size: 36px;
-            font-weight: bold;
-        }
-        .success-rate.high { color: #28a745; }
-        .success-rate.medium { color: #ffc107; }
-        .success-rate.low { color: #dc3545; }
-        
-        /* Modal for conversations */
-        .modal {
-            display: none;
+        .sidebar {
             position: fixed;
-            top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 1000;
+            top: 0;
+            bottom: 0;
+            width: var(--sidebar-width);
+            background: var(--card);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            transition: width 0.2s;
+            z-index: 100;
         }
-        .modal.active {
+        
+        .sidebar.collapsed { width: var(--sidebar-collapsed); }
+        
+        .sidebar-header {
+            height: 64px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .logo {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #f59e0b, #d97706);
             display: flex;
             align-items: center;
             justify-content: center;
+            color: white;
+            font-weight: bold;
+            flex-shrink: 0;
         }
-        .modal-content {
-            background: white;
-            padding: 30px;
-            border-radius: 8px;
-            max-width: 900px;
-            max-height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            position: relative;
-        }
-        .modal-close {
-            position: absolute;
-            top: 15px;
-            right: 20px;
-            cursor: pointer;
-            font-size: 28px;
-            color: #95a5a6;
-        }
-        .modal-close:hover { color: #2c3e50; }
         
-        .conversation-item {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 12px;
-            cursor: pointer;
-            border: 1px solid #e8ecef;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-            transition: all 0.2s ease;
-        }
-        .conversation-item:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-            border-color: #d0d7de;
-            transform: translateY(-1px);
-        }
-        .conversation-question {
-            font-weight: 600;
-            color: #1f2937;
-            margin-bottom: 8px;
-            font-size: 15px;
-            line-height: 1.5;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
+        .sidebar-title {
+            font-family: monospace;
+            font-weight: bold;
+            white-space: nowrap;
             overflow: hidden;
+            transition: opacity 0.2s, width 0.2s;
         }
-        .conversation-response-preview {
-            color: #6b7280;
-            font-size: 14px;
-            line-height: 1.6;
-            margin-bottom: 10px;
-            display: -webkit-box;
-            -webkit-line-clamp: 2;
-            -webkit-box-orient: vertical;
-            overflow: hidden;
-        }
-        .conversation-meta {
-            font-size: 12px;
-            color: #9ca3af;
+        
+        .sidebar.collapsed .sidebar-title { opacity: 0; width: 0; }
+        
+        .nav { padding: 12px; flex: 1; }
+        
+        .nav-item {
             display: flex;
-            gap: 15px;
             align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            text-decoration: none;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
         }
-        .conversation-meta-badge {
-            display: inline-flex;
+        
+        .nav-item:hover { background: var(--bg); color: var(--text); }
+        .nav-item.active { background: #fef3c7; color: var(--primary); }
+        
+        .nav-icon { width: 16px; height: 16px; flex-shrink: 0; }
+        
+        .nav-label {
+            white-space: nowrap;
+            overflow: hidden;
+            transition: opacity 0.2s;
+        }
+        
+        .sidebar.collapsed .nav-label { opacity: 0; width: 0; }
+        
+        .sidebar-footer {
+            padding: 12px;
+            border-top: 1px solid var(--border);
+        }
+        
+        .footer-btn {
+            width: 100%;
+            display: flex;
             align-items: center;
-            padding: 4px 10px;
-            background: #f3f4f6;
+            gap: 12px;
+            padding: 10px 12px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .footer-btn:hover { background: var(--bg); color: var(--text); }
+        
+        .main {
+            margin-left: var(--sidebar-width);
+            padding: 32px 24px;
+            max-width: 1400px;
+            transition: margin-left 0.2s;
+        }
+        
+        .sidebar.collapsed ~ .main { margin-left: var(--sidebar-collapsed); }
+        
+        .page-header { margin-bottom: 32px; }
+        
+        .page-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .page-icon { width: 24px; height: 24px; color: var(--primary); }
+        .page-subtitle { font-size: 14px; color: var(--text-muted); }
+        
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+            transition: all 0.2s;
+        }
+        
+        .card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            transform: translateY(-2px);
+        }
+        
+        .metric-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+        }
+        
+        .metric-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            margin-bottom: 12px;
+        }
+        
+        .metric-value {
+            font-family: 'Courier New', monospace;
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        
+        .metric-label { font-size: 14px; color: var(--text); margin-bottom: 2px; }
+        .metric-sublabel { font-size: 11px; color: var(--text-muted); }
+        .trend-up { color: var(--success); font-size: 11px; font-weight: 600; }
+        
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        .tab {
+            padding: 12px 16px;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-muted);
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
+        
+        .badge {
+            padding: 4px 12px;
             border-radius: 6px;
             font-size: 11px;
-            font-weight: 500;
-            color: #4b5563;
-        }
-        
-        .response-box {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 6px;
-            margin: 15px 0;
-            line-height: 1.6;
-        }
-        
-        .sources-list {
-            margin-top: 15px;
-            padding-left: 20px;
-        }
-        .sources-list li {
-            margin: 5px 0;
-            color: #555;
-        }
-        
-        .topic-pill {
+            font-weight: 600;
             display: inline-block;
-            padding: 4px 10px;
+        }
+        
+        .badge-success { background: #dcfce7; color: var(--success); }
+        .badge-danger { background: #fee2e2; color: var(--danger); }
+        .badge-warning { background: #fef3c7; color: var(--primary); }
+        .badge-info { background: #dbeafe; color: #3b82f6; }
+        
+        .btn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-success { background: var(--success); color: white; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        
+        table { width: 100%; border-collapse: collapse; }
+        
+        th {
+            text-align: left;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 600;
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        td {
+            padding: 12px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border);
+        }
+        
+        tr:hover { background: var(--bg); }
+        
+        .grid { display: grid; gap: 16px; }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        .grid-6 { grid-template-columns: repeat(6, 1fr); }
+        .grid-5-2 { grid-template-columns: 3fr 2fr; }
+        
+        .mb-6 { margin-bottom: 24px; }
+        
+        .conv-card {
+            background: var(--card);
+            border: 1px solid var(--border);
             border-radius: 12px;
-            font-size: 12px;
-            margin-right: 5px;
-        }
-        .topic-zoning { background: #e3f2fd; color: #1565c0; }
-        .topic-dob { background: #fff3e0; color: #e65100; }
-        .topic-dhcr { background: #f3e5f5; color: #6a1b9a; }
-        .topic-violations { background: #ffebee; color: #c62828; }
-        .topic-general { background: #f5f5f5; color: #616161; }
-        
-        .grid-2 {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
+            padding: 20px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
         }
         
-        @media (max-width: 768px) {
-            .grid-2 { grid-template-columns: 1fr; }
-            .metrics { grid-template-columns: 1fr; }
+        .conv-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            border-color: rgba(245, 158, 11, 0.3);
         }
+        
+        .topic-bar {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        
+        .topic-name { font-size: 13px; font-weight: 500; }
+        .topic-count { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+        
+        .progress-bar {
+            height: 8px;
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 6px;
+            margin-bottom: 16px;
+        }
+        
+        .progress-fill { height: 100%; transition: width 0.3s; }
+        
+        .rank { font-family: monospace; font-weight: bold; color: var(--primary); }
+        
+        /* Tab content visibility */
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        /* Animations */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .card, .conv-card, .metric-card {
+            animation: fadeInUp 0.5s ease-out;
+        }
+        
+        .metric-card:nth-child(1) { animation-delay: 0s; }
+        .metric-card:nth-child(2) { animation-delay: 0.1s; }
+        .metric-card:nth-child(3) { animation-delay: 0.2s; }
+        .metric-card:nth-child(4) { animation-delay: 0.3s; }
+        .metric-card:nth-child(5) { animation-delay: 0.4s; }
+        .metric-card:nth-child(6) { animation-delay: 0.5s; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header-bar">
-            <h1>🎯 Beacon Dashboard</h1>
-            <div class="user-info">
-                <span class="user-email">{{ user_email }}</span>
-                <a href="/logout" class="logout-btn">Logout</a>
-            </div>
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="logo">B</div>
+            <span class="sidebar-title">Beacon</span>
         </div>
+        <nav class="nav">
+            <a href="/analytics" class="nav-item {{ 'active' if active_page == 'analytics' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                <span class="nav-label">Analytics</span>
+            </a>
+            <a href="/conversations" class="nav-item {{ 'active' if active_page == 'conversations' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <span class="nav-label">Conversations</span>
+            </a>
+            <a href="/feedback" class="nav-item {{ 'active' if active_page == 'feedback' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                </svg>
+                <span class="nav-label">Feedback</span>
+            </a>
+            <a href="/content" class="nav-item {{ 'active' if active_page == 'content' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                </svg>
+                <span class="nav-label">Content Engine</span>
+            </a>
+            <a href="/roadmap" class="nav-item {{ 'active' if active_page == 'roadmap' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+                </svg>
+                <span class="nav-label">Roadmap</span>
+            </a>
+        </nav>
         
-        <!-- Navigation Tabs -->
-        <div style="display: flex; gap: 8px; margin: 16px 0;">
-            <button onclick="window.location.href='/dashboard'" 
-                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: #e3f2fd; color: #1976d2; border: none;">
-                📊 Analytics
+        <div class="sidebar-footer">
+            <button class="footer-btn" onclick="toggleDarkMode()">
+                <svg class="nav-icon" id="theme-icon-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+                </svg>
+                <svg class="nav-icon" id="theme-icon-dark" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display:none;">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                <span class="nav-label" id="theme-label">Dark Mode</span>
             </button>
-            <button onclick="window.location.href='/content-intelligence'" 
-                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: white; color: #666; border: 1px solid #ddd;">
-                ✨ Content Intelligence
+            
+            <button class="footer-btn" onclick="toggleSidebar()">
+                <svg class="nav-icon" id="collapse-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                </svg>
             </button>
         </div>
-        
-        <div class="subtitle">Enhanced tracking • Auto-refreshes every 30 seconds</div>
-        
-        <button class="refresh-btn" onclick="loadData()">🔄 Refresh Now</button>
-        
-        <!-- Date Range Picker -->
-        <div class="date-controls">
-            <strong>Date Range:</strong>
-            <button class="date-preset active" onclick="setRange(7)">Last 7 Days</button>
-            <button class="date-preset" onclick="setRange(30)">Last 30 Days</button>
-            <button class="date-preset" onclick="setRange('thismonth')">This Month</button>
-            <button class="date-preset" onclick="setRange('lastmonth')">Last Month</button>
-            <button class="date-preset" onclick="setRange('thisyear')">This Year</button>
-            <button class="date-preset" onclick="setRange('all')">All Time</button>
-        </div>
-        
-        <!-- Key Metrics -->
-        <div class="metrics">
-            <div class="metric-card">
-                <div class="metric-value" id="total-questions">-</div>
-                <div class="metric-label">Total Questions</div>
-                <div class="metric-sublabel" id="date-range-display">Last 7 days</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-value" id="success-rate">-</div>
-                <div class="metric-label">Success Rate</div>
-                <div class="metric-sublabel"><span id="answered-count">-</span> answered</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-value" id="active-users">-</div>
-                <div class="metric-label">Active Users</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-value" id="total-cost">-</div>
-                <div class="metric-label">Total API Cost</div>
-                <div class="metric-sublabel" id="cost-breakdown">-</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-value" id="avg-response-time">-</div>
-                <div class="metric-label">Avg Response Time</div>
-                <div class="metric-sublabel" id="response-time-range">-</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-value" id="pending-reviews">-</div>
-                <div class="metric-label">Pending Reviews</div>
-                <div class="metric-sublabel"><span id="new-feedback-count">-</span> new feedback</div>
-            </div>
-        </div>
-        
-        <div class="grid-2">
-            <!-- Recent Conversations -->
-            <div class="section">
-                <div class="section-title">💬 Recent Conversations (Last 10)</div>
-                <div id="recent-conversations">Loading...</div>
-            </div>
-            
-            <!-- Topics Breakdown -->
-            <div class="section">
-                <div class="section-title">📊 Questions by Topic</div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Topic</th>
-                            <th>Count</th>
-                            <th>%</th>
-                        </tr>
-                    </thead>
-                    <tbody id="topics-table">
-                        <tr><td colspan="3">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Top Users -->
-        <div class="section">
-            <div class="section-title">👥 Most Active Users</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>User</th>
-                        <th>Questions Asked</th>
-                    </tr>
-                </thead>
-                <tbody id="top-users">
-                    <tr><td colspan="3">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-        
-        <!-- Top Questions -->
-        <div class="section">
-            <div class="section-title">❓ Most Asked Questions</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Rank</th>
-                        <th>Question</th>
-                        <th>Times Asked</th>
-                    </tr>
-                </thead>
-                <tbody id="top-questions">
-                    <tr><td colspan="3">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="grid-2">
-            <!-- Failed Queries -->
-            <div class="section">
-                <div class="section-title">⚠️ Failed Queries (Need Attention)</div>
-                <div id="failed-queries">Loading...</div>
-            </div>
-            
-            <!-- Command Usage -->
-            <div class="section">
-                <div class="section-title">⚡ Slash Command Usage</div>
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Command</th>
-                            <th>Uses</th>
-                        </tr>
-                    </thead>
-                    <tbody id="command-usage">
-                        <tr><td colspan="2">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        
-        <!-- Suggestions Queue -->
-        <div class="section">
-            <div class="section-title">📝 Suggestions Queue (Pending Review)</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>User</th>
-                        <th>When</th>
-                        <th>Wrong Answer</th>
-                        <th>Correct Answer</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="suggestions-queue">
-                    <tr><td colspan="5">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
+    </aside>
     
-    <!-- Product Roadmap / Feature Tracker -->
-    <div class="grid-item full-width">
-        <div class="section">
-            <div class="section-title">🗺️ Product Roadmap & Feature Tracker</div>
-            
-            <!-- Filter Controls -->
-            <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                <select id="filter-status" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
-                    <option value="">All Statuses</option>
-                    <option value="in-progress">🚧 In Progress</option>
-                    <option value="planned">📅 Planned</option>
-                    <option value="backlog">📋 Backlog</option>
-                    <option value="shipped">✅ Shipped</option>
-                    <option value="archived">🗄️ Archived</option>
-                </select>
-                
-                <select id="filter-priority" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
-                    <option value="">All Priorities</option>
-                    <option value="high">🔴 High</option>
-                    <option value="medium">🟡 Medium</option>
-                    <option value="low">🔵 Low</option>
-                </select>
-                
-                <button onclick="clearFilters()" style="padding: 8px 16px; background: #6b7280; color: white; border: none; border-radius: 6px; cursor: pointer;">
-                    Clear Filters
-                </button>
-            </div>
-            
-            <!-- Roadmap Summary -->
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
-                <div style="background: #dbeafe; padding: 15px; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 24px; font-weight: 600; color: #1e40af;" id="roadmap-shipped">0</div>
-                    <div style="color: #1e40af; font-size: 14px;">✅ Shipped</div>
-                </div>
-                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 24px; font-weight: 600; color: #92400e;" id="roadmap-in-progress">0</div>
-                    <div style="color: #92400e; font-size: 14px;">🚧 In Progress</div>
-                </div>
-                <div style="background: #ddd6fe; padding: 15px; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 24px; font-weight: 600; color: #5b21b6;" id="roadmap-planned">0</div>
-                    <div style="color: #5b21b6; font-size: 14px;">📅 Planned</div>
-                </div>
-                <div style="background: #e5e7eb; padding: 15px; border-radius: 8px; text-align: center;">
-                    <div style="font-size: 24px; font-weight: 600; color: #374151;" id="roadmap-backlog">0</div>
-                    <div style="color: #374151; font-size: 14px;">📋 Backlog</div>
-                </div>
-            </div>
-            
-            <!-- All Feedback/Ideas Table -->
-            <table>
-                <thead>
-                    <tr>
-                        <th>Idea</th>
-                        <th>Requested By</th>
-                        <th>Priority</th>
-                        <th>Status</th>
-                        <th>Target</th>
-                        <th>Notes</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody id="roadmap-items">
-                    <tr><td colspan="7">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <!-- Approved Corrections History -->
-    <div class="grid-item full-width">
-        <div class="section">
-            <div class="section-title">✅ Approved Corrections History</div>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Date Approved</th>
-                        <th>Approved By</th>
-                        <th>What Was Wrong</th>
-                        <th>Correction Applied</th>
-                    </tr>
-                </thead>
-                <tbody id="approved-corrections">
-                    <tr><td colspan="4">Loading...</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-    
-    <!-- Conversation Detail Modal -->
-    <div class="modal" id="conversation-modal">
-        <div class="modal-content">
-            <span class="modal-close" onclick="closeModal()">&times;</span>
-            <div id="conversation-detail"></div>
-        </div>
-    </div>
-        
-        <!-- Suggestion Detail Modal -->
-        <div class="modal" id="suggestion-modal">
-            <div class="modal-content">
-                <span class="modal-close" onclick="closeSuggestionModal()">&times;</span>
-                <h2>📝 Suggestion Details</h2>
-                
-                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
-                    <strong>Submitted by:</strong> <span id="suggestion-user"></span><br>
-                    <strong>Date:</strong> <span id="suggestion-date"></span>
-                </div>
-                
-                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
-                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
-                    <div class="response-box" id="suggestion-wrong" style="white-space: pre-wrap;"></div>
-                </div>
-                
-                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
-                    <h3 style="color: #166534;">✅ Correct Answer:</h3>
-                    <div class="response-box" id="suggestion-correct" style="white-space: pre-wrap;"></div>
-                </div>
-                
-                <div style="margin-top: 20px; text-align: right;">
-                    <button onclick="approveSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
-                            style="background: #22c55e; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px;">
-                        ✓ Approve
-                    </button>
-                    <button onclick="rejectSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
-                            style="background: #ef4444; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;">
-                        ✗ Reject
-                    </button>
-                </div>
-            </div>
-        </div>
-        
-        <!-- Correction Detail Modal -->
-        <div class="modal" id="correction-modal">
-            <div class="modal-content">
-                <span class="modal-close" onclick="closeCorrectionModal()">&times;</span>
-                <h2>✅ Approved Correction Details</h2>
-                
-                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
-                    <strong>Approved by:</strong> <span id="correction-reviewed-by"></span><br>
-                    <strong>Date:</strong> <span id="correction-reviewed-at"></span>
-                </div>
-                
-                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
-                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
-                    <div class="response-box" id="correction-wrong" style="white-space: pre-wrap;"></div>
-                </div>
-                
-                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
-                    <h3 style="color: #166534;">✅ Correction Applied:</h3>
-                    <div class="response-box" id="correction-correct" style="white-space: pre-wrap;"></div>
-                </div>
-            </div>
-        </div>
-
+    <main class="main">
+        {% block content %}{% endblock %}
+    </main>
     
     <script>
-        let currentRange = { days: 7 };
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('collapsed');
+            
+            const icon = document.getElementById('collapse-icon');
+            const path = icon.querySelector('path');
+            
+            if (sidebar.classList.contains('collapsed')) {
+                path.setAttribute('d', 'M9 5l7 7-7 7');
+            } else {
+                path.setAttribute('d', 'M15 19l-7-7 7-7');
+            }
+        }
         
-        function setRange(range) {
-            // Update active button
-            document.querySelectorAll('.date-preset').forEach(btn => {
+        function toggleDarkMode() {
+            document.body.classList.toggle('dark');
+            const isDark = document.body.classList.contains('dark');
+            
+            document.getElementById('theme-icon-light').style.display = isDark ? 'none' : 'block';
+            document.getElementById('theme-icon-dark').style.display = isDark ? 'block' : 'none';
+            document.getElementById('theme-label').textContent = isDark ? 'Light Mode' : 'Dark Mode';
+            
+            localStorage.setItem('darkMode', isDark);
+        }
+        
+        if (localStorage.getItem('darkMode') === 'true') {
+            toggleDarkMode();
+        }
+        
+        function showTab(tabName) {
+            // Hide all tab contents
+            document.querySelectorAll('.tab-content').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // Remove active from all tab buttons
+            document.querySelectorAll('.tab').forEach(btn => {
                 btn.classList.remove('active');
             });
+            
+            // Show selected tab content
+            const selectedContent = document.getElementById(tabName + '-tab');
+            if (selectedContent) {
+                selectedContent.classList.add('active');
+            }
+            
+            // Mark clicked tab as active
             event.target.classList.add('active');
-            
-            // Calculate date range
-            const now = new Date();
-            if (typeof range === 'number') {
-                currentRange = { days: range };
-            } else if (range === 'thismonth') {
-                const start = new Date(now.getFullYear(), now.getMonth(), 1);
-                currentRange = { start: start.toISOString(), end: now.toISOString() };
-            } else if (range === 'lastmonth') {
-                const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-                const end = new Date(now.getFullYear(), now.getMonth(), 0);
-                currentRange = { start: start.toISOString(), end: end.toISOString() };
-            } else if (range === 'thisyear') {
-                const start = new Date(now.getFullYear(), 0, 1);
-                currentRange = { start: start.toISOString(), end: now.toISOString() };
-            } else if (range === 'all') {
-                currentRange = {};
-            }
-            
-            loadData();
         }
         
-        
-        // Clean up response text - remove escape characters and format nicely
-        function cleanResponseText(text) {
-            if (!text) return '';
-            
-            // Simply truncate - don't try to clean escape characters
-            // The text should already be properly formatted from the API
-            const maxLength = 200;
-            if (text.length > maxLength) {
-                return text.substring(0, maxLength) + '...';
-            }
-            
-            return text;
-        }
-        
-        // Parse sources and extract filenames
-        function formatSources(sourcesJson) {
-            if (!sourcesJson) return 'No sources';
-            
-            try {
-                const sources = JSON.parse(sourcesJson);
-                if (!Array.isArray(sources) || sources.length === 0) {
-                    return 'No sources';
-                }
-                
-                // Extract unique filenames or document titles
-                const sourceNames = sources.map(s => {
-                    // Try to extract filename from path
-                    if (s.metadata && s.metadata.source) {
-                        const path = s.metadata.source;
-                        const filename = path.split('/').pop();
-                        return filename;
-                    }
-                    // Fallback to document number
-                    return s.document || 'Unknown';
-                }).filter((v, i, a) => a.indexOf(v) === i); // unique only
-                
-                return sourceNames.slice(0, 3).join(', ');
-            } catch (e) {
-                return 'Sources available';
-            }
-        }
-
-        
-        // Suggestion modal functions
-        window.currentSuggestionId = null;
-        window.suggestionsData = [];
-        window.correctionsData = [];
-        
-        function viewSuggestion(id) {
-            const suggestion = window.suggestionsData.find(s => s.id === id);
-            if (!suggestion) return;
-            
-            window.currentSuggestionId = id;
-            const modal = document.getElementById('suggestion-modal');
-            document.getElementById('suggestion-user').textContent = suggestion.user_name;
-            document.getElementById('suggestion-date').textContent = new Date(suggestion.timestamp).toLocaleString();
-            document.getElementById('suggestion-wrong').textContent = suggestion.wrong_answer;
-            document.getElementById('suggestion-correct').textContent = suggestion.correct_answer;
-            modal.classList.add('active');
-        }
-        
-        function closeSuggestionModal() {
-            document.getElementById('suggestion-modal').classList.remove('active');
-            window.currentSuggestionId = null;
-        }
-        
-        function viewCorrection(id) {
-            const correction = window.correctionsData.find(c => c.id === id);
-            if (!correction) return;
-            
-            const modal = document.getElementById('correction-modal');
-            document.getElementById('correction-reviewed-by').textContent = correction.reviewed_by || 'Unknown';
-            document.getElementById('correction-reviewed-at').textContent = correction.reviewed_at 
-                ? new Date(correction.reviewed_at).toLocaleString() 
-                : 'N/A';
-            document.getElementById('correction-wrong').textContent = correction.wrong_answer;
-            document.getElementById('correction-correct').textContent = correction.correct_answer;
-            modal.classList.add('active');
-        }
-        
-        function closeCorrectionModal() {
-            document.getElementById('correction-modal').classList.remove('active');
-        }
-        
-        // Add click handlers for suggestion and correction rows
-        document.addEventListener('click', function(e) {
-            const suggestionRow = e.target.closest('.suggestion-row');
-            if (suggestionRow) {
-                const id = parseInt(suggestionRow.dataset.id);
-                viewSuggestion(id);
-                return;
-            }
-            
-            const correctionRow = e.target.closest('.correction-row');
-            if (correctionRow) {
-                const id = parseInt(correctionRow.dataset.id);
-                viewCorrection(id);
-            }
-        });
-        
-        function editRoadmapItem(feedbackId) {
-            // Simpler prompts to avoid rendering issues
-            const newStatus = prompt("Roadmap Status (backlog/planned/in-progress/shipped/archived):", "backlog");
-            if (!newStatus) return;
-            
-            const newPriority = prompt("Priority (low/medium/high):", "medium");
-            const newTarget = prompt("Target Quarter (e.g., Q2 2026):");
-            const newNotes = prompt("Internal Notes (optional):");
-            
-            // Save via API
-            fetch(`/api/roadmap/${feedbackId}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    roadmap_status: newStatus,
-                    priority: newPriority,
-                    target_quarter: newTarget,
-                    notes: newNotes
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'ok') {
-                    alert('✅ Roadmap updated successfully!');
-                    loadData(); // Refresh dashboard
-                } else {
-                    alert('❌ Error: ' + data.message);
-                }
-            })
-            .catch(err => {
-                alert('❌ Failed to update: ' + err.message);
-            });
-        }
-        
-        // Store all feedback for filtering
-        window.allFeedback = [];
-        
-        function filterRoadmap() {
-            const statusFilter = document.getElementById('filter-status').value;
-            const priorityFilter = document.getElementById('filter-priority').value;
-            
-            let filtered = window.allFeedback;
-            
-            if (statusFilter) {
-                filtered = filtered.filter(f => f.roadmap_status === statusFilter);
-            }
-            
-            if (priorityFilter) {
-                filtered = filtered.filter(f => f.priority === priorityFilter);
-            }
-            
-            renderRoadmapTable(filtered);
-        }
-        
-        function clearFilters() {
-            document.getElementById('filter-status').value = '';
-            document.getElementById('filter-priority').value = '';
-            renderRoadmapTable(window.allFeedback);
-        }
-        
-        function renderRoadmapTable(feedbackItems) {
-            const statusColors = {
-                'shipped': 'background: #dbeafe; color: #1e40af;',
-                'in-progress': 'background: #fef3c7; color: #92400e;',
-                'planned': 'background: #ddd6fe; color: #5b21b6;',
-                'backlog': 'background: #e5e7eb; color: #374151;',
-                'archived': 'background: #f3f4f6; color: #6b7280;'
-            };
-            const priorityColors = {
-                'high': 'background: #fee2e2; color: #991b1b;',
-                'medium': 'background: #fef3c7; color: #92400e;',
-                'low': 'background: #e0f2fe; color: #075985;'
-            };
-            
-            // Helper function to escape HTML
-            const escapeHtml = (text) => {
-                const div = document.createElement('div');
-                div.textContent = text;
-                return div.innerHTML;
-            };
-            
-            const roadmapHtml = feedbackItems && feedbackItems.length > 0
-                ? feedbackItems.map(f => {
-                    const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
-                    const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
-                    
-                    // Escape and truncate text safely
-                    const feedbackPreview = escapeHtml(f.feedback_text.substring(0, 100)) + (f.feedback_text.length > 100 ? '...' : '');
-                    const notesPreview = f.notes ? (escapeHtml(f.notes.substring(0, 50)) + (f.notes.length > 50 ? '...' : '')) : '-';
-                    
-                    return `
-                        <tr>
-                            <td style="max-width: 300px;">${feedbackPreview}</td>
-                            <td>${escapeHtml(f.user_name)}</td>
-                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
-                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
-                            <td>${f.target_quarter || '-'}</td>
-                            <td style="max-width: 200px; font-size: 12px; color: #6b7280;">${notesPreview}</td>
-                            <td>
-                                <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
-                            </td>
-                        </tr>
-                    `;
-                }).join('')
-                : '<tr><td colspan="7">No items match filters</td></tr>';
-            
-            document.getElementById('roadmap-items').innerHTML = roadmapHtml;
-        }
-
-        async function loadData() {
-            try {
-                const params = new URLSearchParams(currentRange);
-                const response = await fetch('/api/dashboard?' + params);
-                const data = await response.json();
-                
-                // Update metrics
-                document.getElementById('total-questions').textContent = data.total_questions;
-                
-                const successRate = data.success_rate;
-                const successEl = document.getElementById('success-rate');
-                successEl.textContent = successRate + '%';
-                successEl.className = 'metric-value success-rate ' + 
-                    (successRate >= 80 ? 'high' : successRate >= 60 ? 'medium' : 'low');
-                
-                document.getElementById('answered-count').textContent = data.answered;
-                document.getElementById('active-users').textContent = data.active_users;
-                document.getElementById('total-cost').textContent = '$' + data.total_cost_usd.toFixed(2);
-                
-                // Cost breakdown
-                const costParts = [];
-                if (data.api_costs.anthropic) costParts.push(`Claude: $${data.api_costs.anthropic.toFixed(2)}`);
-                if (data.api_costs.pinecone) costParts.push(`Pinecone: $${data.api_costs.pinecone.toFixed(2)}`);
-                if (data.api_costs.voyage) costParts.push(`Voyage: $${data.api_costs.voyage.toFixed(2)}`);
-                document.getElementById('cost-breakdown').textContent = costParts.join(' • ') || 'N/A';
-                
-                // Response time
-                document.getElementById('avg-response-time').textContent = 
-                    (data.response_time.avg_ms / 1000).toFixed(1) + 's';
-                document.getElementById('response-time-range').textContent = 
-                    `${(data.response_time.min_ms / 1000).toFixed(1)}s - ${(data.response_time.max_ms / 1000).toFixed(1)}s`;
-                
-                document.getElementById('pending-reviews').textContent = data.pending_suggestions;
-                document.getElementById('new-feedback-count').textContent = data.new_feedback;
-                
-                // Date range display
-                if (currentRange.days) {
-                    document.getElementById('date-range-display').textContent = `Last ${currentRange.days} days`;
-                } else if (currentRange.start) {
-                    document.getElementById('date-range-display').textContent = 'Custom range';
-                } else {
-                    document.getElementById('date-range-display').textContent = 'All time';
-                }
-                
-                // Recent conversations
-                displayConversations(data.conversations);
-                
-                // Topics
-                displayTopics(data.topics, data.total_questions);
-                
-                // Top users
-                const usersHtml = data.top_users.map((user, i) => `
-                    <tr>
-                        <td>${i + 1}</td>
-                        <td>${user.name}</td>
-                        <td>${user.count}</td>
-                    </tr>
-                `).join('');
-                document.getElementById('top-users').innerHTML = usersHtml || '<tr><td colspan="3">No data yet</td></tr>';
-                
-                // Helper for HTML escaping (defined here for questions)
-                const escapeHtml = (text) => {
-                    if (!text) return '';
-                    const div = document.createElement('div');
-                    div.textContent = text;
-                    return div.innerHTML;
-                };
-                
-                // Top questions - handle both clustered and regular format
-                let questionsHtml;
-                if (data.question_clusters && data.question_clusters.length > 0) {
-                    // Use clustered questions
-                    questionsHtml = data.question_clusters.map((cluster, i) => {
-                        const variationsText = cluster.variations && cluster.variations.length > 1 
-                            ? ` <span style="color: #6b7280; font-size: 12px;">(+${cluster.variations.length - 1} similar)</span>`
-                            : '';
-                        const exampleVars = cluster.example_variations ? escapeHtml(cluster.example_variations.slice(1, 3).join('; ')) : '';
-                        return `
-                        <tr title="${exampleVars}">
-                            <td>${i + 1}</td>
-                            <td>${escapeHtml(cluster.representative)}${variationsText}</td>
-                            <td>${cluster.total_count}</td>
-                        </tr>
-                    `;
-                    }).join('');
-                } else if (data.top_questions && data.top_questions.length > 0) {
-                    // Fall back to regular top questions
-                    questionsHtml = data.top_questions.map((q, i) => `
-                        <tr>
-                            <td>${i + 1}</td>
-                            <td>${escapeHtml(q.question)}</td>
-                            <td>${q.count}</td>
-                        </tr>
-                    `).join('');
-                } else {
-                    questionsHtml = '';
-                }
-                document.getElementById('top-questions').innerHTML = questionsHtml || '<tr><td colspan="3">No questions yet</td></tr>';
-                
-                // Failed queries
-                displayFailedQueries(data.failed_queries);
-                
-                // Command usage
-                const commandHtml = (data.command_usage && data.command_usage.length > 0)
-                    ? data.command_usage.map(c => `
-                        <tr>
-                            <td>${c.command}</td>
-                            <td>${c.count}</td>
-                        </tr>
-                    `).join('')
-                    : '<tr><td colspan="2">No commands used yet (use slash commands like /suggest, /help, /stats)</td></tr>';
-                document.getElementById('command-usage').innerHTML = commandHtml;
-                
-                // Suggestions - use data attributes to avoid escaping issues
-                const suggestionsHtml = data.suggestions.map(s => `
-                    <tr class="suggestion-row" 
-                        data-id="${s.id}"
-                        data-user="${s.user_name}"
-                        data-timestamp="${s.timestamp}"
-                        style="cursor: pointer;">
-                        <td>${s.user_name}</td>
-                        <td>${new Date(s.timestamp).toLocaleDateString()}</td>
-                        <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
-                        <td>${s.correct_answer.substring(0, 100)}${s.correct_answer.length > 100 ? '...' : ''}</td>
-                        <td onclick="event.stopPropagation();">
-                            <button class="approve-btn" onclick="approveSuggestion(${s.id})">✓</button>
-                            <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
-                        </td>
-                    </tr>
-                `).join('');
-                document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
-                
-                // Store suggestions data for modal access
-                window.suggestionsData = data.suggestions;
-                
-                
-                // Approved Corrections History - use data attributes for click to expand
-                const correctionsHtml = data.approved_corrections && data.approved_corrections.length > 0
-                    ? data.approved_corrections.map(c => `
-                        <tr class="correction-row" 
-                            data-id="${c.id}"
-                            data-reviewed-at="${c.reviewed_at || ''}"
-                            data-reviewed-by="${c.reviewed_by || 'Unknown'}"
-                            style="cursor: pointer;">
-                            <td>${c.reviewed_at ? new Date(c.reviewed_at).toLocaleString() : 'N/A'}</td>
-                            <td>${c.reviewed_by || 'Unknown'}</td>
-                            <td>${c.wrong_answer.substring(0, 80)}${c.wrong_answer.length > 80 ? '...' : ''}</td>
-                            <td>${c.correct_answer.substring(0, 80)}${c.correct_answer.length > 80 ? '...' : ''}</td>
-                        </tr>
-                    `).join('')
-                    : '<tr><td colspan="4">No approved corrections yet</td></tr>';
-                document.getElementById('approved-corrections').innerHTML = correctionsHtml;
-                
-                // Store corrections data for modal
-                window.correctionsData = data.approved_corrections;
-                
-                // Roadmap Summary
-                const roadmapSummary = data.roadmap_summary || { by_status: {} };
-                document.getElementById('roadmap-shipped').textContent = roadmapSummary.by_status['shipped'] || 0;
-                document.getElementById('roadmap-in-progress').textContent = roadmapSummary.by_status['in-progress'] || 0;
-                document.getElementById('roadmap-planned').textContent = roadmapSummary.by_status['planned'] || 0;
-                document.getElementById('roadmap-backlog').textContent = roadmapSummary.by_status['backlog'] || 0;
-                
-                // Store all feedback for filtering
-                window.allFeedback = data.feedback || [];
-                
-                // Render roadmap table (respecting current filters)
-                filterRoadmap();
-                
-            } catch (error) {
-                console.error('Error loading dashboard data:', error);
-            }
-        }
-        
-        function displayConversations(conversations) {
-            if (!conversations || conversations.length === 0) {
-                document.getElementById('recent-conversations').innerHTML = '<p>No conversations yet</p>';
-                return;
-            }
-            
-            const html = conversations.slice(0, 10).map(conv => {
-                const topicClass = 'topic-' + conv.topic.toLowerCase().replace(/ /g, '-');
-                // Truncate question and response for preview
-                const questionPreview = conv.question.length > 100 
-                    ? conv.question.substring(0, 100) + '...' 
-                    : conv.question;
-                const responsePreview = conv.response 
-                    ? (conv.response.length > 150 
-                        ? conv.response.substring(0, 150) + '...' 
-                        : conv.response)
-                    : 'No response';
-                
-                return `
-                    <div class="conversation-item" onclick='showConversation(${JSON.stringify(conv)})' style="cursor: pointer;">
-                        <div class="conversation-question" style="font-weight: 600; margin-bottom: 8px;">${questionPreview}</div>
-                        <div class="conversation-response" style="color: #6b7280; font-size: 14px; margin-bottom: 8px;">${responsePreview}</div>
-                        <div class="conversation-meta">
-                            <span>👤 ${conv.user_name}</span>
-                            <span>🕐 ${new Date(conv.timestamp).toLocaleString()}</span>
-                            <span class="topic-pill ${topicClass}">${conv.topic}</span>
-                        </div>
-                    </div>
-                `;
-            }).join('');
-            
-            document.getElementById('recent-conversations').innerHTML = html;
-        }
-        
-        function displayTopics(topics, total) {
-            if (!topics || topics.length === 0) {
-                document.getElementById('topics-table').innerHTML = '<tr><td colspan="3">No data yet</td></tr>';
-                return;
-            }
-            
-            const html = topics.map(t => {
-                const pct = ((t.count / total) * 100).toFixed(1);
-                return `
-                    <tr>
-                        <td>${t.topic}</td>
-                        <td>${t.count}</td>
-                        <td>${pct}%</td>
-                    </tr>
-                `;
-            }).join('');
-            
-            document.getElementById('topics-table').innerHTML = html;
-        }
-        
-        function displayFailedQueries(queries) {
-            if (!queries || queries.length === 0) {
-                document.getElementById('failed-queries').innerHTML = '<p>No failed queries - great job!</p>';
-                return;
-            }
-            
-            const html = queries.map(q => `
-                <div class="conversation-item" style="border-left-color: #dc3545;">
-                    <div class="conversation-question">${q.question}</div>
-                    <div class="conversation-meta">
-                        <span class="badge badge-danger">Confidence: ${q.confidence ? (q.confidence * 100).toFixed(0) + '%' : 'N/A'}</span>
-                    </div>
-                </div>
-            `).join('');
-            
-            document.getElementById('failed-queries').innerHTML = html;
-        }
-        
-        function showConversation(conv) {
-            const sources = conv.sources && conv.sources.length > 0 ? 
-                '<div class="sources-list"><strong>Sources:</strong><ul>' + 
-                conv.sources.map(s => `<li>${s}</li>`).join('') +
-                '</ul></div>' : '';
-            
-            const html = `
-                <h2>Conversation Detail</h2>
-                <div style="margin: 20px 0;">
-                    <strong>👤 ${conv.user_name}</strong> • 
-                    <span>${new Date(conv.timestamp).toLocaleString()}</span> • 
-                    <span class="topic-pill topic-${conv.topic.toLowerCase().replace(/ /g, '-')}">${conv.topic}</span>
-                </div>
-                <div>
-                    <h3>Question:</h3>
-                    <div class="response-box">${conv.question}</div>
-                </div>
-                <div>
-                    <h3>Response:</h3>
-                    <div class="response-box">${conv.response || 'No response recorded'}</div>
-                </div>
-                ${sources}
-                <div style="margin-top: 20px; font-size: 12px; color: #7f8c8d;">
-                    ⏱️ Response time: ${conv.response_time_ms}ms • 
-                    💰 Cost: $${(conv.cost_usd || 0).toFixed(4)}
-                </div>
-            `;
-            
-            document.getElementById('conversation-detail').innerHTML = html;
-            document.getElementById('conversation-modal').classList.add('active');
-        }
-        
-        function closeModal() {
-            document.getElementById('conversation-modal').classList.remove('active');
-        }
-        
-        async function approveSuggestion(id) {
-            if (!confirm('Approve this suggestion? It will be applied immediately.')) return;
-            
-            try {
-                const response = await fetch('/api/suggestions/' + id + '/approve', {
-                    method: 'POST'
-                });
-                if (response.ok) {
-                    alert('✅ Suggestion approved!');
-                    loadData();
-                } else {
-                    alert('❌ Error approving suggestion');
-                }
-            } catch (error) {
-                alert('❌ Error: ' + error.message);
-            }
-        }
-        
-        async function rejectSuggestion(id) {
-            if (!confirm('Reject this suggestion?')) return;
-            
-            try {
-                const response = await fetch('/api/suggestions/' + id + '/reject', {
-                    method: 'POST'
-                });
-                if (response.ok) {
-                    alert('✅ Suggestion rejected');
-                    loadData();
-                } else {
-                    alert('❌ Error rejecting suggestion');
-                }
-            } catch (error) {
-                alert('❌ Error: ' + error.message);
-            }
-        }
-        
-        // Load data on page load
-        loadData();
-        
-        // Auto-refresh every 30 seconds
-        setInterval(loadData, 30000);
-        
-        // Close modal on outside click
-        window.onclick = function(event) {
-            const modal = document.getElementById('conversation-modal');
-            if (event.target == modal) {
-                closeModal();
-            }
-        }
+        {% block extra_js %}{% endblock %}
     </script>
 </body>
-</html>
-"""
+</html>'''
+
+DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
+<div class="page-header">
+    <div class="page-title">📊 Analytics</div>
+    <div class="page-subtitle">Beacon bot performance · Auto-refreshes every 30 seconds · {{ user_email }}</div>
+</div>
+
+<div class="grid grid-6 mb-6">
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #fef3c7;">💬</div>
+        <div class="metric-value" id="total-questions">-</div>
+        <div class="metric-label">Total Questions</div>
+        <div class="metric-sublabel">Last 7 days</div>
+    </div>
+    
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #dcfce7;">✅</div>
+        <div class="metric-value" id="success-rate">-</div>
+        <div class="metric-label">Success Rate</div>
+        <div class="metric-sublabel" id="answered-count">-</div>
+    </div>
+    
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #dbeafe;">👥</div>
+        <div class="metric-value" id="active-users">-</div>
+        <div class="metric-label">Active Users</div>
+        <div class="metric-sublabel">N/A</div>
+    </div>
+    
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #fef3c7;">💰</div>
+        <div class="metric-value" id="api-cost">$0.00</div>
+        <div class="metric-label">Total API Cost</div>
+        <div class="metric-sublabel">N/A</div>
+    </div>
+    
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #e0e7ff;">⏱️</div>
+        <div class="metric-value" id="avg-time">0s</div>
+        <div class="metric-label">Avg Response Time</div>
+        <div class="metric-sublabel" id="time-range">N/A</div>
+    </div>
+    
+    <div class="metric-card">
+        <div class="metric-icon" style="background: #fce7f3;">📝</div>
+        <div class="metric-value" id="pending-reviews">0</div>
+        <div class="metric-label">Pending Reviews</div>
+        <div class="metric-sublabel" id="feedback-count">0 new feedback</div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>💬 Recent Conversations (Last 10)</h2>
+    <table id="conversations-table">
+        <thead>
+            <tr>
+                <th>Question</th>
+                <th>User</th>
+                <th>Topic</th>
+                <th>When</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+<div class="grid grid-2">
+    <div class="section">
+        <h2>📊 Questions by Topic</h2>
+        <div id="topics-breakdown"></div>
+    </div>
+    
+    <div class="section">
+        <h2>⚡ Slash Command Usage</h2>
+        <div id="slash-commands"></div>
+    </div>
+</div>
+
+<script>
+async function loadDashboardData() {
+    try {
+        const response = await fetch('/api/dashboard?days=7');
+        const data = await response.json();
+        
+        document.getElementById('total-questions').textContent = data.total_questions || 0;
+        document.getElementById('success-rate').textContent = data.success_rate ? data.success_rate + '%' : '0%';
+        document.getElementById('answered-count').textContent = (data.answered || 0) + ' answered';
+        document.getElementById('active-users').textContent = data.active_users || 0;
+        document.getElementById('api-cost').textContent = '$' + (data.total_cost_usd || '0.00');
+        document.getElementById('avg-time').textContent = data.response_time && data.response_time.avg_ms ? (data.response_time.avg_ms / 1000).toFixed(1) + 's' : '0s';
+        document.getElementById('pending-reviews').textContent = data.pending_suggestions || 0;
+        document.getElementById('feedback-count').textContent = (data.new_feedback || 0) + ' new feedback';
+        
+        const tbody = document.querySelector('#conversations-table tbody');
+        tbody.innerHTML = '';
+        (data.conversations || []).slice(0, 10).forEach(conv => {
+            const row = tbody.insertRow();
+            row.innerHTML = `
+                <td><strong>${conv.question || 'N/A'}</strong></td>
+                <td>${conv.user_name || 'Unknown'}</td>
+                <td><span class="badge">${conv.topic || 'General'}</span></td>
+                <td style="color: var(--text-muted); font-size: 12px;">${conv.timestamp || ''}</td>
+                <td><span class="badge ${conv.answered ? 'badge-success' : 'badge-danger'}">${conv.answered ? '✓ Answered' : '✗ Failed'}</span></td>
+            `;
+        });
+        
+        const topicsDiv = document.getElementById('topics-breakdown');
+        topicsDiv.innerHTML = '';
+        const totalQ = data.total_questions || 1;
+        (data.topics || []).forEach(t => {
+            const pct = Math.round((t.count / totalQ) * 100);
+            topicsDiv.innerHTML += `
+                <div style="margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-size: 13px; font-weight: 500;">${t.topic}</span>
+                        <span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">${t.count} (${pct}%)</span>
+                    </div>
+                    <div style="height: 8px; background: var(--border); border-radius: 4px; overflow: hidden;">
+                        <div style="height: 100%; width: ${pct}%; background: var(--primary);"></div>
+                    </div>
+                </div>
+            `;
+        });
+        
+        const slashDiv = document.getElementById('slash-commands');
+        slashDiv.innerHTML = '';
+        (data.command_usage || []).forEach(cmd => {
+            const pct = Math.round((cmd.count / totalQ) * 100);
+            slashDiv.innerHTML += `
+                <div style="margin-bottom: 16px;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-size: 13px; font-weight: 500;">/${cmd.command}</span>
+                        <span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">${cmd.count} (${pct}%)</span>
+                    </div>
+                    <div style="height: 8px; background: var(--border); border-radius: 4px; overflow: hidden;">
+                        <div style="height: 100%; width: ${pct}%; background: var(--primary);"></div>
+                    </div>
+                </div>
+            `;
+        });
+    } catch (error) {
+        console.error('Failed to load dashboard data:', error);
+    }
+}
+
+loadDashboardData();
+setInterval(loadDashboardData, 30000);
+</script>
+{% endblock %}''')
+
+
 
 
 def require_auth(f):
