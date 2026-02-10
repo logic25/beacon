@@ -165,11 +165,10 @@ class ContentEngine:
             
             # Get angle with Claude
             if len(questions) > 0:
-                from session_manager import Message
-                from datetime import datetime
+                from llm_client import Message
                 
                 angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
-                angle_msg = Message(role="user", content=angle_prompt, timestamp=datetime.now().isoformat())
+                angle_msg = Message(role="user", content=angle_prompt)
                 
                 angle = self.claude.get_response(
                     user_message=angle_prompt,
@@ -216,15 +215,10 @@ Respond JSON:
 }}"""
         
         # Import Message class and create a proper conversation history
-        from session_manager import Message
-        from datetime import datetime
+        from llm_client import Message
         
         # Create a message object with the prompt as user message
-        user_msg = Message(
-            role="user",
-            content=prompt,
-            timestamp=datetime.now().isoformat()
-        )
+        user_msg = Message(role="user", content=prompt)
         
         response = self.claude.get_response(
             user_message=prompt,
@@ -342,10 +336,8 @@ Write 1200-1500 words:
 
 Format: Markdown with # headers"""
 
-        from session_manager import Message
-        from datetime import datetime
-        
-        prompt_msg = Message(role="user", content=prompt, timestamp=datetime.now().isoformat())
+        from llm_client import Message
+        prompt_msg = Message(role="user", content=prompt)
         
         content = self.claude.get_response(
             user_message=prompt,
@@ -392,10 +384,8 @@ Format: Markdown with # headers"""
 
 Tone: Direct, actionable"""
 
-        from session_manager import Message
-        from datetime import datetime
-        
-        prompt_msg = Message(role="user", content=prompt, timestamp=datetime.now().isoformat())
+        from llm_client import Message
+        prompt_msg = Message(role="user", content=prompt)
         
         content = self.claude.get_response(
             user_message=prompt,
