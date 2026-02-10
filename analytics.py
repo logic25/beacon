@@ -169,6 +169,12 @@ class AnalyticsDB:
         except:
             pass
         
+        # Add command column to interactions table if it doesn't exist (migration)
+        try:
+            cursor.execute("ALTER TABLE interactions ADD COLUMN command TEXT")
+        except:
+            pass  # Column already exists
+        
         # Create indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_user ON interactions(user_id)")
