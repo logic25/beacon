@@ -159,6 +159,11 @@ class Retriever:
             top_k=top_k,
             source_type_filter=source_type,
         )
+        
+        # DEBUG: Log all results before filtering
+        logger.info(f"RAG Search Results for '{query[:50]}':")
+        for i, r in enumerate(results, 1):
+            logger.info(f"  [{i}] {r.get('source_file', 'unknown')} - {r.get('score', 0):.1%} match")
 
         # Filter by minimum score
         filtered_results = [r for r in results if r["score"] >= min_score]
@@ -259,8 +264,9 @@ class Retriever:
             score = result["score"]
             
             # Skip low-confidence matches
-            if score < HIGH_CONFIDENCE_THRESHOLD:
-                continue
+            # TEMPORARILY DISABLED FOR DEBUGGING - show all sources
+            # if score < HIGH_CONFIDENCE_THRESHOLD:
+            #     continue
 
             # Deduplicate by source file
             if source_file in seen_files:
