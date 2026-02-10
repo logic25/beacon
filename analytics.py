@@ -189,20 +189,37 @@ class AnalyticsDB:
         logger.info(f"Enhanced analytics database initialized at {self.db_path}")
     
     def _categorize_topic(self, question: str, response: str = "") -> str:
-        """Auto-categorize question into topics."""
+        """Auto-categorize question into topics using LLM.
+        
+        Falls back to keyword matching if LLM classification fails.
+        """
+        try:
+            # Try LLM classification first
+            classifier = get_classifier()
+            topic = classifier.classify(question, response)
+            return topic
+        except Exception as e:
+            logger.warning(f"LLM classification failed, using keyword fallback: {e}")
+            # Fallback to keyword matching
+            return self._categorize_topic_keywords(question, response)
+    
+    def _categorize_topic_keywords(self, question: str, response: str = "") -> str:
+        """Keyword-based topic categorization (fallback)."""
         combined = (question + " " + response).lower()
         
-        # Topic keywords
+        # Topic keywords - ORDER MATTERS (most specific first)
         topics = {
-            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "contextual"],
-            "DOB": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
-            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+            "Noise/Hours": ["what time", "work until", "noise", "after hours", "construction hours"],
+            "FDNY": ["fdny", "fire alarm", "sprinkler", "standpipe", "suppression", "ansul"],
+            "Certificates": ["co", "certificate of occupancy", "tco", "temporary co"],
             "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation"],
-            "Certificate of Occupancy": ["co", "certificate of occupancy", "tco", "temporary co"],
-            "Property Lookup": ["lookup", "address", "bin", "block", "lot"],
-            "Building Code": ["building code", "egress", "fire", "occupancy group", "sprinkler"],
+            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+            "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
+            "Building Code": ["building code", "egress", "fire safety", "occupancy group"],
             "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
-            "Plans": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
+            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr"],
+            "Property Lookup": ["lookup", "address", "bin", "block", "lot"],
+            "Plans/Drawings": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
         }
         
         for topic, keywords in topics.items():

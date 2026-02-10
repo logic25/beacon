@@ -721,3 +721,4 @@ def analyze_opportunities():
             "error": str(e)
         }), 500
 
+
