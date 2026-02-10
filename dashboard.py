@@ -1509,7 +1509,7 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
 </div>
 
 <script>
-const convsData = {{ conversations|tojson|safe }};
+// Roadmap page - no conversations data needed
 
 function openConvModal(idx) {
     const c = convsData[idx];
