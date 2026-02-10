@@ -374,10 +374,10 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
                     except Exception as e:
                         logger.warning(f"Could not capture context: {e}")
                 
-                                analytics_db.log_suggestion(
+                analytics_db.log_suggestion(
                     user_id=user_id,
                     user_name=user_display_name or user_email or "Unknown User",
-                    wrong=wrong,
+                    wrong=wrong + context_info,
                     correct=suggested,
                     topics=topics or ["General"],
                 )
