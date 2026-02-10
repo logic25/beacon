@@ -283,8 +283,17 @@ class Retriever:
                 f"NOTE: Results filtered to jurisdiction: {jurisdiction}"
             )
 
-        # Documents
-        for i, result in enumerate(results, 1):
+        # Deduplicate by source file (same logic as _format_sources)
+        seen_files = set()
+        unique_results = []
+        for result in results:
+            source_file = result["source_file"]
+            if source_file not in seen_files:
+                seen_files.add(source_file)
+                unique_results.append(result)
+
+        # Documents (only unique sources)
+        for i, result in enumerate(unique_results, 1):
             source_info = result["source_file"]
             source_type = result.get("source_type", "document")
             result_jurisdiction = result.get("jurisdiction", "")
