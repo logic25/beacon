@@ -664,23 +664,6 @@ def auto_generate_candidates():
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
-@content_bp.route('/api/content/generate', methods=['POST'])
-def generate_content():
-    """Generate content from a candidate (placeholder)."""
-    try:
-        data = request.get_json()
-        candidate_id = data.get('candidate_id')
-        content_type = data.get('content_type', 'blog_post')
-        
-        # TODO: Implement actual content generation with Claude
-        return jsonify({
-            "success": True,
-            "message": "Content generation coming soon",
-            "candidate_id": candidate_id
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
 @content_bp.route('/api/content/analyze-opportunities', methods=['POST'])
 def analyze_opportunities():
     """Use Claude + RAG to intelligently score content opportunities."""
