@@ -252,23 +252,15 @@ def initialize_app() -> None:
             logger.warning(f"Zoning analyzer initialization failed: {e}")
             zoning_analyzer = None
 
-    # Initialize analytics and dashboard with retry logic for worker race conditions
+    # Initialize analytics and dashboard
     if ANALYTICS_AVAILABLE:
-        import time
-        analytics_db = None
-        for attempt in range(3):  # Try 3 times to handle SQLite lock from parallel workers
-            try:
-                time.sleep(attempt * 0.5)  # Stagger worker startups: 0s, 0.5s, 1s
-                analytics_db = get_analytics_db()
-                add_dashboard_routes(app, analytics_db)
-                logger.info("✅ Analytics and dashboard initialized")
-                break  # Success, exit retry loop
-            except Exception as e:
-                if attempt == 2:  # Last attempt failed
-                    logger.error(f"❌ Analytics initialization failed after 3 attempts: {e}")
-                    analytics_db = None
-                else:
-                    logger.warning(f"⚠️ Analytics initialization attempt {attempt+1}/3 failed: {e}, retrying...")
+        try:
+            analytics_db = get_analytics_db()
+            add_dashboard_routes(app, analytics_db)
+            logger.info("✅ Analytics and dashboard initialized")
+        except Exception as e:
+            logger.warning(f"Analytics initialization failed: {e}")
+            analytics_db = None
 
     # Register Content Intelligence blueprint
     if CONTENT_INTELLIGENCE_AVAILABLE:

@@ -1,874 +1,122 @@
 """
 Enhanced Dashboard v2 routes for Beacon analytics with OAuth protection.
-Updated with Lovable styling, sidebar navigation, and logout button.
+Full-featured dashboard with date ranges, conversations, topics, and insights.
+Only authorized users (AUTHORIZED_EMAILS) can access.
 """
 
-import json
-import os
+from flask import render_template_string, jsonify, request, redirect, url_for, session
 from datetime import datetime, timedelta
+from analytics import AnalyticsDB
+import os
 from functools import wraps
-from typing import Optional
-
-from flask import (Flask, jsonify, redirect, render_template_string, request,
-                   session, url_for)
 
 # Google OAuth imports
 try:
-    from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token
-    GOOGLE_AUTH_AVAILABLE = True
+    from google.auth.transport import requests as google_requests
+    import requests
+    OAUTH_AVAILABLE = True
 except ImportError:
-    GOOGLE_AUTH_AVAILABLE = False
-
-from analytics import AnalyticsDB, Interaction
+    OAUTH_AVAILABLE = False
 
 # OAuth Configuration
-GOOGLE_OAUTH_CLIENT_ID = os.getenv('GOOGLE_OAUTH_CLIENT_ID')
-GOOGLE_OAUTH_CLIENT_SECRET = os.getenv('GOOGLE_OAUTH_CLIENT_SECRET')
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
+AUTHORIZED_EMAILS = os.getenv("AUTHORIZED_EMAILS", "").split(",")
+OAUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and OAUTH_AVAILABLE)
 
-# Check if OAuth is properly configured
-OAUTH_CONFIGURED = bool(
-    GOOGLE_OAUTH_CLIENT_ID and 
-    GOOGLE_OAUTH_CLIENT_SECRET and 
-    GOOGLE_AUTH_AVAILABLE
-)
 
-# ============================================================================
-# LOVABLE STYLED TEMPLATES - BASE WITH SIDEBAR
-# ============================================================================
-
-BASE_TEMPLATE = '''<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Beacon - {{ page_title }}</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        :root {
-            --bg: #f8fafc;
-            --card: #ffffff;
-            --border: #e2e8f0;
-            --text: #0f172a;
-            --text-muted: #64748b;
-            --primary: #f59e0b;
-            --success: #22c55e;
-            --danger: #ef4444;
-            --sidebar-width: 240px;
-            --sidebar-collapsed: 72px;
-        }
-        
-        body.dark {
-            --bg: #0f172a;
-            --card: #1e293b;
-            --border: #334155;
-            --text: #f1f5f9;
-            --text-muted: #cbd5e1;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: var(--bg);
-            color: var(--text);
-            transition: background 0.2s;
-        }
-        
-        /* Sidebar */
-        .sidebar {
-            position: fixed;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            width: var(--sidebar-width);
-            background: var(--card);
-            border-right: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-            transition: width 0.2s;
-            z-index: 100;
-        }
-        
-        .sidebar.collapsed { width: var(--sidebar-collapsed); }
-        
-        .sidebar-header {
-            height: 64px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 0 16px;
-            border-bottom: 1px solid var(--border);
-        }
-        
-        .logo {
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            flex-shrink: 0;
-        }
-        
-        .sidebar-title {
-            font-family: monospace;
-            font-weight: bold;
-            white-space: nowrap;
-            overflow: hidden;
-            transition: opacity 0.2s;
-        }
-        
-        .sidebar.collapsed .sidebar-title { opacity: 0; width: 0; }
-        
-        .nav { padding: 12px; flex: 1; }
-        
-        .nav-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 12px;
-            margin-bottom: 4px;
-            border-radius: 8px;
-            text-decoration: none;
-            color: var(--text-muted);
-            font-size: 14px;
-            font-weight: 500;
-            transition: all 0.2s;
-        }
-        
-        .nav-item:hover { background: var(--bg); color: var(--text); }
-        .nav-item.active { background: #fef3c7; color: var(--primary); }
-        
-        .nav-icon { width: 16px; height: 16px; flex-shrink: 0; }
-        
-        .nav-label { white-space: nowrap; overflow: hidden; transition: opacity 0.2s; }
-        .sidebar.collapsed .nav-label { opacity: 0; width: 0; }
-        
-        .sidebar-footer { padding: 12px; border-top: 1px solid var(--border); }
-        
-        .footer-btn {
-            width: 100%;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 12px;
-            margin-bottom: 4px;
-            border-radius: 8px;
-            border: none;
-            background: transparent;
-            color: var(--text-muted);
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-decoration: none;
-        }
-        
-        .footer-btn:hover { background: var(--bg); color: var(--text); }
-        .footer-btn.logout { color: var(--danger); }
-        .footer-btn.logout:hover { background: #fee2e2; }
-        
-        /* Main content */
-        .main { margin-left: var(--sidebar-width); padding: 32px 24px; max-width: 1400px; transition: margin-left 0.2s; }
-        .sidebar.collapsed ~ .main { margin-left: var(--sidebar-collapsed); }
-        
-        .page-header { margin-bottom: 32px; }
-        .page-title { font-size: 24px; font-weight: 700; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; }
-        .page-subtitle { font-size: 14px; color: var(--text-muted); }
-        
-        .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); transition: all 0.2s; }
-        .card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.05); transform: translateY(-2px); }
-        
-        .metric-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.02); }
-        .metric-icon { width: 40px; height: 40px; border-radius: 8px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
-        .metric-value { font-family: 'Courier New', monospace; font-size: 32px; font-weight: bold; margin-bottom: 4px; }
-        .metric-label { font-size: 14px; color: var(--text); margin-bottom: 2px; }
-        .metric-sublabel { font-size: 11px; color: var(--text-muted); }
-        .trend-up { color: var(--success); font-size: 11px; font-weight: 600; }
-        
-        table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; font-size: 11px; color: var(--text-muted); font-weight: 600; padding: 12px; border-bottom: 1px solid var(--border); text-transform: uppercase; }
-        td { padding: 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
-        tr:hover { background: var(--bg); }
-        
-        .badge { padding: 4px 12px; border-radius: 6px; font-size: 11px; font-weight: 600; display: inline-block; }
-        .badge-success { background: #dcfce7; color: var(--success); }
-        .badge-danger { background: #fee2e2; color: var(--danger); }
-        .badge-warning { background: #fef3c7; color: var(--primary); }
-        
-        .tabs {
-            display: flex;
-            gap: 8px;
-            border-bottom: 1px solid var(--border);
-            margin-bottom: 24px;
-        }
-        
-        .tab {
-            padding: 12px 16px;
-            background: none;
-            border: none;
-            border-bottom: 2px solid transparent;
-            color: var(--text-muted);
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .tab:hover { color: var(--text); background: var(--bg); border-radius: 8px 8px 0 0; }
-        .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
-        
-        .tab-content { display: none; }
-        .tab-content.active { display: block; }
-        
-        .btn { padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600; border: none; cursor: pointer; transition: all 0.2s; }
-        .btn-success { background: var(--success); color: white; }
-        .btn-success:hover { background: #16a34a; }
-        .btn-danger { background: var(--danger); color: white; }
-        .btn-danger:hover { background: #dc2626; }
-        
-        .grid { display: grid; gap: 16px; }
-        .grid-6 { grid-template-columns: repeat(6, 1fr); }
-        .grid-2 { grid-template-columns: repeat(2, 1fr); }
-        
-        /* Mobile Responsive */
-        @media (max-width: 1024px) {
-            .sidebar { width: var(--sidebar-collapsed); }
-            .sidebar .nav-label, .sidebar .sidebar-title { opacity: 0; width: 0; }
-            .main { margin-left: var(--sidebar-collapsed); }
-            .grid-6 { grid-template-columns: repeat(3, 1fr); }
-        }
-        
-        @media (max-width: 768px) {
-            .sidebar { 
-                position: fixed;
-                left: -240px;
-                width: 240px;
-                z-index: 1000;
-                transition: left 0.3s;
-            }
-            .sidebar.mobile-open { left: 0; }
-            .main { margin-left: 0; padding: 16px; }
-            .grid-6 { grid-template-columns: repeat(2, 1fr); }
-            .grid-2 { grid-template-columns: 1fr; }
-            .page-title { font-size: 20px; }
-            table { font-size: 12px; }
-            th, td { padding: 8px; }
-            
-            /* Mobile menu button */
-            .mobile-menu-btn {
-                display: block;
-                position: fixed;
-                top: 16px;
-                left: 16px;
-                z-index: 999;
-                background: var(--card);
-                border: 1px solid var(--border);
-                border-radius: 8px;
-                padding: 8px;
-                cursor: pointer;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .grid-6 { grid-template-columns: 1fr; }
-            .metric-value { font-size: 24px; }
-        }
-        
-        .mobile-menu-btn { display: none; }
-        
-        /* Mobile overlay */
-        .mobile-overlay {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0,0,0,0.5);
-            z-index: 999;
-        }
-        .mobile-overlay.active { display: block; }
-        .mb-6 { margin-bottom: 24px; }
-        
-        .section { background: var(--card); padding: 28px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border: 1px solid var(--border); margin-bottom: 24px; }
-        .section h2 { font-size: 18px; margin-bottom: 20px; color: var(--text); }
-        
-        @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        .metric-card { animation: fadeInUp 0.5s ease-out; }
-        .metric-card:nth-child(1) { animation-delay: 0s; }
-        .metric-card:nth-child(2) { animation-delay: 0.1s; }
-        .metric-card:nth-child(3) { animation-delay: 0.2s; }
-        .metric-card:nth-child(4) { animation-delay: 0.3s; }
-        .metric-card:nth-child(5) { animation-delay: 0.4s; }
-        .metric-card:nth-child(6) { animation-delay: 0.5s; }
-    </style>
-</head>
-<body>
-    <div class="mobile-overlay" id="mobileOverlay" onclick="toggleMobileMenu()"></div>
-    <button class="mobile-menu-btn" onclick="toggleMobileMenu()">
-        <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-    </button>
-    
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <div class="logo">B</div>
-            <span class="sidebar-title">Beacon</span>
-        </div>
-        <nav class="nav">
-            <a href="/dashboard" class="nav-item {{ 'active' if active_page == 'analytics' }}">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                </svg>
-                <span class="nav-label">Analytics</span>
-            </a>
-            <a href="/conversations" class="nav-item {{ 'active' if active_page == 'conversations' }}">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <span class="nav-label">Conversations</span>
-            </a>
-            <a href="/feedback-page" class="nav-item {{ 'active' if active_page == 'feedback' }}">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-                </svg>
-                <span class="nav-label">Feedback</span>
-            </a>
-            <a href="/content-intelligence" class="nav-item {{ 'active' if active_page == 'content' }}">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                </svg>
-                <span class="nav-label">Content Engine</span>
-            </a>
-            <a href="/roadmap-page" class="nav-item {{ 'active' if active_page == 'roadmap' }}">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                </svg>
-                <span class="nav-label">Roadmap</span>
-            </a>
-        </nav>
-        
-        <div class="sidebar-footer">
-            <button class="footer-btn" onclick="toggleDarkMode()">
-                <svg class="nav-icon" id="theme-icon-light" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                </svg>
-                <svg class="nav-icon" id="theme-icon-dark" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display:none;">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-                <span class="nav-label" id="theme-label">Dark Mode</span>
-            </button>
-            
-            <button class="footer-btn" onclick="toggleSidebar()">
-                <svg class="nav-icon" id="collapse-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
-                </svg>
-                <span class="nav-label">Collapse</span>
-            </button>
-            
-            <a href="/logout" class="footer-btn logout">
-                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                </svg>
-                <span class="nav-label">Logout</span>
-            </a>
-        </div>
-    </aside>
-    
-    <main class="main">
-        {% block content %}{% endblock %}
-    </main>
-    
-    <script>
-        function toggleSidebar() {
-            const sidebar = document.getElementById('sidebar');
-            sidebar.classList.toggle('collapsed');
-            const icon = document.getElementById('collapse-icon');
-            const path = icon.querySelector('path');
-            if (sidebar.classList.contains('collapsed')) {
-                path.setAttribute('d', 'M9 5l7 7-7 7');
-            } else {
-                path.setAttribute('d', 'M15 19l-7-7 7-7');
-            }
-        }
-        
-        function toggleDarkMode() {
-            document.body.classList.toggle('dark');
-            const isDark = document.body.classList.contains('dark');
-            document.getElementById('theme-icon-light').style.display = isDark ? 'none' : 'block';
-            document.getElementById('theme-icon-dark').style.display = isDark ? 'block' : 'none';
-            document.getElementById('theme-label').textContent = isDark ? 'Light Mode' : 'Dark Mode';
-            localStorage.setItem('darkMode', isDark);
-        }
-        
-        if (localStorage.getItem('darkMode') === 'true') {
-            toggleDarkMode();
-        }
-        
-        function toggleMobileMenu() {
-            const sidebar = document.getElementById('sidebar');
-            const overlay = document.getElementById('mobileOverlay');
-            sidebar.classList.toggle('mobile-open');
-            overlay.classList.toggle('active');
-        }
-        
-        {% block extra_js %}{% endblock %}
-    </script>
-</body>
-</html>'''
-
-# ============================================================================
-# SHARED BASE TEMPLATE - Exported for use by other blueprints (content_routes, etc)
-# ============================================================================
-
-BASE_TEMPLATE = '''<!DOCTYPE html>
-<div class="page-header">
-    <div class="page-title">📊 Analytics</div>
-    <div class="page-subtitle">Beacon bot performance · Auto-refreshes every 30 seconds · {{ user_email }}</div>
-</div>
-
-<div class="grid grid-6 mb-6">
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #fef3c7;">💬</div>
-        <div class="metric-value" id="total-questions">-</div>
-        <div class="metric-label">Total Questions</div>
-        <div class="metric-sublabel">Last 7 days</div>
-    </div>
-    
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #dcfce7;">✅</div>
-        <div class="metric-value" id="success-rate">-</div>
-        <div class="metric-label">Success Rate</div>
-        <div class="metric-sublabel" id="answered-count">-</div>
-    </div>
-    
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #dbeafe;">👥</div>
-        <div class="metric-value" id="active-users">-</div>
-        <div class="metric-label">Active Users</div>
-        <div class="metric-sublabel">N/A</div>
-    </div>
-    
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #fef3c7;">💵</div>
-        <div class="metric-value" id="api-cost">-</div>
-        <div class="metric-label">Total API Cost</div>
-        <div class="metric-sublabel">N/A</div>
-    </div>
-    
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #e0e7ff;">⏱️</div>
-        <div class="metric-value" id="avg-time">-</div>
-        <div class="metric-label">Avg Response Time</div>
-        <div class="metric-sublabel" id="time-range">-</div>
-    </div>
-    
-    <div class="metric-card">
-        <div class="metric-icon" style="background: #fee2e2;">📝</div>
-        <div class="metric-value" id="pending-reviews">-</div>
-        <div class="metric-label">Pending Reviews</div>
-        <div class="metric-sublabel" id="feedback-count">-</div>
-    </div>
-</div>
-
-<div class="section">
-    <h2>💬 Recent Conversations (Last 10)</h2>
-    <table id="conversations-table">
-        <thead>
-            <tr>
-                <th>Question</th>
-                <th>User</th>
-                <th>Topic</th>
-                <th>When</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
-</div>
-
-<div class="grid grid-2">
-    <div class="section">
-        <h2>📊 Questions by Topic</h2>
-        <div id="topics-breakdown"></div>
-    </div>
-    
-    <div class="section">
-        <h2>⚡ Slash Command Usage</h2>
-        <div id="slash-commands"></div>
-    </div>
-</div>
-
-<script>
-// Auto-refresh data every 30 seconds
-async function loadDashboardData() {
-    try {
-        const response = await fetch('/api/dashboard?days=7');
-        const data = await response.json();
-        
-        // Update metrics
-        document.getElementById('total-questions').textContent = data.total_questions || 0;
-        document.getElementById('success-rate').textContent = data.success_rate ? data.success_rate + '%' : '0%';
-        document.getElementById('answered-count').textContent = data.answered_count + ' answered';
-        document.getElementById('active-users').textContent = data.active_users || 0;
-        document.getElementById('api-cost').textContent = '$' + (data.api_cost || '0.00');
-        document.getElementById('avg-time').textContent = data.avg_response_time ? data.avg_response_time.toFixed(1) + 's' : '0s';
-        document.getElementById('time-range').textContent = data.time_range || 'N/A';
-        document.getElementById('pending-reviews').textContent = data.pending_reviews || 0;
-        document.getElementById('feedback-count').textContent = data.feedback_count || 'No feedback';
-        
-        // Update conversations table
-        const tbody = document.querySelector('#conversations-table tbody');
-        tbody.innerHTML = '';
-        (data.conversations || []).slice(0, 10).forEach(conv => {
-            const row = tbody.insertRow();
-            row.innerHTML = `
-                <td><strong>${conv.question}</strong></td>
-                <td>${conv.user}</td>
-                <td><span class="badge badge-warning">${conv.topic || 'General'}</span></td>
-                <td style="color: var(--text-muted); font-size: 12px;">${conv.when}</td>
-                <td><span class="badge ${conv.answered ? 'badge-success' : 'badge-danger'}">${conv.answered ? '✓ Answered' : '✗ Failed'}</span></td>
-            `;
-        });
-        
-        // Update topics
-        const topicsDiv = document.getElementById('topics-breakdown');
-        topicsDiv.innerHTML = '';
-        Object.entries(data.topics || {}).forEach(([topic, count]) => {
-            const pct = data.total_questions ? Math.round((count / data.total_questions) * 100) : 0;
-            topicsDiv.innerHTML += `
-                <div style="margin-bottom: 16px;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="font-size: 13px; font-weight: 500;">${topic}</span>
-                        <span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">${count} (${pct}%)</span>
-                    </div>
-                    <div style="height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
-                        <div style="height: 100%; width: ${pct}%; background: var(--primary);"></div>
-                    </div>
-                </div>
-            `;
-        });
-        
-        // Update slash commands
-        const slashDiv = document.getElementById('slash-commands');
-        slashDiv.innerHTML = '';
-        Object.entries(data.slash_commands || {}).forEach(([cmd, count]) => {
-            const maxCount = Math.max(...Object.values(data.slash_commands || {1: 1}));
-            const pct = Math.round((count / maxCount) * 100);
-            slashDiv.innerHTML += `
-                <div style="margin-bottom: 16px;">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                        <span style="font-family: monospace; font-size: 13px; font-weight: 500;">${cmd}</span>
-                        <span style="font-family: monospace; font-size: 12px; color: var(--text-muted);">${count} uses</span>
-                    </div>
-                    <div style="height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden;">
-                        <div style="height: 100%; width: ${pct}%; background: var(--primary);"></div>
-                    </div>
-                </div>
-            `;
-        });
-        
-    } catch (error) {
-        console.error('Failed to load dashboard data:', error);
-    }
-}
-
-// Load immediately and then every 30 seconds
-loadDashboardData();
-setInterval(loadDashboardData, 30000);
-</script>
-{% endblock %}''')
-
-# Conversations page (NEW)
-CONVERSATIONS_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="page-header">
-    <div class="page-title">💬 Conversations</div>
-    <div class="page-subtitle">Browse all questions answered by Beacon</div>
-</div>
-
-<div class="section">
-    <table>
-        <thead>
-            <tr>
-                <th>Question</th>
-                <th>User</th>
-                <th>Topic</th>
-                <th>When</th>
-                <th>Response Time</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for conv in conversations %}
-            <tr>
-                <td><strong>{{ conv.question }}</strong></td>
-                <td>{{ conv.user_name }}</td>
-                <td><span class="badge badge-warning">{{ conv.topic or 'General' }}</span></td>
-                <td style="color: var(--text-muted); font-size: 12px;">{{ conv.timestamp }}</td>
-                <td style="font-family: monospace;">{{ "%.1f"|format(conv.response_time_ms / 1000) }}s</td>
-                <td><span class="badge {{ 'badge-success' if conv.answered else 'badge-danger' }}">{{ '✓ Answered' if conv.answered else '✗ Failed' }}</span></td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
-{% endblock %}''')
-
-# Feedback page with tabs
-FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="page-header">
-    <div class="page-title">✅ Feedback & Corrections</div>
-    <div class="page-subtitle">Review team suggestions and correction history</div>
-</div>
-
-<div class="tabs mb-6">
-    <button class="tab active" onclick="showTab('pending')">📝 Pending Review <span style="background: #fef3c7; color: #f59e0b; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-left: 4px;">{{ suggestions|length }}</span></button>
-    <button class="tab" onclick="showTab('approved')">✅ Approved History</button>
-    <button class="tab" onclick="showTab('digests')">📧 Weekly Digests</button>
-</div>
-
-<!-- Pending Review Tab -->
-<div id="pending-tab" class="tab-content active">
-    <div class="section">
-        {% if suggestions|length > 0 %}
-        <table>
-            <thead>
-                <tr>
-                    <th>USER</th>
-                    <th>WHEN</th>
-                    <th>WRONG ANSWER</th>
-                    <th>CORRECT ANSWER</th>
-                    <th>ACTIONS</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for s in suggestions %}
-                <tr>
-                    <td><strong>{{ s.user_name }}</strong></td>
-                    <td style="color: var(--text-muted); font-size: 12px;">{{ s.timestamp }}</td>
-                    <td style="font-size: 13px;"><span style="color: var(--danger); margin-right: 4px;">✗</span><span style="background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">WRONG ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.wrong_answer }}</span></td>
-                    <td style="font-size: 13px;"><span style="color: var(--success); margin-right: 4px;">✓</span><span style="background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-size: 12px;">CORRECT ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.correct_answer }}</span></td>
-                    <td>
-                        <button class="btn btn-success" style="margin-right: 8px; font-size: 11px; padding: 6px 12px;" onclick="approveSuggestion({{ s.id }})">✓ Approve</button>
-                        <button class="btn btn-danger" style="font-size: 11px; padding: 6px 12px;" onclick="rejectSuggestion({{ s.id }})">✗ Reject</button>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-        {% else %}
-        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
-            <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 16px;">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No pending suggestions</div>
-            <div style="font-size: 14px;">Team corrections will appear here</div>
-        </div>
-        {% endif %}
-    </div>
-</div>
-
-<!-- Approved History Tab -->
-<div id="approved-tab" class="tab-content">
-    <div class="section">
-        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
-            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Approved corrections history</div>
-            <div style="font-size: 14px;">Coming soon</div>
-        </div>
-    </div>
-</div>
-
-<!-- Weekly Digests Tab -->
-<div id="digests-tab" class="tab-content">
-    <div class="section">
-        <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
-            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Weekly digest emails</div>
-            <div style="font-size: 14px;">Coming soon</div>
-        </div>
-    </div>
-</div>
-
-<script>
-async function approveSuggestion(id) {
-    if (!confirm('Approve this correction?')) return;
-    try {
-        const response = await fetch('/approve-suggestion', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id: id})
-        });
-        if (response.ok) {
-            location.reload();
-        }
-    } catch (error) {
-        alert('Error approving suggestion');
-    }
-}
-
-async function rejectSuggestion(id) {
-    if (!confirm('Reject this correction?')) return;
-    try {
-        const response = await fetch('/reject-suggestion', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({id: id})
-        });
-        if (response.ok) {
-            location.reload();
-        }
-    } catch (error) {
-        alert('Error rejecting suggestion');
-    }
-}
-
-function showTab(tabName) {
-    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
-    document.getElementById(tabName + '-tab').classList.add('active');
-    event.target.classList.add('active');
-}
-</script>
-{% endblock %}''')
-
-# Roadmap page with status summary cards
-ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="page-header">
-    <div class="page-title">🗺️ Product Roadmap</div>
-    <div class="page-subtitle">Track feature requests and development progress</div>
-</div>
-
-<div class="grid grid-4 mb-6">
-    <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('shipped', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted);">✅ Shipped</div>
-    </div>
-    <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('in-progress', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted);">🚧 In Progress</div>
-    </div>
-    <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('planned', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted);">📅 Planned</div>
-    </div>
-    <div class="card" style="text-align: center;">
-        <div style="font-family: monospace; font-size: 48px; font-weight: bold; margin-bottom: 8px;">{{ roadmap.by_status.get('backlog', 0) }}</div>
-        <div style="font-size: 13px; color: var(--text-muted);">📋 Backlog</div>
-    </div>
-</div>
-
-{% if roadmap.items_by_status %}
-<div class="grid grid-2">
-    {% for status, items in roadmap.items_by_status.items() %}
-        {% for item in items %}
-        <div class="card" style="cursor: pointer;">
-            <div style="margin-bottom: 8px;">
-                {% if status == 'shipped' %}
-                <span class="badge badge-success">✅ Shipped</span>
-                {% elif status == 'in-progress' %}
-                <span class="badge badge-warning">🚧 In Progress</span>
-                {% elif status == 'planned' %}
-                <span class="badge" style="background: #dbeafe; color: #3b82f6;">📅 Planned</span>
-                {% else %}
-                <span class="badge" style="background: #f3f4f6; color: #6b7280;">📋 {{ status|title }}</span>
-                {% endif %}
-                {% if item.priority %}
-                <span class="badge {{ 'badge-danger' if item.priority == 'high' else 'badge-warning' }}" style="margin-left: 4px;">
-                    {{ item.priority|title }} Priority
-                </span>
-                {% endif %}
-            </div>
-            <h3 style="font-size: 14px; font-weight: 600;">{{ item.feedback_text }}</h3>
-            <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
-                Requested by {{ item.user_name }}
-                {% if item.target_quarter %} · Target: {{ item.target_quarter }}{% endif %}
-            </p>
-        </div>
-        {% endfor %}
-    {% endfor %}
-</div>
-{% else %}
-<div class="section" style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
-    <svg width="48" height="48" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 16px;">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-    </svg>
-    <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No roadmap items yet</div>
-    <div style="font-size: 14px;">Feature requests will appear here</div>
-</div>
-{% endif %}
-{% endblock %}''')
-
-# Login page
+# Login page HTML
 LOGIN_HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Beacon Analytics - Login</title>
+    <title>Beacon Dashboard - Login</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        }
-        .login-card {
-            background: white;
-            padding: 48px;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            text-align: center;
-            max-width: 400px;
-        }
-        .logo {
-            width: 64px;
-            height: 64px;
-            margin: 0 auto 24px;
-            background: linear-gradient(135deg, #f59e0b, #d97706);
-            border-radius: 16px;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
-            font-size: 32px;
-            font-weight: bold;
+            min-height: 100vh;
+            padding: 20px;
         }
-        h1 { color: #2c3e50; margin-bottom: 8px; font-size: 28px; }
-        .subtitle { color: #7f8c8d; margin-bottom: 32px; font-size: 14px; }
+        .login-container {
+            background: white;
+            padding: 60px 50px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: center;
+            max-width: 450px;
+            width: 100%;
+        }
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        .subtitle {
+            color: #7f8c8d;
+            margin-bottom: 40px;
+            font-size: 14px;
+        }
         .google-btn {
             display: inline-flex;
             align-items: center;
-            gap: 12px;
-            padding: 12px 24px;
             background: white;
-            border: 2px solid #e8ecef;
-            border-radius: 8px;
-            font-size: 16px;
+            border: 1px solid #dadce0;
+            border-radius: 4px;
+            padding: 12px 24px;
+            font-size: 14px;
             font-weight: 500;
+            color: #3c4043;
             cursor: pointer;
             transition: all 0.2s;
             text-decoration: none;
-            color: #2c3e50;
         }
-        .google-btn:hover { border-color: #3498db; transform: translateY(-2px); }
-        .error { color: #e74c3c; margin-top: 20px; padding: 12px; background: #fee; border-radius: 4px; }
+        .google-btn:hover {
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            border-color: #d2d2d2;
+        }
+        .google-icon {
+            width: 18px;
+            height: 18px;
+            margin-right: 12px;
+        }
+        .error {
+            background: #fee;
+            color: #c33;
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .info {
+            background: #e8f4f8;
+            color: #0c5460;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 30px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
     </style>
 </head>
 <body>
-    <div class="login-card">
-        <div class="logo">B</div>
-        <h1>Beacon Analytics</h1>
-        <p class="subtitle">Sign in to access the dashboard</p>
+    <div class="login-container">
+        <h1>🎯 Beacon Dashboard</h1>
+        <div class="subtitle">Analytics & Monitoring</div>
         
         {% if error %}
         <div class="error">{{ error }}</div>
         {% endif %}
         
         <a href="{{ auth_url }}" class="google-btn">
-            <svg width="20" height="20" viewBox="0 0 24 24">
+            <svg class="google-icon" viewBox="0 0 24 24">
                 <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
                 <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
                 <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
@@ -876,25 +124,1268 @@ LOGIN_HTML = """
             </svg>
             Sign in with Google
         </a>
+        
+        <div class="info">
+            <strong>Authorized Access Only</strong><br>
+            Only Green Light Expediting team members can access this dashboard.
+        </div>
     </div>
 </body>
 </html>
 """
 
-# ============================================================================
-# AUTH DECORATOR AND ROUTES
-# ============================================================================
+# Dashboard HTML template
+DASHBOARD_V2_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Beacon Analytics Dashboard v2</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: #f9fafb;
+            padding: 20px;
+        }
+        .container { max-width: 1600px; margin: 0 auto; }
+        .header-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .user-email {
+            font-size: 14px;
+            color: #7f8c8d;
+        }
+        .logout-btn {
+            padding: 8px 16px;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+        }
+        .logout-btn:hover {
+            background: #c0392b;
+        }
+        h1 { color: #2c3e50; margin-bottom: 10px; font-size: 32px; }
+        .subtitle { color: #7f8c8d; margin-bottom: 20px; font-size: 14px; }
+        
+        /* Date Range Controls */
+        .date-controls {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .date-preset {
+            padding: 8px 16px;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            background: white;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        .date-preset:hover { background: #f8f9fa; }
+        .date-preset.active {
+            background: #3498db;
+            color: white;
+            border-color: #3498db;
+        }
+        
+        .metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .metric-card {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            border: 1px solid #e8ecef;
+            transition: all 0.2s ease;
+        }
+        .metric-card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        .metric-value {
+            font-size: 36px;
+            font-weight: bold;
+            color: #3498db;
+            margin-bottom: 5px;
+        }
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 14px;
+        }
+        .metric-sublabel {
+            color: #95a5a6;
+            font-size: 12px;
+            margin-top: 4px;
+        }
+        
+        .section {
+            background: white;
+            padding: 28px;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            border: 1px solid #e8ecef;
+            margin-bottom: 20px;
+        }
+        .section-title {
+            font-size: 18px;
+            color: #1f2937;
+            margin-bottom: 20px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            text-align: left;
+            padding: 14px 16px;
+            background: #f9fafb;
+            color: #374151;
+            font-weight: 600;
+            font-size: 13px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        td {
+            padding: 14px 16px;
+            border-bottom: 1px solid #f3f4f6;
+            color: #1f2937;
+        }
+        tr:hover { 
+            background: #f9fafb;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge-pending { background: #fff3cd; color: #856404; }
+        .badge-success { background: #d4edda; color: #155724; }
+        .badge-danger { background: #f8d7da; color: #721c24; }
+        .badge-info { background: #d1ecf1; color: #0c5460; }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn-approve { background: #28a745; color: white; }
+        .btn-reject { background: #dc3545; color: white; }
+        .btn-view { background: #17a2b8; color: white; }
+        
+        .refresh-btn {
+            background: #3498db;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .success-rate {
+            font-size: 36px;
+            font-weight: bold;
+        }
+        .success-rate.high { color: #28a745; }
+        .success-rate.medium { color: #ffc107; }
+        .success-rate.low { color: #dc3545; }
+        
+        /* Modal for conversations */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+        }
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            max-width: 900px;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            position: relative;
+        }
+        .modal-close {
+            position: absolute;
+            top: 15px;
+            right: 20px;
+            cursor: pointer;
+            font-size: 28px;
+            color: #95a5a6;
+        }
+        .modal-close:hover { color: #2c3e50; }
+        
+        .conversation-item {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            border: 1px solid #e8ecef;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            transition: all 0.2s ease;
+        }
+        .conversation-item:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border-color: #d0d7de;
+            transform: translateY(-1px);
+        }
+        .conversation-question {
+            font-weight: 600;
+            color: #1f2937;
+            margin-bottom: 8px;
+            font-size: 15px;
+            line-height: 1.5;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .conversation-response-preview {
+            color: #6b7280;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 10px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .conversation-meta {
+            font-size: 12px;
+            color: #9ca3af;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .conversation-meta-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            background: #f3f4f6;
+            border-radius: 6px;
+            font-size: 11px;
+            font-weight: 500;
+            color: #4b5563;
+        }
+        
+        .response-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 15px 0;
+            line-height: 1.6;
+        }
+        
+        .sources-list {
+            margin-top: 15px;
+            padding-left: 20px;
+        }
+        .sources-list li {
+            margin: 5px 0;
+            color: #555;
+        }
+        
+        .topic-pill {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            margin-right: 5px;
+        }
+        .topic-zoning { background: #e3f2fd; color: #1565c0; }
+        .topic-dob { background: #fff3e0; color: #e65100; }
+        .topic-dhcr { background: #f3e5f5; color: #6a1b9a; }
+        .topic-violations { background: #ffebee; color: #c62828; }
+        .topic-general { background: #f5f5f5; color: #616161; }
+        
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        
+        @media (max-width: 768px) {
+            .grid-2 { grid-template-columns: 1fr; }
+            .metrics { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-bar">
+            <h1>🎯 Beacon Dashboard</h1>
+            <div class="user-info">
+                <span class="user-email">{{ user_email }}</span>
+                <a href="/logout" class="logout-btn">Logout</a>
+            </div>
+        </div>
+        
+        <!-- Navigation Tabs -->
+        <div style="display: flex; gap: 8px; margin: 16px 0;">
+            <button onclick="window.location.href='/dashboard'" 
+                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: #e3f2fd; color: #1976d2; border: none;">
+                📊 Analytics
+            </button>
+            <button onclick="window.location.href='/content-intelligence'" 
+                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: white; color: #666; border: 1px solid #ddd;">
+                ✨ Content Intelligence
+            </button>
+        </div>
+        
+        <div class="subtitle">Enhanced tracking • Auto-refreshes every 30 seconds</div>
+        
+        <button class="refresh-btn" onclick="loadData()">🔄 Refresh Now</button>
+        
+        <!-- Date Range Picker -->
+        <div class="date-controls">
+            <strong>Date Range:</strong>
+            <button class="date-preset active" onclick="setRange(7)">Last 7 Days</button>
+            <button class="date-preset" onclick="setRange(30)">Last 30 Days</button>
+            <button class="date-preset" onclick="setRange('thismonth')">This Month</button>
+            <button class="date-preset" onclick="setRange('lastmonth')">Last Month</button>
+            <button class="date-preset" onclick="setRange('thisyear')">This Year</button>
+            <button class="date-preset" onclick="setRange('all')">All Time</button>
+        </div>
+        
+        <!-- Key Metrics -->
+        <div class="metrics">
+            <div class="metric-card">
+                <div class="metric-value" id="total-questions">-</div>
+                <div class="metric-label">Total Questions</div>
+                <div class="metric-sublabel" id="date-range-display">Last 7 days</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="success-rate">-</div>
+                <div class="metric-label">Success Rate</div>
+                <div class="metric-sublabel"><span id="answered-count">-</span> answered</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="active-users">-</div>
+                <div class="metric-label">Active Users</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="total-cost">-</div>
+                <div class="metric-label">Total API Cost</div>
+                <div class="metric-sublabel" id="cost-breakdown">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="avg-response-time">-</div>
+                <div class="metric-label">Avg Response Time</div>
+                <div class="metric-sublabel" id="response-time-range">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="pending-reviews">-</div>
+                <div class="metric-label">Pending Reviews</div>
+                <div class="metric-sublabel"><span id="new-feedback-count">-</span> new feedback</div>
+            </div>
+        </div>
+        
+        <div class="grid-2">
+            <!-- Recent Conversations -->
+            <div class="section">
+                <div class="section-title">💬 Recent Conversations (Last 10)</div>
+                <div id="recent-conversations">Loading...</div>
+            </div>
+            
+            <!-- Topics Breakdown -->
+            <div class="section">
+                <div class="section-title">📊 Questions by Topic</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Topic</th>
+                            <th>Count</th>
+                            <th>%</th>
+                        </tr>
+                    </thead>
+                    <tbody id="topics-table">
+                        <tr><td colspan="3">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Top Users -->
+        <div class="section">
+            <div class="section-title">👥 Most Active Users</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>User</th>
+                        <th>Questions Asked</th>
+                    </tr>
+                </thead>
+                <tbody id="top-users">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Top Questions -->
+        <div class="section">
+            <div class="section-title">❓ Most Asked Questions</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Question</th>
+                        <th>Times Asked</th>
+                    </tr>
+                </thead>
+                <tbody id="top-questions">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="grid-2">
+            <!-- Failed Queries -->
+            <div class="section">
+                <div class="section-title">⚠️ Failed Queries (Need Attention)</div>
+                <div id="failed-queries">Loading...</div>
+            </div>
+            
+            <!-- Command Usage -->
+            <div class="section">
+                <div class="section-title">⚡ Slash Command Usage</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Uses</th>
+                        </tr>
+                    </thead>
+                    <tbody id="command-usage">
+                        <tr><td colspan="2">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Suggestions Queue -->
+        <div class="section">
+            <div class="section-title">📝 Suggestions Queue (Pending Review)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>When</th>
+                        <th>Wrong Answer</th>
+                        <th>Correct Answer</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="suggestions-queue">
+                    <tr><td colspan="5">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Product Roadmap / Feature Tracker -->
+    <div class="grid-item full-width">
+        <div class="section">
+            <div class="section-title">🗺️ Product Roadmap & Feature Tracker</div>
+            
+            <!-- Filter Controls -->
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <select id="filter-status" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <option value="">All Statuses</option>
+                    <option value="in-progress">🚧 In Progress</option>
+                    <option value="planned">📅 Planned</option>
+                    <option value="backlog">📋 Backlog</option>
+                    <option value="shipped">✅ Shipped</option>
+                    <option value="archived">🗄️ Archived</option>
+                </select>
+                
+                <select id="filter-priority" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <option value="">All Priorities</option>
+                    <option value="high">🔴 High</option>
+                    <option value="medium">🟡 Medium</option>
+                    <option value="low">🔵 Low</option>
+                </select>
+                
+                <button onclick="clearFilters()" style="padding: 8px 16px; background: #6b7280; color: white; border: none; border-radius: 6px; cursor: pointer;">
+                    Clear Filters
+                </button>
+            </div>
+            
+            <!-- Roadmap Summary -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                <div style="background: #dbeafe; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #1e40af;" id="roadmap-shipped">0</div>
+                    <div style="color: #1e40af; font-size: 14px;">✅ Shipped</div>
+                </div>
+                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #92400e;" id="roadmap-in-progress">0</div>
+                    <div style="color: #92400e; font-size: 14px;">🚧 In Progress</div>
+                </div>
+                <div style="background: #ddd6fe; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #5b21b6;" id="roadmap-planned">0</div>
+                    <div style="color: #5b21b6; font-size: 14px;">📅 Planned</div>
+                </div>
+                <div style="background: #e5e7eb; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #374151;" id="roadmap-backlog">0</div>
+                    <div style="color: #374151; font-size: 14px;">📋 Backlog</div>
+                </div>
+            </div>
+            
+            <!-- All Feedback/Ideas Table -->
+            <table>
+                <thead>
+                    <tr>
+                        <th>Idea</th>
+                        <th>Requested By</th>
+                        <th>Priority</th>
+                        <th>Status</th>
+                        <th>Target</th>
+                        <th>Notes</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="roadmap-items">
+                    <tr><td colspan="7">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Approved Corrections History -->
+    <div class="grid-item full-width">
+        <div class="section">
+            <div class="section-title">✅ Approved Corrections History</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date Approved</th>
+                        <th>Approved By</th>
+                        <th>What Was Wrong</th>
+                        <th>Correction Applied</th>
+                    </tr>
+                </thead>
+                <tbody id="approved-corrections">
+                    <tr><td colspan="4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Conversation Detail Modal -->
+    <div class="modal" id="conversation-modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <div id="conversation-detail"></div>
+        </div>
+    </div>
+        
+        <!-- Suggestion Detail Modal -->
+        <div class="modal" id="suggestion-modal">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeSuggestionModal()">&times;</span>
+                <h2>📝 Suggestion Details</h2>
+                
+                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                    <strong>Submitted by:</strong> <span id="suggestion-user"></span><br>
+                    <strong>Date:</strong> <span id="suggestion-date"></span>
+                </div>
+                
+                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
+                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
+                    <div class="response-box" id="suggestion-wrong" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
+                    <h3 style="color: #166534;">✅ Correct Answer:</h3>
+                    <div class="response-box" id="suggestion-correct" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div style="margin-top: 20px; text-align: right;">
+                    <button onclick="approveSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
+                            style="background: #22c55e; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px;">
+                        ✓ Approve
+                    </button>
+                    <button onclick="rejectSuggestion(window.currentSuggestionId); closeSuggestionModal();" 
+                            style="background: #ef4444; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;">
+                        ✗ Reject
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Correction Detail Modal -->
+        <div class="modal" id="correction-modal">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeCorrectionModal()">&times;</span>
+                <h2>✅ Approved Correction Details</h2>
+                
+                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                    <strong>Approved by:</strong> <span id="correction-reviewed-by"></span><br>
+                    <strong>Date:</strong> <span id="correction-reviewed-at"></span>
+                </div>
+                
+                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
+                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
+                    <div class="response-box" id="correction-wrong" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
+                    <h3 style="color: #166534;">✅ Correction Applied:</h3>
+                    <div class="response-box" id="correction-correct" style="white-space: pre-wrap;"></div>
+                </div>
+            </div>
+        </div>
+
+    
+    <script>
+        let currentRange = { days: 7 };
+        
+        function setRange(range) {
+            // Update active button
+            document.querySelectorAll('.date-preset').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+            
+            // Calculate date range
+            const now = new Date();
+            if (typeof range === 'number') {
+                currentRange = { days: range };
+            } else if (range === 'thismonth') {
+                const start = new Date(now.getFullYear(), now.getMonth(), 1);
+                currentRange = { start: start.toISOString(), end: now.toISOString() };
+            } else if (range === 'lastmonth') {
+                const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                const end = new Date(now.getFullYear(), now.getMonth(), 0);
+                currentRange = { start: start.toISOString(), end: end.toISOString() };
+            } else if (range === 'thisyear') {
+                const start = new Date(now.getFullYear(), 0, 1);
+                currentRange = { start: start.toISOString(), end: now.toISOString() };
+            } else if (range === 'all') {
+                currentRange = {};
+            }
+            
+            loadData();
+        }
+        
+        
+        // Clean up response text - remove escape characters and format nicely
+        function cleanResponseText(text) {
+            if (!text) return '';
+            
+            // Simply truncate - don't try to clean escape characters
+            // The text should already be properly formatted from the API
+            const maxLength = 200;
+            if (text.length > maxLength) {
+                return text.substring(0, maxLength) + '...';
+            }
+            
+            return text;
+        }
+        
+        // Parse sources and extract filenames
+        function formatSources(sourcesJson) {
+            if (!sourcesJson) return 'No sources';
+            
+            try {
+                const sources = JSON.parse(sourcesJson);
+                if (!Array.isArray(sources) || sources.length === 0) {
+                    return 'No sources';
+                }
+                
+                // Extract unique filenames or document titles
+                const sourceNames = sources.map(s => {
+                    // Try to extract filename from path
+                    if (s.metadata && s.metadata.source) {
+                        const path = s.metadata.source;
+                        const filename = path.split('/').pop();
+                        return filename;
+                    }
+                    // Fallback to document number
+                    return s.document || 'Unknown';
+                }).filter((v, i, a) => a.indexOf(v) === i); // unique only
+                
+                return sourceNames.slice(0, 3).join(', ');
+            } catch (e) {
+                return 'Sources available';
+            }
+        }
+
+        
+        // Suggestion modal functions
+        window.currentSuggestionId = null;
+        window.suggestionsData = [];
+        window.correctionsData = [];
+        
+        function viewSuggestion(id) {
+            const suggestion = window.suggestionsData.find(s => s.id === id);
+            if (!suggestion) return;
+            
+            window.currentSuggestionId = id;
+            const modal = document.getElementById('suggestion-modal');
+            document.getElementById('suggestion-user').textContent = suggestion.user_name;
+            document.getElementById('suggestion-date').textContent = new Date(suggestion.timestamp).toLocaleString();
+            document.getElementById('suggestion-wrong').textContent = suggestion.wrong_answer;
+            document.getElementById('suggestion-correct').textContent = suggestion.correct_answer;
+            modal.classList.add('active');
+        }
+        
+        function closeSuggestionModal() {
+            document.getElementById('suggestion-modal').classList.remove('active');
+            window.currentSuggestionId = null;
+        }
+        
+        function viewCorrection(id) {
+            const correction = window.correctionsData.find(c => c.id === id);
+            if (!correction) return;
+            
+            const modal = document.getElementById('correction-modal');
+            document.getElementById('correction-reviewed-by').textContent = correction.reviewed_by || 'Unknown';
+            document.getElementById('correction-reviewed-at').textContent = correction.reviewed_at 
+                ? new Date(correction.reviewed_at).toLocaleString() 
+                : 'N/A';
+            document.getElementById('correction-wrong').textContent = correction.wrong_answer;
+            document.getElementById('correction-correct').textContent = correction.correct_answer;
+            modal.classList.add('active');
+        }
+        
+        function closeCorrectionModal() {
+            document.getElementById('correction-modal').classList.remove('active');
+        }
+        
+        // Add click handlers for suggestion and correction rows
+        document.addEventListener('click', function(e) {
+            const suggestionRow = e.target.closest('.suggestion-row');
+            if (suggestionRow) {
+                const id = parseInt(suggestionRow.dataset.id);
+                viewSuggestion(id);
+                return;
+            }
+            
+            const correctionRow = e.target.closest('.correction-row');
+            if (correctionRow) {
+                const id = parseInt(correctionRow.dataset.id);
+                viewCorrection(id);
+            }
+        });
+        
+        function editRoadmapItem(feedbackId) {
+            // Simpler prompts to avoid rendering issues
+            const newStatus = prompt("Roadmap Status (backlog/planned/in-progress/shipped/archived):", "backlog");
+            if (!newStatus) return;
+            
+            const newPriority = prompt("Priority (low/medium/high):", "medium");
+            const newTarget = prompt("Target Quarter (e.g., Q2 2026):");
+            const newNotes = prompt("Internal Notes (optional):");
+            
+            // Save via API
+            fetch(`/api/roadmap/${feedbackId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    roadmap_status: newStatus,
+                    priority: newPriority,
+                    target_quarter: newTarget,
+                    notes: newNotes
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    alert('✅ Roadmap updated successfully!');
+                    loadData(); // Refresh dashboard
+                } else {
+                    alert('❌ Error: ' + data.message);
+                }
+            })
+            .catch(err => {
+                alert('❌ Failed to update: ' + err.message);
+            });
+        }
+        
+        // Store all feedback for filtering
+        window.allFeedback = [];
+        
+        function filterRoadmap() {
+            const statusFilter = document.getElementById('filter-status').value;
+            const priorityFilter = document.getElementById('filter-priority').value;
+            
+            let filtered = window.allFeedback;
+            
+            if (statusFilter) {
+                filtered = filtered.filter(f => f.roadmap_status === statusFilter);
+            }
+            
+            if (priorityFilter) {
+                filtered = filtered.filter(f => f.priority === priorityFilter);
+            }
+            
+            renderRoadmapTable(filtered);
+        }
+        
+        function clearFilters() {
+            document.getElementById('filter-status').value = '';
+            document.getElementById('filter-priority').value = '';
+            renderRoadmapTable(window.allFeedback);
+        }
+        
+        function renderRoadmapTable(feedbackItems) {
+            const statusColors = {
+                'shipped': 'background: #dbeafe; color: #1e40af;',
+                'in-progress': 'background: #fef3c7; color: #92400e;',
+                'planned': 'background: #ddd6fe; color: #5b21b6;',
+                'backlog': 'background: #e5e7eb; color: #374151;',
+                'archived': 'background: #f3f4f6; color: #6b7280;'
+            };
+            const priorityColors = {
+                'high': 'background: #fee2e2; color: #991b1b;',
+                'medium': 'background: #fef3c7; color: #92400e;',
+                'low': 'background: #e0f2fe; color: #075985;'
+            };
+            
+            // Helper function to escape HTML
+            const escapeHtml = (text) => {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            };
+            
+            const roadmapHtml = feedbackItems && feedbackItems.length > 0
+                ? feedbackItems.map(f => {
+                    const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
+                    const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
+                    
+                    // Escape and truncate text safely
+                    const feedbackPreview = escapeHtml(f.feedback_text.substring(0, 100)) + (f.feedback_text.length > 100 ? '...' : '');
+                    const notesPreview = f.notes ? (escapeHtml(f.notes.substring(0, 50)) + (f.notes.length > 50 ? '...' : '')) : '-';
+                    
+                    return `
+                        <tr>
+                            <td style="max-width: 300px;">${feedbackPreview}</td>
+                            <td>${escapeHtml(f.user_name)}</td>
+                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
+                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
+                            <td>${f.target_quarter || '-'}</td>
+                            <td style="max-width: 200px; font-size: 12px; color: #6b7280;">${notesPreview}</td>
+                            <td>
+                                <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('')
+                : '<tr><td colspan="7">No items match filters</td></tr>';
+            
+            document.getElementById('roadmap-items').innerHTML = roadmapHtml;
+        }
+
+        async function loadData() {
+            try {
+                const params = new URLSearchParams(currentRange);
+                const response = await fetch('/api/dashboard?' + params);
+                const data = await response.json();
+                
+                // Update metrics
+                document.getElementById('total-questions').textContent = data.total_questions;
+                
+                const successRate = data.success_rate;
+                const successEl = document.getElementById('success-rate');
+                successEl.textContent = successRate + '%';
+                successEl.className = 'metric-value success-rate ' + 
+                    (successRate >= 80 ? 'high' : successRate >= 60 ? 'medium' : 'low');
+                
+                document.getElementById('answered-count').textContent = data.answered;
+                document.getElementById('active-users').textContent = data.active_users;
+                document.getElementById('total-cost').textContent = '$' + data.total_cost_usd.toFixed(2);
+                
+                // Cost breakdown
+                const costParts = [];
+                if (data.api_costs.anthropic) costParts.push(`Claude: $${data.api_costs.anthropic.toFixed(2)}`);
+                if (data.api_costs.pinecone) costParts.push(`Pinecone: $${data.api_costs.pinecone.toFixed(2)}`);
+                if (data.api_costs.voyage) costParts.push(`Voyage: $${data.api_costs.voyage.toFixed(2)}`);
+                document.getElementById('cost-breakdown').textContent = costParts.join(' • ') || 'N/A';
+                
+                // Response time
+                document.getElementById('avg-response-time').textContent = 
+                    (data.response_time.avg_ms / 1000).toFixed(1) + 's';
+                document.getElementById('response-time-range').textContent = 
+                    `${(data.response_time.min_ms / 1000).toFixed(1)}s - ${(data.response_time.max_ms / 1000).toFixed(1)}s`;
+                
+                document.getElementById('pending-reviews').textContent = data.pending_suggestions;
+                document.getElementById('new-feedback-count').textContent = data.new_feedback;
+                
+                // Date range display
+                if (currentRange.days) {
+                    document.getElementById('date-range-display').textContent = `Last ${currentRange.days} days`;
+                } else if (currentRange.start) {
+                    document.getElementById('date-range-display').textContent = 'Custom range';
+                } else {
+                    document.getElementById('date-range-display').textContent = 'All time';
+                }
+                
+                // Recent conversations
+                displayConversations(data.conversations);
+                
+                // Topics
+                displayTopics(data.topics, data.total_questions);
+                
+                // Top users
+                const usersHtml = data.top_users.map((user, i) => `
+                    <tr>
+                        <td>${i + 1}</td>
+                        <td>${user.name}</td>
+                        <td>${user.count}</td>
+                    </tr>
+                `).join('');
+                document.getElementById('top-users').innerHTML = usersHtml || '<tr><td colspan="3">No data yet</td></tr>';
+                
+                // Helper for HTML escaping (defined here for questions)
+                const escapeHtml = (text) => {
+                    if (!text) return '';
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                };
+                
+                // Top questions - handle both clustered and regular format
+                let questionsHtml;
+                if (data.question_clusters && data.question_clusters.length > 0) {
+                    // Use clustered questions
+                    questionsHtml = data.question_clusters.map((cluster, i) => {
+                        const variationsText = cluster.variations && cluster.variations.length > 1 
+                            ? ` <span style="color: #6b7280; font-size: 12px;">(+${cluster.variations.length - 1} similar)</span>`
+                            : '';
+                        const exampleVars = cluster.example_variations ? escapeHtml(cluster.example_variations.slice(1, 3).join('; ')) : '';
+                        return `
+                        <tr title="${exampleVars}">
+                            <td>${i + 1}</td>
+                            <td>${escapeHtml(cluster.representative)}${variationsText}</td>
+                            <td>${cluster.total_count}</td>
+                        </tr>
+                    `;
+                    }).join('');
+                } else if (data.top_questions && data.top_questions.length > 0) {
+                    // Fall back to regular top questions
+                    questionsHtml = data.top_questions.map((q, i) => `
+                        <tr>
+                            <td>${i + 1}</td>
+                            <td>${escapeHtml(q.question)}</td>
+                            <td>${q.count}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    questionsHtml = '';
+                }
+                document.getElementById('top-questions').innerHTML = questionsHtml || '<tr><td colspan="3">No questions yet</td></tr>';
+                
+                // Failed queries
+                displayFailedQueries(data.failed_queries);
+                
+                // Command usage
+                const commandHtml = (data.command_usage && data.command_usage.length > 0)
+                    ? data.command_usage.map(c => `
+                        <tr>
+                            <td>${c.command}</td>
+                            <td>${c.count}</td>
+                        </tr>
+                    `).join('')
+                    : '<tr><td colspan="2">No commands used yet (use slash commands like /suggest, /help, /stats)</td></tr>';
+                document.getElementById('command-usage').innerHTML = commandHtml;
+                
+                // Suggestions - use data attributes to avoid escaping issues
+                const suggestionsHtml = data.suggestions.map(s => `
+                    <tr class="suggestion-row" 
+                        data-id="${s.id}"
+                        data-user="${s.user_name}"
+                        data-timestamp="${s.timestamp}"
+                        style="cursor: pointer;">
+                        <td>${s.user_name}</td>
+                        <td>${new Date(s.timestamp).toLocaleDateString()}</td>
+                        <td>${s.wrong_answer.substring(0, 100)}${s.wrong_answer.length > 100 ? '...' : ''}</td>
+                        <td>${s.correct_answer.substring(0, 100)}${s.correct_answer.length > 100 ? '...' : ''}</td>
+                        <td onclick="event.stopPropagation();">
+                            <button class="approve-btn" onclick="approveSuggestion(${s.id})">✓</button>
+                            <button class="reject-btn" onclick="rejectSuggestion(${s.id})">✗</button>
+                        </td>
+                    </tr>
+                `).join('');
+                document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
+                
+                // Store suggestions data for modal access
+                window.suggestionsData = data.suggestions;
+                
+                
+                // Approved Corrections History - use data attributes for click to expand
+                const correctionsHtml = data.approved_corrections && data.approved_corrections.length > 0
+                    ? data.approved_corrections.map(c => `
+                        <tr class="correction-row" 
+                            data-id="${c.id}"
+                            data-reviewed-at="${c.reviewed_at || ''}"
+                            data-reviewed-by="${c.reviewed_by || 'Unknown'}"
+                            style="cursor: pointer;">
+                            <td>${c.reviewed_at ? new Date(c.reviewed_at).toLocaleString() : 'N/A'}</td>
+                            <td>${c.reviewed_by || 'Unknown'}</td>
+                            <td>${c.wrong_answer.substring(0, 80)}${c.wrong_answer.length > 80 ? '...' : ''}</td>
+                            <td>${c.correct_answer.substring(0, 80)}${c.correct_answer.length > 80 ? '...' : ''}</td>
+                        </tr>
+                    `).join('')
+                    : '<tr><td colspan="4">No approved corrections yet</td></tr>';
+                document.getElementById('approved-corrections').innerHTML = correctionsHtml;
+                
+                // Store corrections data for modal
+                window.correctionsData = data.approved_corrections;
+                
+                // Roadmap Summary
+                const roadmapSummary = data.roadmap_summary || { by_status: {} };
+                document.getElementById('roadmap-shipped').textContent = roadmapSummary.by_status['shipped'] || 0;
+                document.getElementById('roadmap-in-progress').textContent = roadmapSummary.by_status['in-progress'] || 0;
+                document.getElementById('roadmap-planned').textContent = roadmapSummary.by_status['planned'] || 0;
+                document.getElementById('roadmap-backlog').textContent = roadmapSummary.by_status['backlog'] || 0;
+                
+                // Store all feedback for filtering
+                window.allFeedback = data.feedback || [];
+                
+                // Render roadmap table (respecting current filters)
+                filterRoadmap();
+                
+            } catch (error) {
+                console.error('Error loading dashboard data:', error);
+            }
+        }
+        
+        function displayConversations(conversations) {
+            if (!conversations || conversations.length === 0) {
+                document.getElementById('recent-conversations').innerHTML = '<p>No conversations yet</p>';
+                return;
+            }
+            
+            const html = conversations.slice(0, 10).map(conv => {
+                const topicClass = 'topic-' + conv.topic.toLowerCase().replace(/ /g, '-');
+                // Truncate question and response for preview
+                const questionPreview = conv.question.length > 100 
+                    ? conv.question.substring(0, 100) + '...' 
+                    : conv.question;
+                const responsePreview = conv.response 
+                    ? (conv.response.length > 150 
+                        ? conv.response.substring(0, 150) + '...' 
+                        : conv.response)
+                    : 'No response';
+                
+                return `
+                    <div class="conversation-item" onclick='showConversation(${JSON.stringify(conv)})' style="cursor: pointer;">
+                        <div class="conversation-question" style="font-weight: 600; margin-bottom: 8px;">${questionPreview}</div>
+                        <div class="conversation-response" style="color: #6b7280; font-size: 14px; margin-bottom: 8px;">${responsePreview}</div>
+                        <div class="conversation-meta">
+                            <span>👤 ${conv.user_name}</span>
+                            <span>🕐 ${new Date(conv.timestamp).toLocaleString()}</span>
+                            <span class="topic-pill ${topicClass}">${conv.topic}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('recent-conversations').innerHTML = html;
+        }
+        
+        function displayTopics(topics, total) {
+            if (!topics || topics.length === 0) {
+                document.getElementById('topics-table').innerHTML = '<tr><td colspan="3">No data yet</td></tr>';
+                return;
+            }
+            
+            const html = topics.map(t => {
+                const pct = ((t.count / total) * 100).toFixed(1);
+                return `
+                    <tr>
+                        <td>${t.topic}</td>
+                        <td>${t.count}</td>
+                        <td>${pct}%</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            document.getElementById('topics-table').innerHTML = html;
+        }
+        
+        function displayFailedQueries(queries) {
+            if (!queries || queries.length === 0) {
+                document.getElementById('failed-queries').innerHTML = '<p>No failed queries - great job!</p>';
+                return;
+            }
+            
+            const html = queries.map(q => `
+                <div class="conversation-item" style="border-left-color: #dc3545;">
+                    <div class="conversation-question">${q.question}</div>
+                    <div class="conversation-meta">
+                        <span class="badge badge-danger">Confidence: ${q.confidence ? (q.confidence * 100).toFixed(0) + '%' : 'N/A'}</span>
+                    </div>
+                </div>
+            `).join('');
+            
+            document.getElementById('failed-queries').innerHTML = html;
+        }
+        
+        function showConversation(conv) {
+            const sources = conv.sources && conv.sources.length > 0 ? 
+                '<div class="sources-list"><strong>Sources:</strong><ul>' + 
+                conv.sources.map(s => `<li>${s}</li>`).join('') +
+                '</ul></div>' : '';
+            
+            const html = `
+                <h2>Conversation Detail</h2>
+                <div style="margin: 20px 0;">
+                    <strong>👤 ${conv.user_name}</strong> • 
+                    <span>${new Date(conv.timestamp).toLocaleString()}</span> • 
+                    <span class="topic-pill topic-${conv.topic.toLowerCase().replace(/ /g, '-')}">${conv.topic}</span>
+                </div>
+                <div>
+                    <h3>Question:</h3>
+                    <div class="response-box">${conv.question}</div>
+                </div>
+                <div>
+                    <h3>Response:</h3>
+                    <div class="response-box">${conv.response || 'No response recorded'}</div>
+                </div>
+                ${sources}
+                <div style="margin-top: 20px; font-size: 12px; color: #7f8c8d;">
+                    ⏱️ Response time: ${conv.response_time_ms}ms • 
+                    💰 Cost: $${(conv.cost_usd || 0).toFixed(4)}
+                </div>
+            `;
+            
+            document.getElementById('conversation-detail').innerHTML = html;
+            document.getElementById('conversation-modal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('conversation-modal').classList.remove('active');
+        }
+        
+        async function approveSuggestion(id) {
+            if (!confirm('Approve this suggestion? It will be applied immediately.')) return;
+            
+            try {
+                const response = await fetch('/api/suggestions/' + id + '/approve', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    alert('✅ Suggestion approved!');
+                    loadData();
+                } else {
+                    alert('❌ Error approving suggestion');
+                }
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+        
+        async function rejectSuggestion(id) {
+            if (!confirm('Reject this suggestion?')) return;
+            
+            try {
+                const response = await fetch('/api/suggestions/' + id + '/reject', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    alert('✅ Suggestion rejected');
+                    loadData();
+                } else {
+                    alert('❌ Error rejecting suggestion');
+                }
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+        
+        // Load data on page load
+        loadData();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+        
+        // Close modal on outside click
+        window.onclick = function(event) {
+            const modal = document.getElementById('conversation-modal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        }
+    </script>
+</body>
+</html>
+"""
+
 
 def require_auth(f):
     """Decorator to require authentication for routes."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not OAUTH_CONFIGURED:
+        if not OAUTH_ENABLED:
             # If OAuth not configured, allow access (development mode)
             return f(*args, **kwargs)
         
         if 'user_email' not in session:
             return redirect(url_for('login'))
+        
+        # Check if user is authorized
+        user_email = session['user_email']
+        if user_email not in AUTHORIZED_EMAILS:
+            return render_template_string(LOGIN_HTML, 
+                error=f"Access denied. {user_email} is not authorized.",
+                auth_url=url_for('login'))
+        
         return f(*args, **kwargs)
     return decorated_function
 
@@ -905,64 +1396,70 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     @app.route("/login")
     def login():
         """Login page with Google OAuth."""
-        if not OAUTH_CONFIGURED:
+        if not OAUTH_ENABLED:
             return "OAuth not configured. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET environment variables."
         
-        # Build OAuth authorization URL
-        from urllib.parse import urlencode
+        # Hardcode redirect URI to fix the redirect_uri_mismatch error
+        redirect_uri = "https://web-production-44b7c.up.railway.app/auth/callback"
+        auth_url = (
+            f"https://accounts.google.com/o/oauth2/v2/auth?"
+            f"client_id={GOOGLE_CLIENT_ID}&"
+            f"redirect_uri={redirect_uri}&"
+            f"response_type=code&"
+            f"scope=openid email profile&"
+            f"access_type=offline"
+        )
         
-        params = {
-            'client_id': GOOGLE_OAUTH_CLIENT_ID,
-            'redirect_uri': url_for('oauth_callback', _external=True),
-            'response_type': 'code',
-            'scope': 'openid email profile',
-            'access_type': 'offline',
-            'prompt': 'select_account'
-        }
-        auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
         return render_template_string(LOGIN_HTML, auth_url=auth_url, error=None)
     
-    @app.route("/oauth/callback")
-    def oauth_callback():
+    @app.route("/auth/callback")
+    def auth_callback():
         """Handle Google OAuth callback."""
-        if not OAUTH_CONFIGURED:
+        if not OAUTH_ENABLED:
             return "OAuth not configured"
         
         code = request.args.get('code')
         if not code:
-            return render_template_string(LOGIN_HTML,
-                error="No authorization code received",
-                auth_url=url_for('login'))
+            return redirect(url_for('login'))
         
         try:
-            # Exchange code for tokens
-            import requests as req
+            # Exchange code for token
             token_url = "https://oauth2.googleapis.com/token"
-            data = {
+            redirect_uri = "https://web-production-44b7c.up.railway.app/auth/callback"
+            
+            token_data = {
                 'code': code,
-                'client_id': GOOGLE_OAUTH_CLIENT_ID,
-                'client_secret': GOOGLE_OAUTH_CLIENT_SECRET,
-                'redirect_uri': url_for('oauth_callback', _external=True),
+                'client_id': GOOGLE_CLIENT_ID,
+                'client_secret': GOOGLE_CLIENT_SECRET,
+                'redirect_uri': redirect_uri,
                 'grant_type': 'authorization_code'
             }
             
-            token_response = req.post(token_url, data=data)
-            tokens = token_response.json()
+            token_response = requests.post(token_url, data=token_data)
+            token_json = token_response.json()
             
-            if 'error' in tokens:
-                raise Exception(tokens.get('error_description', tokens['error']))
+            if 'id_token' not in token_json:
+                return render_template_string(LOGIN_HTML, 
+                    error="Authentication failed. Please try again.",
+                    auth_url=url_for('login'))
             
-            # Verify ID token and extract user info
-            id_info = id_token.verify_oauth2_token(
-                tokens['id_token'],
+            # Verify ID token
+            idinfo = id_token.verify_oauth2_token(
+                token_json['id_token'],
                 google_requests.Request(),
-                GOOGLE_OAUTH_CLIENT_ID
+                GOOGLE_CLIENT_ID
             )
             
             # Store user info in session
-            session['user_email'] = id_info.get('email')
-            session['user_name'] = id_info.get('name')
-            session['user_picture'] = id_info.get('picture')
+            user_email = idinfo['email']
+            session['user_email'] = user_email
+            session['user_name'] = idinfo.get('name', user_email)
+            
+            # Check if authorized
+            if user_email not in AUTHORIZED_EMAILS:
+                return render_template_string(LOGIN_HTML,
+                    error=f"Access denied. {user_email} is not authorized to access this dashboard.",
+                    auth_url=url_for('login'))
             
             return redirect(url_for('dashboard'))
             
@@ -982,105 +1479,93 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     def dashboard():
         """Main dashboard page (OAuth protected)."""
         user_email = session.get('user_email', 'Unknown')
-        return render_template_string(DASHBOARD_V2_HTML, 
-            user_email=user_email,
-            active_page='analytics',
-            page_title='Analytics')
+        return render_template_string(DASHBOARD_V2_HTML, user_email=user_email)
     
     @app.route("/api/dashboard")
     @require_auth
     def api_dashboard():
         """Dashboard data API (OAuth protected)."""
-        days = request.args.get('days', 7, type=int)
+        days = request.args.get('days', type=int)
+        start_date = request.args.get('start')
+        end_date = request.args.get('end')
         
-        # Get stats from analytics_db
-        stats = analytics_db.get_stats(days=days)
+        stats = analytics_db.get_stats(
+            start_date=start_date,
+            end_date=end_date,
+            days=days
+        )
         
-        # Get recent conversations
-        conversations = []
-        recent = analytics_db.get_recent_conversations(limit=10)
-        for conv in recent:
-            conversations.append({
-                'question': conv.question,
-                'user': conv.user_name,
-                'topic': conv.topic,
-                'when': conv.timestamp,
-                'answered': conv.answered
-            })
+        # Get question clusters for better grouping
+        try:
+            question_clusters = analytics_db.get_question_clusters(threshold=0.85)
+        except Exception as e:
+            logger.warning(f"Question clustering failed: {e}")
+            question_clusters = []
+
         
-        # Get topics
-        topics = {}
-        for conv in recent:
-            topic = conv.topic or 'General'
-            topics[topic] = topics.get(topic, 0) + 1
-        
-        # Get slash commands from stats
-        slash_commands = {}
-        for cmd in stats.get('command_usage', []):
-            slash_commands[cmd['command']] = cmd['count']
+        conversations = analytics_db.get_recent_conversations(limit=20)
+        suggestions = analytics_db.get_pending_suggestions()
+        feedback = analytics_db.get_feedback(limit=100)  # Get all feedback for roadmap
+        roadmap_summary = analytics_db.get_roadmap_summary()
+        approved_corrections = analytics_db.get_approved_corrections(limit=50)
         
         return jsonify({
-            'total_questions': stats.get('total_questions', 0),
-            'success_rate': stats.get('success_rate', 0),
-            'answered_count': stats.get('answered_count', 0),
-            'active_users': stats.get('active_users', 0),
-            'api_cost': stats.get('api_cost', '0.00'),
-            'avg_response_time': stats.get('avg_response_time', 0),
-            'time_range': stats.get('time_range', 'N/A'),
-            'pending_reviews': len(analytics_db.get_pending_suggestions()),
-            'feedback_count': f"{stats.get('new_feedback', 0)} new feedback",
-            'conversations': conversations,
-            'topics': topics,
-            'slash_commands': slash_commands
+            **stats,
+            "conversations": conversations,
+            "suggestions": suggestions,
+            "question_clusters": question_clusters,
+            "feedback": feedback,
+            "roadmap_summary": roadmap_summary,
+            "approved_corrections": approved_corrections
         })
     
-    @app.route("/conversations")
+    @app.route("/api/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     @require_auth
-    def conversations():
-        """Conversations page."""
-        convs = analytics_db.get_recent_conversations(limit=100)
-        return render_template_string(CONVERSATIONS_PAGE,
-            active_page='conversations',
-            page_title='Conversations',
-            conversations=convs)
-    
-    @app.route("/feedback-page")
-    @require_auth
-    def feedback_page():
-        """Feedback page."""
-        suggestions = analytics_db.get_pending_suggestions()
-        return render_template_string(FEEDBACK_PAGE,
-            active_page='feedback',
-            page_title='Feedback',
-            suggestions=suggestions)
-    
-    @app.route("/roadmap-page")
-    @require_auth
-    def roadmap_page():
-        """Roadmap page."""
-        roadmap = analytics_db.get_roadmap_summary()
-        return render_template_string(ROADMAP_PAGE,
-            active_page='roadmap',
-            page_title='Roadmap',
-            roadmap=roadmap)
-    
-    @app.route("/approve-suggestion", methods=["POST"])
-    @require_auth
-    def approve_suggestion():
+    def api_approve_suggestion(suggestion_id):
         """Approve a suggestion (OAuth protected)."""
-        data = request.get_json()
-        suggestion_id = data.get('id')
-        if suggestion_id:
-            analytics_db.approve_suggestion(suggestion_id, session.get('user_email', 'unknown'))
-        return jsonify({'status': 'success'})
+        try:
+            reviewed_by = session.get('user_email', 'unknown')
+            correction_data = analytics_db.approve_suggestion(
+                suggestion_id,
+                reviewed_by=reviewed_by
+            )
+            return jsonify({"status": "ok", "message": "Suggestion approved"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
     
-    @app.route("/reject-suggestion", methods=["POST"])
+    @app.route("/api/suggestions/<int:suggestion_id>/reject", methods=["POST"])
     @require_auth
-    def reject_suggestion():
+    def api_reject_suggestion(suggestion_id):
         """Reject a suggestion (OAuth protected)."""
-        data = request.get_json()
-        suggestion_id = data.get('id')
-        if suggestion_id:
-            analytics_db.reject_suggestion(suggestion_id, session.get('user_email', 'unknown'))
-        return jsonify({'status': 'success'})
+        try:
+            reviewed_by = session.get('user_email', 'unknown')
+            analytics_db.reject_suggestion(
+                suggestion_id,
+                reviewed_by=reviewed_by
+            )
+            return jsonify({"status": "ok", "message": "Suggestion rejected"})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+    
+    @app.route("/api/roadmap/<int:feedback_id>", methods=["POST"])
+    @require_auth
+    def api_update_roadmap(feedback_id):
+        """Update roadmap status for a feedback item (OAuth protected)."""
+        try:
+            data = request.get_json()
+            
+            updated = analytics_db.update_feedback_roadmap(
+                feedback_id,
+                roadmap_status=data.get('roadmap_status'),
+                priority=data.get('priority'),
+                target_quarter=data.get('target_quarter'),
+                notes=data.get('notes')
+            )
+            
+            if updated:
+                return jsonify({"status": "ok", "message": "Roadmap updated"})
+            else:
+                return jsonify({"status": "error", "message": "Feedback item not found"}), 404
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
 
