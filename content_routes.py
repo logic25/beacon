@@ -519,6 +519,27 @@ def auto_generate_candidates():
     """Generate content candidates from analytics data automatically"""
     try:
         import sqlite3
+        
+        # Topic detection (matches analytics.py logic)
+        def detect_topic(text):
+            text_lower = text.lower()
+            topics = {
+                "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "contextual"],
+                "DOB": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
+                "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+                "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation"],
+                "Certificate of Occupancy": ["co", "certificate of occupancy", "tco", "temporary co"],
+                "Building Code": ["building code", "egress", "fire", "occupancy group", "sprinkler"],
+                "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
+                "Plans": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
+                "COMMAND": ["/correct", "/tip", "/feedback", "/help"],
+            }
+            for topic, keywords in topics.items():
+                if any(kw in text_lower for kw in keywords):
+                    return topic
+            return "General"
+        
+        import sqlite3
         import json
         from datetime import datetime
         import uuid
@@ -526,20 +547,56 @@ def auto_generate_candidates():
         conn = sqlite3.connect('beacon_analytics.db')
         c = conn.cursor()
         
+        # First check total questions
+        c.execute("SELECT COUNT(*) FROM analytics")
+        total_count = c.fetchone()[0]
+        print(f"DEBUG: Total questions in analytics: {total_count}")
+        
+        # Check questions with topics
+        c.execute("SELECT COUNT(*) FROM analytics WHERE topic IS NOT NULL")
+        with_topics = c.fetchone()[0]
+        print(f"DEBUG: Questions with topics: {with_topics}")
+        
+        # Get topic breakdown
         c.execute("""
-            SELECT topic, COUNT(*) as count, GROUP_CONCAT(question, '|||') as questions
+            SELECT topic, COUNT(*) as count
             FROM analytics
             WHERE topic IS NOT NULL
             GROUP BY topic
-            HAVING count >= 2
             ORDER BY count DESC
         """)
+        all_topics = c.fetchall()
+        print(f"DEBUG: All topics: {all_topics}")
         
-        topics = c.fetchall()
+        # Get all questions and detect topics on the fly
+        c.execute("SELECT question FROM analytics")
+        all_questions = c.fetchall()
+        
+        # Group by detected topic
+        from collections import defaultdict
+        topic_questions = defaultdict(list)
+        
+        for (question,) in all_questions:
+            detected_topic = detect_topic(question)
+            topic_questions[detected_topic].append(question)
+        
+        # Filter to topics with 2+ questions
+        topics = [
+            (topic, len(questions), '|||'.join(questions))
+            for topic, questions in topic_questions.items()
+            if len(questions) >= 2
+        ]
+        topics.sort(key=lambda x: x[1], reverse=True)  # Sort by count
+        print(f"DEBUG: Topics with 2+ questions: {topics}")
         conn.close()
         
         if not topics:
-            return jsonify({"success": True, "message": "Need more questions", "candidates_created": 0})
+            return jsonify({
+                "success": True, 
+                "message": f"Found {with_topics} questions with topics, but none have 2+ questions per topic. Topics: {[t[0] for t in all_topics]}", 
+                "candidates_created": 0,
+                "debug": {"total": total_count, "with_topics": with_topics, "all_topics": all_topics}
+            })
         
         candidates_created = []
         content_conn = sqlite3.connect(engine.db_path)

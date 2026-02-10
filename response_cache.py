@@ -188,23 +188,53 @@ class SemanticCache:
         return intersection / union if union > 0 else 0.0
 
     def _categorize_question(self, question: str) -> str:
-        """Categorize question for analytics."""
+        """Categorize question for analytics.
+        
+        Order matters - more specific categories checked first to avoid
+        generic keyword matches (e.g., FDNY before generic "filing").
+        """
         q_lower = question.lower()
 
-        if any(w in q_lower for w in ['far', 'setback', 'height', 'bulk', 'yard', 'coverage']):
-            return "zoning_bulk"
-        elif any(w in q_lower for w in ['use group', 'permitted', 'allowed', 'can i build']):
-            return "zoning_use"
-        elif any(w in q_lower for w in ['objection', 'examiner', 'plan exam', 'audit']):
+        # FDNY - check first before generic "filing" keyword
+        if any(w in q_lower for w in ['fdny', 'fire alarm', 'sprinkler', 'standpipe', 
+                                       'suppression', 'fire safety', 'fire protection',
+                                       'ansul', 'commercial hood']):
+            return "fdny"
+        
+        # DOB Objections
+        elif any(w in q_lower for w in ['objection', 'examiner', 'plan exam', 'audit', 'ai1', 'ai-1']):
             return "objections"
-        elif any(w in q_lower for w in ['permit', 'filing', 'alt 1', 'alt 2', 'alt 3', 'nb']):
-            return "permits"
-        elif any(w in q_lower for w in ['violation', 'ecb', 'dob violation']):
+        
+        # Violations
+        elif any(w in q_lower for w in ['violation', 'ecb', 'dob violation', 'penalty', 'summons']):
             return "violations"
-        elif any(w in q_lower for w in ['co', 'tco', 'certificate', 'sign off']):
+        
+        # Certificates (specific before generic permits)
+        elif any(w in q_lower for w in ['co ', 'c of o', 'tco', 'temporary co', 'certificate of occupancy', 
+                                         'sign off', 'final', 'loa', 'letter of approval']):
             return "certificates"
-        elif any(w in q_lower for w in ['landmark', 'lpc', 'historic']):
+        
+        # Zoning - Bulk/Dimensional
+        elif any(w in q_lower for w in ['far', 'setback', 'height limit', 'bulk', 'yard', 
+                                         'coverage', 'floor area', 'sky exposure']):
+            return "zoning_bulk"
+        
+        # Zoning - Use
+        elif any(w in q_lower for w in ['use group', 'permitted use', 'allowed use', 
+                                         'can i build', 'zoning district', 'zr ', 'special permit']):
+            return "zoning_use"
+        
+        # Landmarks
+        elif any(w in q_lower for w in ['landmark', 'lpc', 'historic', 'landmarks preservation']):
             return "landmarks"
+        
+        # DOB Permits (check last - most generic)
+        elif any(w in q_lower for w in ['permit', 'filing', 'alt 1', 'alt 2', 'alt 3', 
+                                         'alt1', 'alt2', 'alt3', 'nb', 'new building', 
+                                         'alteration', 'dob now']):
+            return "permits"
+        
+        # Default
         else:
             return "general"
 
@@ -417,7 +447,7 @@ if __name__ == "__main__":
 
     if args.stats:
         stats = cache.get_cache_stats()
-        print("\n📊 Cache Statistics:")
+        print("\nðŸ“Š Cache Statistics:")
         print(f"   Total entries: {stats['total_entries']}")
         print(f"   Total hits: {stats['total_hits']}")
         print(f"   Hit rate: {stats['hit_rate']:.1%}")
@@ -427,7 +457,7 @@ if __name__ == "__main__":
 
     if args.top:
         questions = cache.get_top_questions(args.top, args.category)
-        print(f"\n🔥 Top {len(questions)} Questions:")
+        print(f"\nðŸ”¥ Top {len(questions)} Questions:")
         for i, q in enumerate(questions, 1):
             print(f"\n{i}. [{q['category']}] ({q['count']} asks)")
             print(f"   {q['question'][:80]}...")
