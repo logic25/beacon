@@ -166,7 +166,10 @@ class ContentEngine:
             # Get angle with Claude
             if len(questions) > 0:
                 angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
-                angle = self.claude.get_response(angle_prompt, [])
+                angle = self.claude.get_response(
+                    user_message=angle_prompt,
+                    conversation_history=[]
+                )
             else:
                 angle = None
             
@@ -207,7 +210,10 @@ Respond JSON:
   "review_question": "question if uncertain"
 }}"""
         
-        response = self.claude.get_response(prompt, [])
+        response = self.claude.get_response(
+            user_message=prompt,
+            conversation_history=[]
+        )
         
         # Parse JSON
         try:
@@ -320,7 +326,10 @@ Write 1200-1500 words:
 
 Format: Markdown with # headers"""
 
-        content = self.claude.get_response(prompt, [])
+        content = self.claude.get_response(
+            user_message=prompt,
+            conversation_history=[]
+        )
         
         # Save generated content
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
@@ -362,7 +371,10 @@ Format: Markdown with # headers"""
 
 Tone: Direct, actionable"""
 
-        content = self.claude.get_response(prompt, [])
+        content = self.claude.get_response(
+            user_message=prompt,
+            conversation_history=[]
+        )
         
         # Save
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
