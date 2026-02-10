@@ -1163,8 +1163,8 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             **stats,
             "conversations": conversations,
             "suggestions": suggestions,
-        ,
-            "question_clusters": question_clusters})
+            "question_clusters": question_clusters
+        })
     
     @app.route("/api/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     @require_auth
