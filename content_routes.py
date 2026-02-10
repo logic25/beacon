@@ -309,7 +309,10 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                     </svg>
                     <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No content opportunities yet</div>
-                    <div style="font-size: 14px;">AI will identify content based on team questions</div>
+                    <div style="font-size: 14px; margin-bottom: 20px;">AI will identify content based on team questions</div>
+                    <button onclick="generateContentIdeas()" style="padding: 12px 24px; background: #f59e0b; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px;">
+                        🤖 Auto-Generate Content Ideas
+                    </button>
                 </div>
             </div>
         </div>
@@ -420,6 +423,33 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
         
         loadCandidates();
     </script>
+
+    <script>
+    async function generateContentIdeas() {
+        const btn = event.target;
+        btn.disabled = true;
+        btn.textContent = '⏳ Analyzing questions...';
+        
+        try {
+            const response = await fetch('/api/content/auto-generate', {method: 'POST'});
+            const data = await response.json();
+            
+            if (data.success && data.candidates_created > 0) {
+                alert(`✅ Created ${data.candidates_created} content opportunities!`);
+                window.location.reload();
+            } else {
+                alert('Need at least 2 questions per topic to generate content ideas');
+                btn.disabled = false;
+                btn.textContent = '🤖 Auto-Generate Content Ideas';
+            }
+        } catch (error) {
+            alert('Error: ' + error.message);
+            btn.disabled = false;
+            btn.textContent = '🤖 Auto-Generate Content Ideas';
+        }
+    }
+    </script>
+
 </body>
 </html>'''
 
@@ -483,3 +513,97 @@ def decide():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+
+@content_bp.route('/api/content/auto-generate', methods=['POST'])
+def auto_generate_candidates():
+    """Generate content candidates from analytics data automatically"""
+    try:
+        import sqlite3
+        import json
+        from datetime import datetime
+        import uuid
+        
+        conn = sqlite3.connect('beacon_analytics.db')
+        c = conn.cursor()
+        
+        c.execute("""
+            SELECT topic, COUNT(*) as count, GROUP_CONCAT(question, '|||') as questions
+            FROM analytics
+            WHERE topic IS NOT NULL AND answered = 1
+            GROUP BY topic
+            HAVING count >= 2
+            ORDER BY count DESC
+        """)
+        
+        topics = c.fetchall()
+        conn.close()
+        
+        if not topics:
+            return jsonify({"success": True, "message": "Need more questions", "candidates_created": 0})
+        
+        candidates_created = []
+        content_conn = sqlite3.connect(engine.db_path)
+        content_c = content_conn.cursor()
+        
+        content_c.execute("""
+            CREATE TABLE IF NOT EXISTS content_candidates (
+                id TEXT PRIMARY KEY, title TEXT, content_type TEXT, priority TEXT,
+                relevance_score INTEGER, search_interest TEXT, affects_services TEXT,
+                key_topics TEXT, reasoning TEXT, review_question TEXT,
+                team_questions_count INTEGER, team_questions TEXT, most_common_angle TEXT,
+                source_url TEXT, content_preview TEXT, status TEXT, created_at TEXT
+            )
+        """)
+        
+        for topic, count, questions_str in topics:
+            questions = questions_str.split('|||')[:5]
+            
+            priority = "high" if count >= 5 else ("medium" if count >= 3 else "low")
+            content_type = "blog_post" if count >= 3 else "newsletter"
+            
+            services = []
+            t = topic.lower()
+            if 'zoning' in t:
+                services.extend(['Zoning Analysis', 'ZRD Applications'])
+            if 'dob' in t or 'permit' in t:
+                services.extend(['DOB Filings', 'Permit Expediting'])
+            if 'violation' in t:
+                services.append('Violation Removal')
+            if not services:
+                services = ['General']
+            
+            angle = "Process guidance"
+            if any('how long' in q.lower() for q in questions):
+                angle = "Timeline concerns"
+            elif any('require' in q.lower() for q in questions):
+                angle = "Requirement clarification"
+            
+            candidate_id = f"cand_{uuid.uuid4().hex[:12]}"
+            
+            content_c.execute("SELECT id FROM content_candidates WHERE key_topics LIKE ? AND status = 'pending'", (f'%{topic}%',))
+            if content_c.fetchone():
+                continue
+            
+            content_c.execute("""
+                INSERT INTO content_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                candidate_id, f"Guide to {topic} in NYC", content_type, priority,
+                min(count * 10, 100), f"{count} team questions", json.dumps(services),
+                json.dumps([topic]), f"Team asked {count} questions about {topic}.",
+                f"Create comprehensive {topic} guide?", count, json.dumps(questions),
+                angle, "internal_analysis", f"Based on {count} questions...",
+                "pending", datetime.now().isoformat()
+            ))
+            
+            candidates_created.append({"title": f"Guide to {topic} in NYC", "priority": priority, "questions": count})
+        
+        content_conn.commit()
+        content_conn.close()
+        
+        return jsonify({"success": True, "candidates_created": len(candidates_created), "candidates": candidates_created})
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"success": False, "error": str(e)}), 500
+

@@ -121,6 +121,173 @@ LOGIN_HTML = """
             color: #dc2626;
             background: #fee2e2;
         }
+    
+        .btn-approve {
+            background: #dcfce7;
+            color: #059669;
+            border: 1px solid #86efac;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-approve:hover { background: #bbf7d0; }
+        
+        .btn-reject {
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-reject:hover { background: #fecaca; }
+
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: var(--card);
+            margin: 80px auto;
+            padding: 32px;
+            border-radius: 16px;
+            max-width: 600px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            position: relative;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 0;
+            width: 32px;
+            height: 32px;
+        }
+        
+        .modal-user-info {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+        
+        .modal-section {
+            margin-bottom: 24px;
+        }
+        
+        .modal-section-label {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .label-wrong {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .label-correct {
+            background: #dcfce7;
+            color: #059669;
+        }
+        
+        .modal-text {
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+        }
+        
+        .modal-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: vertical;
+            background: var(--bg);
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+        
+        .btn-cancel {
+            background: white;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-reject-modal {
+            background: white;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-approve-modal {
+            background: #f59e0b;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-approve-modal:hover {
+            background: #d97706;
+        }
+
     </style>
 </head>
 <body>
@@ -509,6 +676,173 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             color: #dc2626;
             background: #fee2e2;
         }
+    
+        .btn-approve {
+            background: #dcfce7;
+            color: #059669;
+            border: 1px solid #86efac;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-approve:hover { background: #bbf7d0; }
+        
+        .btn-reject {
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-reject:hover { background: #fecaca; }
+
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: var(--card);
+            margin: 80px auto;
+            padding: 32px;
+            border-radius: 16px;
+            max-width: 600px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            position: relative;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 0;
+            width: 32px;
+            height: 32px;
+        }
+        
+        .modal-user-info {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+        
+        .modal-section {
+            margin-bottom: 24px;
+        }
+        
+        .modal-section-label {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .label-wrong {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .label-correct {
+            background: #dcfce7;
+            color: #059669;
+        }
+        
+        .modal-text {
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+        }
+        
+        .modal-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: vertical;
+            background: var(--bg);
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+        
+        .btn-cancel {
+            background: white;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-reject-modal {
+            background: white;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-approve-modal {
+            background: #f59e0b;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-approve-modal:hover {
+            background: #d97706;
+        }
+
     </style>
 </head>
 <body>
@@ -573,7 +907,36 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         {% block content %}{% endblock %}
     </main>
     
-    <script>
+    
+    <!-- Feedback Review Modal -->
+    <div id="feedback-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title">📋 Review Suggestion</div>
+                <button class="modal-close" onclick="closeFeedbackModal()">×</button>
+            </div>
+            
+            <div class="modal-user-info" id="modal-user-info"></div>
+            
+            <div class="modal-section">
+                <div class="modal-section-label label-wrong">❌ BEACON GAVE THIS WRONG ANSWER</div>
+                <div class="modal-text" id="modal-wrong-answer"></div>
+            </div>
+            
+            <div class="modal-section">
+                <div class="modal-section-label label-correct">✅ EDIT CORRECT ANSWER</div>
+                <textarea class="modal-textarea" id="modal-correct-answer"></textarea>
+            </div>
+            
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeFeedbackModal()">Cancel</button>
+                <button class="btn-reject-modal" onclick="rejectFromModal()">🗑️ Reject</button>
+                <button class="btn-approve-modal" onclick="approveFromModal()">✏️ Edit & Approve</button>
+            </div>
+        </div>
+    </div>
+
+<script>
         function toggleSidebar() {
             const sidebar = document.getElementById('sidebar');
             sidebar.classList.toggle('collapsed');
@@ -879,14 +1242,20 @@ FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{%
             </thead>
             <tbody>
                 {% for s in suggestions %}
-                <tr>
+                <tr style="cursor: pointer;" onclick="openFeedbackModal({{ s.id }}, '{{ s.user_name }}', '{{ s.timestamp }}', `{{ s.wrong_answer|replace('`', '') }}`, `{{ s.correct_answer|replace('`', '') }}`)">
                     <td><strong>{{ s.user_name }}</strong></td>
                     <td style="color: var(--text-muted); font-size: 12px;">{{ s.timestamp }}</td>
-                    <td style="font-size: 13px;"><span style="color: var(--danger); margin-right: 4px;">✗</span><span style="background: #fee2e2; padding: 4px 8px; border-radius: 4px; font-size: 12px;">WRONG ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.wrong_answer }}</span></td>
-                    <td style="font-size: 13px;"><span style="color: var(--success); margin-right: 4px;">✓</span><span style="background: #dcfce7; padding: 4px 8px; border-radius: 4px; font-size: 12px;">CORRECT ANSWER</span><br><span style="margin-top: 4px; display: block;">{{ s.correct_answer }}</span></td>
+                    <td style="font-size: 13px;">
+                        <span class="badge badge-danger" style="font-size: 11px; margin-bottom: 4px;">Wrong</span>
+                        <div style="color: var(--text-muted);">{{ s.wrong_answer[:100] }}{% if s.wrong_answer|length > 100 %}...{% endif %}</div>
+                    </td>
+                    <td style="font-size: 13px;">
+                        <span class="badge badge-success" style="font-size: 11px; margin-bottom: 4px;">Correct</span>
+                        <div style="color: var(--text-muted);">{{ s.correct_answer[:100] }}{% if s.correct_answer|length > 100 %}...{% endif %}</div>
+                    </td>
                     <td>
-                        <button class="btn btn-success" style="margin-right: 8px; font-size: 11px; padding: 6px 12px;" onclick="approveSuggestion({{ s.id }})">✓ Approve</button>
-                        <button class="btn btn-danger" style="font-size: 11px; padding: 6px 12px;" onclick="rejectSuggestion({{ s.id }})">✗ Reject</button>
+                        <button class="btn-approve" style="margin-right: 8px;" onclick="event.stopPropagation(); approveSuggestion({{ s.id }})">✓ Approve</button>
+                        <button class="btn-reject" onclick="event.stopPropagation(); rejectSuggestion({{ s.id }})">✗ Reject</button>
                     </td>
                 </tr>
                 {% endfor %}
@@ -925,10 +1294,77 @@ FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{%
 </div>
 
 <script>
+
+let currentFeedbackId = null;
+
+function openFeedbackModal(id, userName, timestamp, wrongAnswer, correctAnswer) {
+    currentFeedbackId = id;
+    document.getElementById('modal-user-info').textContent = `${userName} · ${timestamp}`;
+    document.getElementById('modal-wrong-answer').textContent = wrongAnswer;
+    document.getElementById('modal-correct-answer').value = correctAnswer;
+    document.getElementById('feedback-modal').style.display = 'block';
+}
+
+function closeFeedbackModal() {
+    document.getElementById('feedback-modal').style.display = 'none';
+    currentFeedbackId = null;
+}
+
+async function approveFromModal() {
+    if (!currentFeedbackId) return;
+    
+    const editedAnswer = document.getElementById('modal-correct-answer').value;
+    
+    try {
+        const response = await fetch(`/api/suggestions/${currentFeedbackId}/approve`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({correct_answer: editedAnswer})
+        });
+        
+        if (response.ok) {
+            closeFeedbackModal();
+            location.reload();
+        } else {
+            alert('Error approving suggestion');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function rejectFromModal() {
+    if (!currentFeedbackId || !confirm('Reject this suggestion?')) return;
+    
+    try {
+        const response = await fetch(`/api/suggestions/${currentFeedbackId}/reject`, {
+            method: 'POST'
+        });
+        
+        if (response.ok) {
+            closeFeedbackModal();
+            location.reload();
+        } else {
+            alert('Error rejecting suggestion');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('feedback-modal');
+    if (event.target === modal) {
+        closeFeedbackModal();
+    }
+}
+
+
 async function approveSuggestion(id) {
     if (!confirm('Approve this correction?')) return;
     try {
-        const response = await fetch('/approve-suggestion', {
+        const response = await fetch(`/api/suggestions/${id}/approve`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({id: id})
@@ -944,7 +1380,7 @@ async function approveSuggestion(id) {
 async function rejectSuggestion(id) {
     if (!confirm('Reject this correction?')) return;
     try {
-        const response = await fetch('/reject-suggestion', {
+        const response = await fetch(`/api/suggestions/${id}/reject`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({id: id})
@@ -1107,6 +1543,173 @@ LOGIN_HTML = """
             color: #dc2626;
             background: #fee2e2;
         }
+    
+        .btn-approve {
+            background: #dcfce7;
+            color: #059669;
+            border: 1px solid #86efac;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-approve:hover { background: #bbf7d0; }
+        
+        .btn-reject {
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .btn-reject:hover { background: #fecaca; }
+
+
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        
+        .modal-content {
+            background: var(--card);
+            margin: 80px auto;
+            padding: 32px;
+            border-radius: 16px;
+            max-width: 600px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+            position: relative;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        .modal-close {
+            background: none;
+            border: none;
+            font-size: 24px;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 0;
+            width: 32px;
+            height: 32px;
+        }
+        
+        .modal-user-info {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+        
+        .modal-section {
+            margin-bottom: 24px;
+        }
+        
+        .modal-section-label {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+        
+        .label-wrong {
+            background: #fee2e2;
+            color: #dc2626;
+        }
+        
+        .label-correct {
+            background: #dcfce7;
+            color: #059669;
+        }
+        
+        .modal-text {
+            background: var(--bg);
+            padding: 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            line-height: 1.6;
+            border: 1px solid var(--border);
+        }
+        
+        .modal-textarea {
+            width: 100%;
+            min-height: 120px;
+            padding: 16px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: vertical;
+            background: var(--bg);
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+            margin-top: 24px;
+        }
+        
+        .btn-cancel {
+            background: white;
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-reject-modal {
+            background: white;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        
+        .btn-approve-modal {
+            background: #f59e0b;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-approve-modal:hover {
+            background: #d97706;
+        }
+
     </style>
 </head>
 <body>
