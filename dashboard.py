@@ -403,7 +403,6 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
     </div>
 </div>
 
-{% block extra_js %}
 <script>
 // Auto-refresh data every 30 seconds
 async function loadDashboardData() {
@@ -482,7 +481,6 @@ async function loadDashboardData() {
 loadDashboardData();
 setInterval(loadDashboardData, 30000);
 </script>
-{% endblock %}
 {% endblock %}''')
 
 # Conversations page (NEW)
@@ -556,7 +554,6 @@ FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{%
     </table>
 </div>
 
-{% block extra_js %}
 <script>
 async function approveSuggestion(id) {
     if (!confirm('Approve this correction?')) return;
@@ -599,20 +596,46 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
     <div class="page-subtitle">Track feature requests and development progress</div>
 </div>
 
-<div class="grid grid-2">
-    {% for item in roadmap.items %}
-    <div class="card" style="cursor: pointer;">
-        <div style="margin-bottom: 8px;">
-            <span class="badge {{ 'badge-success' if item.status == 'shipped' else ('badge-warning' if item.status == 'in_progress' else 'badge-info') }}">
-                {{ item.status.replace('_', ' ').title() }}
-            </span>
-        </div>
-        <h3 style="font-size: 14px; font-weight: 600;">{{ item.idea }}</h3>
-        <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
-            Requested by {{ item.requested_by }}
-            {% if item.notes %} · {{ item.notes }}{% endif %}
-        </p>
+<div class="grid grid-4 mb-6">
+    <div class="card" style="text-align: center;">
+        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('shipped', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">✅ Shipped</div>
     </div>
+    <div class="card" style="text-align: center;">
+        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('in-progress', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">🚧 In Progress</div>
+    </div>
+    <div class="card" style="text-align: center;">
+        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('planned', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">📅 Planned</div>
+    </div>
+    <div class="card" style="text-align: center;">
+        <div style="font-family: monospace; font-size: 32px; font-weight: bold;">{{ roadmap.by_status.get('backlog', 0) }}</div>
+        <div style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">📋 Backlog</div>
+    </div>
+</div>
+
+<div class="grid grid-2">
+    {% for status, items in roadmap.items_by_status.items() %}
+        {% for item in items %}
+        <div class="card" style="cursor: pointer;">
+            <div style="margin-bottom: 8px;">
+                <span class="badge {{ 'badge-success' if status == 'shipped' else ('badge-warning' if status == 'in-progress' else 'badge-info') }}">
+                    {{ status.replace('-', ' ').title() }}
+                </span>
+                {% if item.priority %}
+                <span class="badge {{ 'badge-danger' if item.priority == 'high' else 'badge-warning' }}">
+                    {{ item.priority.title() }} Priority
+                </span>
+                {% endif %}
+            </div>
+            <h3 style="font-size: 14px; font-weight: 600;">{{ item.feedback_text }}</h3>
+            <p style="font-size: 13px; color: var(--text-muted); margin-top: 4px;">
+                Requested by {{ item.user_name }}
+                {% if item.target_quarter %} · Target: {{ item.target_quarter }}{% endif %}
+            </p>
+        </div>
+        {% endfor %}
     {% endfor %}
 </div>
 {% endblock %}''')
@@ -832,8 +855,10 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             topic = conv.topic or 'General'
             topics[topic] = topics.get(topic, 0) + 1
         
-        # Get slash commands
-        slash_commands = analytics_db.get_slash_commands() or {}
+        # Get slash commands from stats
+        slash_commands = {}
+        for cmd in stats.get('command_usage', []):
+            slash_commands[cmd['command']] = cmd['count']
         
         return jsonify({
             'total_questions': stats.get('total_questions', 0),
@@ -844,7 +869,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             'avg_response_time': stats.get('avg_response_time', 0),
             'time_range': stats.get('time_range', 'N/A'),
             'pending_reviews': len(analytics_db.get_pending_suggestions()),
-            'feedback_count': f"{len(analytics_db.get_suggestions(status='pending'))} new feedback",
+            'feedback_count': f"{stats.get('new_feedback', 0)} new feedback",
             'conversations': conversations,
             'topics': topics,
             'slash_commands': slash_commands
@@ -878,7 +903,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         return render_template_string(ROADMAP_PAGE,
             active_page='roadmap',
             page_title='Roadmap',
-            roadmap=roadmap_items)
+            roadmap=roadmap)
     
     @app.route("/approve-suggestion", methods=["POST"])
     @require_auth
@@ -887,7 +912,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         data = request.get_json()
         suggestion_id = data.get('id')
         if suggestion_id:
-            analytics_db.update_suggestion_status(suggestion_id, 'approved')
+            analytics_db.approve_suggestion(suggestion_id, session.get('user_email', 'unknown'))
         return jsonify({'status': 'success'})
     
     @app.route("/reject-suggestion", methods=["POST"])
@@ -897,5 +922,5 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         data = request.get_json()
         suggestion_id = data.get('id')
         if suggestion_id:
-            analytics_db.update_suggestion_status(suggestion_id, 'rejected')
+            analytics_db.reject_suggestion(suggestion_id, session.get('user_email', 'unknown'))
         return jsonify({'status': 'success'})
