@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import json
+from datetime import datetime
 from typing import Any
 
 from flask import Flask, Response, jsonify, request
@@ -851,6 +852,31 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
 
             response = handle_slash_command(command, args, user_id, space_name, user_email=user_email, user_display_name=user_display_name)
             if response:
+                # Log slash command to analytics
+                if analytics_db:
+                    try:
+                        interaction = Interaction(
+                            timestamp=datetime.now().isoformat(),
+                            user_id=user_id,
+                            user_name=user_display_name or user_email or "Unknown",
+                            space_name=space_name,
+                            question=user_message,
+                            response=response[:500],  # Truncate for storage
+                            command=command,
+                            answered=True,
+                            response_length=len(response),
+                            had_sources=False,
+                            sources_used=None,
+                            tokens_used=0,
+                            cost_usd=0.0,
+                            response_time_ms=0,
+                            confidence=None,
+                            topic="COMMAND"
+                        )
+                        analytics_db.log_interaction(interaction)
+                    except Exception as e:
+                        logger.error(f"Failed to log slash command to analytics: {e}")
+                
                 chat_client.send_message(space_name, response)
                 return "", 204
 
