@@ -310,8 +310,8 @@ Respond JSON:
         )
         
         # Get context from Beacon
-        context_docs = self.retriever.retrieve(candidate.title, top_k=3)
-        context = "\n\n".join([doc.get("content", "")[:500] for doc in context_docs])
+        retrieval_result = self.retriever.retrieve(candidate.title, top_k=3)
+        context = retrieval_result.context  # Use the formatted context from RetrievalResult
         
         # Build prompt
         prompt = f"""Write a blog post for Green Light Expediting.
