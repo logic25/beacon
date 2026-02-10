@@ -466,12 +466,25 @@ DASHBOARD_V2_HTML = """
 <body>
     <div class="container">
         <div class="header-bar">
-            <h1>🎯 Beacon Analytics Dashboard</h1>
+            <h1>🎯 Beacon Dashboard</h1>
             <div class="user-info">
                 <span class="user-email">{{ user_email }}</span>
                 <a href="/logout" class="logout-btn">Logout</a>
             </div>
         </div>
+        
+        <!-- Navigation Tabs -->
+        <div style="display: flex; gap: 8px; margin: 16px 0;">
+            <button onclick="window.location.href='/dashboard'" 
+                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: #e3f2fd; color: #1976d2; border: none;">
+                📊 Analytics
+            </button>
+            <button onclick="window.location.href='/content-intelligence'" 
+                    style="padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; background: white; color: #666; border: 1px solid #ddd;">
+                ✨ Content Intelligence
+            </button>
+        </div>
+        
         <div class="subtitle">Enhanced tracking • Auto-refreshes every 30 seconds</div>
         
         <button class="refresh-btn" onclick="loadData()">🔄 Refresh Now</button>
