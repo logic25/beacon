@@ -623,21 +623,45 @@ DASHBOARD_V2_HTML = """
         </div>
     </div>
     
-    <!-- User Feedback Section -->
+    <!-- Product Roadmap / Feature Tracker -->
     <div class="grid-item full-width">
         <div class="section">
-            <div class="section-title">💬 User Feedback</div>
+            <div class="section-title">🗺️ Product Roadmap & Feature Tracker</div>
+            
+            <!-- Roadmap Summary -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                <div style="background: #dbeafe; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #1e40af;" id="roadmap-shipped">0</div>
+                    <div style="color: #1e40af; font-size: 14px;">✅ Shipped</div>
+                </div>
+                <div style="background: #fef3c7; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #92400e;" id="roadmap-in-progress">0</div>
+                    <div style="color: #92400e; font-size: 14px;">🚧 In Progress</div>
+                </div>
+                <div style="background: #ddd6fe; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #5b21b6;" id="roadmap-planned">0</div>
+                    <div style="color: #5b21b6; font-size: 14px;">📅 Planned</div>
+                </div>
+                <div style="background: #e5e7eb; padding: 15px; border-radius: 8px; text-align: center;">
+                    <div style="font-size: 24px; font-weight: 600; color: #374151;" id="roadmap-backlog">0</div>
+                    <div style="color: #374151; font-size: 14px;">📋 Backlog</div>
+                </div>
+            </div>
+            
+            <!-- All Feedback/Ideas Table -->
             <table>
                 <thead>
                     <tr>
-                        <th>User</th>
-                        <th>Date</th>
-                        <th>Feedback</th>
+                        <th>Idea</th>
+                        <th>Requested By</th>
+                        <th>Priority</th>
                         <th>Status</th>
+                        <th>Target</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
-                <tbody id="user-feedback">
-                    <tr><td colspan="4">Loading...</td></tr>
+                <tbody id="roadmap-items">
+                    <tr><td colspan="6">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -701,6 +725,29 @@ DASHBOARD_V2_HTML = """
                             style="background: #ef4444; color: white; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer;">
                         ✗ Reject
                     </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Correction Detail Modal -->
+        <div class="modal" id="correction-modal">
+            <div class="modal-content">
+                <span class="modal-close" onclick="closeCorrectionModal()">&times;</span>
+                <h2>✅ Approved Correction Details</h2>
+                
+                <div style="margin: 20px 0; padding: 15px; background: #f9fafb; border-radius: 8px;">
+                    <strong>Approved by:</strong> <span id="correction-reviewed-by"></span><br>
+                    <strong>Date:</strong> <span id="correction-reviewed-at"></span>
+                </div>
+                
+                <div class="section" style="background: #fef2f2; border-left: 4px solid #ef4444;">
+                    <h3 style="color: #991b1b;">❌ What Was Wrong:</h3>
+                    <div class="response-box" id="correction-wrong" style="white-space: pre-wrap;"></div>
+                </div>
+                
+                <div class="section" style="background: #f0fdf4; border-left: 4px solid #22c55e; margin-top: 15px;">
+                    <h3 style="color: #166534;">✅ Correction Applied:</h3>
+                    <div class="response-box" id="correction-correct" style="white-space: pre-wrap;"></div>
                 </div>
             </div>
         </div>
@@ -784,6 +831,7 @@ DASHBOARD_V2_HTML = """
         // Suggestion modal functions
         window.currentSuggestionId = null;
         window.suggestionsData = [];
+        window.correctionsData = [];
         
         function viewSuggestion(id) {
             const suggestion = window.suggestionsData.find(s => s.id === id);
@@ -803,12 +851,37 @@ DASHBOARD_V2_HTML = """
             window.currentSuggestionId = null;
         }
         
-        // Add click handler for suggestion rows
+        function viewCorrection(id) {
+            const correction = window.correctionsData.find(c => c.id === id);
+            if (!correction) return;
+            
+            const modal = document.getElementById('correction-modal');
+            document.getElementById('correction-reviewed-by').textContent = correction.reviewed_by || 'Unknown';
+            document.getElementById('correction-reviewed-at').textContent = correction.reviewed_at 
+                ? new Date(correction.reviewed_at).toLocaleString() 
+                : 'N/A';
+            document.getElementById('correction-wrong').textContent = correction.wrong_answer;
+            document.getElementById('correction-correct').textContent = correction.correct_answer;
+            modal.classList.add('active');
+        }
+        
+        function closeCorrectionModal() {
+            document.getElementById('correction-modal').classList.remove('active');
+        }
+        
+        // Add click handlers for suggestion and correction rows
         document.addEventListener('click', function(e) {
-            const row = e.target.closest('.suggestion-row');
-            if (row) {
-                const id = parseInt(row.dataset.id);
+            const suggestionRow = e.target.closest('.suggestion-row');
+            if (suggestionRow) {
+                const id = parseInt(suggestionRow.dataset.id);
                 viewSuggestion(id);
+                return;
+            }
+            
+            const correctionRow = e.target.closest('.correction-row');
+            if (correctionRow) {
+                const id = parseInt(correctionRow.dataset.id);
+                viewCorrection(id);
             }
         });
         
@@ -907,13 +980,15 @@ DASHBOARD_V2_HTML = """
                 displayFailedQueries(data.failed_queries);
                 
                 // Command usage
-                const commandHtml = data.command_usage.map(c => `
-                    <tr>
-                        <td>${c.command}</td>
-                        <td>${c.count}</td>
-                    </tr>
-                `).join('');
-                document.getElementById('command-usage').innerHTML = commandHtml || '<tr><td colspan="2">No commands used</td></tr>';
+                const commandHtml = (data.command_usage && data.command_usage.length > 0)
+                    ? data.command_usage.map(c => `
+                        <tr>
+                            <td>${c.command}</td>
+                            <td>${c.count}</td>
+                        </tr>
+                    `).join('')
+                    : '<tr><td colspan="2">No commands used yet (use slash commands like /suggest, /help, /stats)</td></tr>';
+                document.getElementById('command-usage').innerHTML = commandHtml;
                 
                 // Suggestions - use data attributes to avoid escaping issues
                 const suggestionsHtml = data.suggestions.map(s => `
@@ -937,31 +1012,78 @@ DASHBOARD_V2_HTML = """
                 // Store suggestions data for modal access
                 window.suggestionsData = data.suggestions;
                 
-                // User Feedback
+                // User Feedback - truncated preview
                 const feedbackHtml = data.feedback && data.feedback.length > 0 
                     ? data.feedback.map(f => `
                         <tr>
                             <td>${f.user_name}</td>
                             <td>${new Date(f.timestamp).toLocaleDateString()}</td>
-                            <td>${f.feedback_text}</td>
+                            <td>${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
                             <td><span class="badge badge-${f.status === 'new' ? 'warning' : 'info'}">${f.status}</span></td>
                         </tr>
                     `).join('')
                     : '<tr><td colspan="4">No feedback yet</td></tr>';
                 document.getElementById('user-feedback').innerHTML = feedbackHtml;
                 
-                // Approved Corrections History
+                // Approved Corrections History - use data attributes for click to expand
                 const correctionsHtml = data.approved_corrections && data.approved_corrections.length > 0
                     ? data.approved_corrections.map(c => `
-                        <tr>
+                        <tr class="correction-row" 
+                            data-id="${c.id}"
+                            data-reviewed-at="${c.reviewed_at || ''}"
+                            data-reviewed-by="${c.reviewed_by || 'Unknown'}"
+                            style="cursor: pointer;">
                             <td>${c.reviewed_at ? new Date(c.reviewed_at).toLocaleString() : 'N/A'}</td>
                             <td>${c.reviewed_by || 'Unknown'}</td>
-                            <td>${c.wrong_answer.substring(0, 100)}${c.wrong_answer.length > 100 ? '...' : ''}</td>
-                            <td>${c.correct_answer.substring(0, 100)}${c.correct_answer.length > 100 ? '...' : ''}</td>
+                            <td>${c.wrong_answer.substring(0, 80)}${c.wrong_answer.length > 80 ? '...' : ''}</td>
+                            <td>${c.correct_answer.substring(0, 80)}${c.correct_answer.length > 80 ? '...' : ''}</td>
                         </tr>
                     `).join('')
                     : '<tr><td colspan="4">No approved corrections yet</td></tr>';
                 document.getElementById('approved-corrections').innerHTML = correctionsHtml;
+                
+                // Store corrections data for modal
+                window.correctionsData = data.approved_corrections;
+                
+                // Roadmap Summary
+                const roadmapSummary = data.roadmap_summary || { by_status: {} };
+                document.getElementById('roadmap-shipped').textContent = roadmapSummary.by_status['shipped'] || 0;
+                document.getElementById('roadmap-in-progress').textContent = roadmapSummary.by_status['in-progress'] || 0;
+                document.getElementById('roadmap-planned').textContent = roadmapSummary.by_status['planned'] || 0;
+                document.getElementById('roadmap-backlog').textContent = roadmapSummary.by_status['backlog'] || 0;
+                
+                // Roadmap Items Table
+                const roadmapHtml = data.feedback && data.feedback.length > 0
+                    ? data.feedback.map(f => {
+                        const statusColors = {
+                            'shipped': 'background: #dbeafe; color: #1e40af;',
+                            'in-progress': 'background: #fef3c7; color: #92400e;',
+                            'planned': 'background: #ddd6fe; color: #5b21b6;',
+                            'backlog': 'background: #e5e7eb; color: #374151;'
+                        };
+                        const priorityColors = {
+                            'high': 'background: #fee2e2; color: #991b1b;',
+                            'medium': 'background: #fef3c7; color: #92400e;',
+                            'low': 'background: #e0f2fe; color: #075985;'
+                        };
+                        const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
+                        const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
+                        
+                        return `
+                            <tr>
+                                <td style="max-width: 300px;">${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
+                                <td>${f.user_name}</td>
+                                <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
+                                <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
+                                <td>${f.target_quarter || '-'}</td>
+                                <td>
+                                    <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
+                                </td>
+                            </tr>
+                        `;
+                    }).join('')
+                    : '<tr><td colspan="6">No feedback/ideas yet</td></tr>';
+                document.getElementById('roadmap-items').innerHTML = roadmapHtml;
                 
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
@@ -976,9 +1098,20 @@ DASHBOARD_V2_HTML = """
             
             const html = conversations.slice(0, 10).map(conv => {
                 const topicClass = 'topic-' + conv.topic.toLowerCase().replace(/ /g, '-');
+                // Truncate question and response for preview
+                const questionPreview = conv.question.length > 100 
+                    ? conv.question.substring(0, 100) + '...' 
+                    : conv.question;
+                const responsePreview = conv.response 
+                    ? (conv.response.length > 150 
+                        ? conv.response.substring(0, 150) + '...' 
+                        : conv.response)
+                    : 'No response';
+                
                 return `
-                    <div class="conversation-item" onclick='showConversation(${JSON.stringify(conv)})'>
-                        <div class="conversation-question">${conv.question}</div>
+                    <div class="conversation-item" onclick='showConversation(${JSON.stringify(conv)})' style="cursor: pointer;">
+                        <div class="conversation-question" style="font-weight: 600; margin-bottom: 8px;">${questionPreview}</div>
+                        <div class="conversation-response" style="color: #6b7280; font-size: 14px; margin-bottom: 8px;">${responsePreview}</div>
                         <div class="conversation-meta">
                             <span>👤 ${conv.user_name}</span>
                             <span>🕐 ${new Date(conv.timestamp).toLocaleString()}</span>
@@ -1257,7 +1390,8 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         
         conversations = analytics_db.get_recent_conversations(limit=20)
         suggestions = analytics_db.get_pending_suggestions()
-        feedback = analytics_db.get_feedback(limit=50)
+        feedback = analytics_db.get_feedback(limit=100)  # Get all feedback for roadmap
+        roadmap_summary = analytics_db.get_roadmap_summary()
         approved_corrections = analytics_db.get_approved_corrections(limit=50)
         
         return jsonify({
@@ -1266,6 +1400,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             "suggestions": suggestions,
             "question_clusters": question_clusters,
             "feedback": feedback,
+            "roadmap_summary": roadmap_summary,
             "approved_corrections": approved_corrections
         })
     
