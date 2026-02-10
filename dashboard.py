@@ -983,19 +983,30 @@ DASHBOARD_V2_HTML = """
                 'low': 'background: #e0f2fe; color: #075985;'
             };
             
+            // Helper function to escape HTML
+            const escapeHtml = (text) => {
+                const div = document.createElement('div');
+                div.textContent = text;
+                return div.innerHTML;
+            };
+            
             const roadmapHtml = feedbackItems && feedbackItems.length > 0
                 ? feedbackItems.map(f => {
                     const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
                     const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
                     
+                    // Escape and truncate text safely
+                    const feedbackPreview = escapeHtml(f.feedback_text.substring(0, 100)) + (f.feedback_text.length > 100 ? '...' : '');
+                    const notesPreview = f.notes ? (escapeHtml(f.notes.substring(0, 50)) + (f.notes.length > 50 ? '...' : '')) : '-';
+                    
                     return `
                         <tr>
-                            <td style="max-width: 300px;">${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
-                            <td>${f.user_name}</td>
+                            <td style="max-width: 300px;">${feedbackPreview}</td>
+                            <td>${escapeHtml(f.user_name)}</td>
                             <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
                             <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
                             <td>${f.target_quarter || '-'}</td>
-                            <td style="max-width: 200px; font-size: 12px; color: #6b7280;">${f.notes ? (f.notes.substring(0, 50) + (f.notes.length > 50 ? '...' : '')) : '-'}</td>
+                            <td style="max-width: 200px; font-size: 12px; color: #6b7280;">${notesPreview}</td>
                             <td>
                                 <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
                             </td>
