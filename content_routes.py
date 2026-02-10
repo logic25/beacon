@@ -6,6 +6,7 @@ Includes inline BASE_TEMPLATE (no imports) to avoid circular dependencies
 from flask import Blueprint, render_template_string, request, jsonify
 from content_engine.engine import ContentEngine
 import traceback
+from intelligent_scorer import IntelligentScorer
 
 content_bp = Blueprint('content', __name__)
 engine = ContentEngine()
@@ -381,7 +382,7 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
                             ${c.review_question ? `<div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin: 12px 0; font-size: 13px;">💡 <strong>Review Question:</strong> ${c.review_question}</div>` : ''}
                             <div style="margin-top: 16px;">
                                 <button class="btn btn-primary" onclick="generateContent(${c.id}, 'blog_post')">✨ Generate</button>
-                                <button class="btn btn-outline" onclick="viewSource('${c.source_url}')">🔗 Source</button>
+                                ${c.source_url !== 'internal_analysis' ? '<button class="btn btn-outline" onclick="viewSource(\''+c.source_url+'\')">🔗 Source</button>' : ''}
                             </div>
                         `;
                         container.appendChild(card);
@@ -662,4 +663,78 @@ def auto_generate_candidates():
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
+
+@content_bp.route('/api/content/generate', methods=['POST'])
+def generate_content():
+    """Generate content from a candidate (placeholder)."""
+    try:
+        data = request.get_json()
+        candidate_id = data.get('candidate_id')
+        content_type = data.get('content_type', 'blog_post')
+        
+        # TODO: Implement actual content generation with Claude
+        return jsonify({
+            "success": True,
+            "message": "Content generation coming soon",
+            "candidate_id": candidate_id
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@content_bp.route('/api/content/analyze-opportunities', methods=['POST'])
+def analyze_opportunities():
+    """Use Claude + RAG to intelligently score content opportunities."""
+    try:
+        data = request.get_json() or {}
+        days_back = data.get('days_back', 30)
+        min_questions = data.get('min_questions', 2)
+        
+        start_time = datetime.now()
+        
+        # Initialize scorer
+        scorer = IntelligentScorer()
+        
+        # Analyze opportunities
+        opportunities = scorer.analyze_opportunities(
+            days_back=days_back,
+            min_questions=min_questions
+        )
+        
+        # Convert to dict format
+        results = []
+        for opp in opportunities:
+            results.append({
+                "title": opp.title,
+                "cluster": opp.cluster[:5],  # First 5 questions
+                "demand_score": opp.demand_score,
+                "expertise_score": opp.expertise_score,
+                "relevance_score": opp.relevance_score,
+                "overall_score": opp.overall_score,
+                "question_count": opp.question_count,
+                "knowledge_docs": opp.knowledge_docs,
+                "content_angle": opp.content_angle,
+                "recommended_format": opp.recommended_format,
+                "reasoning": opp.reasoning,
+                "priority": opp.priority,
+                "estimated_minutes": opp.estimated_minutes
+            })
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        
+        return jsonify({
+            "success": True,
+            "opportunities": results,
+            "analysis_time_seconds": round(elapsed, 1),
+            "questions_analyzed": sum(o["question_count"] for o in results),
+            "opportunities_found": len(results)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in analyze_opportunities: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 

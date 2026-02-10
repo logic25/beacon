@@ -1276,10 +1276,35 @@ FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{%
 <!-- Approved History Tab -->
 <div id="approved-tab" class="tab-content">
     <div class="section">
+        {% if approved_suggestions|length > 0 %}
+        <table>
+            <thead>
+                <tr>
+                    <th>USER</th>
+                    <th>APPROVED BY</th>
+                    <th>WHEN</th>
+                    <th>CORRECTION</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in approved_suggestions %}
+                <tr>
+                    <td><strong>{{ s.user_name }}</strong></td>
+                    <td>{{ s.reviewed_by }}</td>
+                    <td>{{ s.reviewed_at }}</td>
+                    <td>
+                        <div style="margin-bottom: 8px;"><span style="color: var(--danger);">✗</span> {{ s.wrong_answer[:100] }}...</div>
+                        <div><span style="color: var(--success);">✓</span> {{ s.correct_answer[:100] }}...</div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
         <div style="text-align: center; padding: 60px 20px; color: var(--text-muted);">
-            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">Approved corrections history</div>
-            <div style="font-size: 14px;">Coming soon</div>
+            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px;">No approved corrections yet</div>
         </div>
+        {% endif %}
     </div>
 </div>
 
@@ -1944,10 +1969,12 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
     def feedback_page():
         """Feedback page."""
         suggestions = analytics_db.get_pending_suggestions()
+        approved_suggestions = analytics_db.get_approved_corrections(limit=50)
         return render_template_string(FEEDBACK_PAGE,
             active_page='feedback',
             page_title='Feedback',
-            suggestions=suggestions)
+            suggestions=suggestions,
+            approved_suggestions=approved_suggestions)
     
     @app.route("/roadmap-page")
     @require_auth
