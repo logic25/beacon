@@ -640,6 +640,10 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
             <option value="7">Last 7 Days</option>
             <option value="30">Last 30 Days</option>
             <option value="90">Last 90 Days</option>
+            <option value="this_month">This Month</option>
+            <option value="last_month">Last Month</option>
+            <option value="this_year">This Year</option>
+            <option value="all">All Time</option>
         </select>
         <button onclick="window.location.reload()" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; display: flex; align-items: center; gap: 6px;">
             <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -647,9 +651,7 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
             </svg>
             Refresh
         </button>
-        <a href="/logout" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; text-decoration: none; color: var(--text); font-size: 13px;">
-            Logout
-        </a>
+
     </div>
 </div>
 
@@ -679,21 +681,21 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
     </div>
     
     <div class="metric-card">
-        <div class="metric-icon" style="background: #fef3c7;">💰</div>
+        <div class="metric-icon" style="background: #fef3c7;">💵</div>
         <div class="metric-value" id="api-cost">$0.00</div>
         <div class="metric-label">Total API Cost</div>
         <div class="metric-sublabel">N/A</div>
     </div>
     
     <div class="metric-card">
-        <div class="metric-icon" style="background: #e0e7ff;">⏱️</div>
+        <div class="metric-icon" style="background: #e0e7ff;">⏰</div>
         <div class="metric-value" id="avg-time">0s</div>
         <div class="metric-label">Avg Response Time</div>
         <div class="metric-sublabel" id="time-range">N/A</div>
     </div>
     
     <div class="metric-card">
-        <div class="metric-icon" style="background: #fce7f3;">📝</div>
+        <div class="metric-icon" style="background: #fce7f3;">📋</div>
         <div class="metric-value" id="pending-reviews">0</div>
         <div class="metric-label">Pending Reviews</div>
         <div class="metric-sublabel" id="feedback-count">0 new feedback</div>
