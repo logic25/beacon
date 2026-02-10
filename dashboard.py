@@ -628,6 +628,29 @@ DASHBOARD_V2_HTML = """
         <div class="section">
             <div class="section-title">🗺️ Product Roadmap & Feature Tracker</div>
             
+            <!-- Filter Controls -->
+            <div style="margin-bottom: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <select id="filter-status" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <option value="">All Statuses</option>
+                    <option value="in-progress">🚧 In Progress</option>
+                    <option value="planned">📅 Planned</option>
+                    <option value="backlog">📋 Backlog</option>
+                    <option value="shipped">✅ Shipped</option>
+                    <option value="archived">🗄️ Archived</option>
+                </select>
+                
+                <select id="filter-priority" onchange="filterRoadmap()" style="padding: 8px; border: 1px solid #d1d5db; border-radius: 6px;">
+                    <option value="">All Priorities</option>
+                    <option value="high">🔴 High</option>
+                    <option value="medium">🟡 Medium</option>
+                    <option value="low">🔵 Low</option>
+                </select>
+                
+                <button onclick="clearFilters()" style="padding: 8px 16px; background: #6b7280; color: white; border: none; border-radius: 6px; cursor: pointer;">
+                    Clear Filters
+                </button>
+            </div>
+            
             <!-- Roadmap Summary -->
             <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
                 <div style="background: #dbeafe; padding: 15px; border-radius: 8px; text-align: center;">
@@ -657,11 +680,12 @@ DASHBOARD_V2_HTML = """
                         <th>Priority</th>
                         <th>Status</th>
                         <th>Target</th>
+                        <th>Notes</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody id="roadmap-items">
-                    <tr><td colspan="6">Loading...</td></tr>
+                    <tr><td colspan="7">Loading...</td></tr>
                 </tbody>
             </table>
         </div>
@@ -885,6 +909,103 @@ DASHBOARD_V2_HTML = """
             }
         });
         
+        function editRoadmapItem(feedbackId) {
+            // Get current values from the row
+            const newStatus = prompt("Roadmap Status:\n- backlog (default)\n- planned\n- in-progress\n- shipped\n- archived", "backlog");
+            if (!newStatus) return;
+            
+            const newPriority = prompt("Priority (low/medium/high):", "medium");
+            const newTarget = prompt("Target Quarter (e.g., Q2 2026):");
+            const newNotes = prompt("Internal Notes (optional):");
+            
+            // Save via API
+            fetch(`/api/roadmap/${feedbackId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    roadmap_status: newStatus,
+                    priority: newPriority,
+                    target_quarter: newTarget,
+                    notes: newNotes
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    alert('✅ Roadmap updated successfully!');
+                    loadData(); // Refresh dashboard
+                } else {
+                    alert('❌ Error: ' + data.message);
+                }
+            })
+            .catch(err => {
+                alert('❌ Failed to update: ' + err.message);
+            });
+        }
+        
+        // Store all feedback for filtering
+        window.allFeedback = [];
+        
+        function filterRoadmap() {
+            const statusFilter = document.getElementById('filter-status').value;
+            const priorityFilter = document.getElementById('filter-priority').value;
+            
+            let filtered = window.allFeedback;
+            
+            if (statusFilter) {
+                filtered = filtered.filter(f => f.roadmap_status === statusFilter);
+            }
+            
+            if (priorityFilter) {
+                filtered = filtered.filter(f => f.priority === priorityFilter);
+            }
+            
+            renderRoadmapTable(filtered);
+        }
+        
+        function clearFilters() {
+            document.getElementById('filter-status').value = '';
+            document.getElementById('filter-priority').value = '';
+            renderRoadmapTable(window.allFeedback);
+        }
+        
+        function renderRoadmapTable(feedbackItems) {
+            const statusColors = {
+                'shipped': 'background: #dbeafe; color: #1e40af;',
+                'in-progress': 'background: #fef3c7; color: #92400e;',
+                'planned': 'background: #ddd6fe; color: #5b21b6;',
+                'backlog': 'background: #e5e7eb; color: #374151;',
+                'archived': 'background: #f3f4f6; color: #6b7280;'
+            };
+            const priorityColors = {
+                'high': 'background: #fee2e2; color: #991b1b;',
+                'medium': 'background: #fef3c7; color: #92400e;',
+                'low': 'background: #e0f2fe; color: #075985;'
+            };
+            
+            const roadmapHtml = feedbackItems && feedbackItems.length > 0
+                ? feedbackItems.map(f => {
+                    const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
+                    const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
+                    
+                    return `
+                        <tr>
+                            <td style="max-width: 300px;">${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
+                            <td>${f.user_name}</td>
+                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
+                            <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
+                            <td>${f.target_quarter || '-'}</td>
+                            <td style="max-width: 200px; font-size: 12px; color: #6b7280;">${f.notes ? (f.notes.substring(0, 50) + (f.notes.length > 50 ? '...' : '')) : '-'}</td>
+                            <td>
+                                <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
+                            </td>
+                        </tr>
+                    `;
+                }).join('')
+                : '<tr><td colspan="7">No items match filters</td></tr>';
+            
+            document.getElementById('roadmap-items').innerHTML = roadmapHtml;
+        }
 
         async function loadData() {
             try {
@@ -1052,38 +1173,11 @@ DASHBOARD_V2_HTML = """
                 document.getElementById('roadmap-planned').textContent = roadmapSummary.by_status['planned'] || 0;
                 document.getElementById('roadmap-backlog').textContent = roadmapSummary.by_status['backlog'] || 0;
                 
-                // Roadmap Items Table
-                const roadmapHtml = data.feedback && data.feedback.length > 0
-                    ? data.feedback.map(f => {
-                        const statusColors = {
-                            'shipped': 'background: #dbeafe; color: #1e40af;',
-                            'in-progress': 'background: #fef3c7; color: #92400e;',
-                            'planned': 'background: #ddd6fe; color: #5b21b6;',
-                            'backlog': 'background: #e5e7eb; color: #374151;'
-                        };
-                        const priorityColors = {
-                            'high': 'background: #fee2e2; color: #991b1b;',
-                            'medium': 'background: #fef3c7; color: #92400e;',
-                            'low': 'background: #e0f2fe; color: #075985;'
-                        };
-                        const statusStyle = statusColors[f.roadmap_status] || statusColors['backlog'];
-                        const priorityStyle = priorityColors[f.priority] || priorityColors['medium'];
-                        
-                        return `
-                            <tr>
-                                <td style="max-width: 300px;">${f.feedback_text.substring(0, 100)}${f.feedback_text.length > 100 ? '...' : ''}</td>
-                                <td>${f.user_name}</td>
-                                <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${priorityStyle}">${f.priority.toUpperCase()}</span></td>
-                                <td><span style="padding: 4px 8px; border-radius: 4px; font-size: 12px; ${statusStyle}">${f.roadmap_status.replace('-', ' ').toUpperCase()}</span></td>
-                                <td>${f.target_quarter || '-'}</td>
-                                <td>
-                                    <button onclick="editRoadmapItem(${f.id})" style="padding: 4px 8px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Edit</button>
-                                </td>
-                            </tr>
-                        `;
-                    }).join('')
-                    : '<tr><td colspan="6">No feedback/ideas yet</td></tr>';
-                document.getElementById('roadmap-items').innerHTML = roadmapHtml;
+                // Store all feedback for filtering
+                window.allFeedback = data.feedback || [];
+                
+                // Render roadmap table (respecting current filters)
+                filterRoadmap();
                 
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
@@ -1431,3 +1525,26 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             return jsonify({"status": "ok", "message": "Suggestion rejected"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 400
+    
+    @app.route("/api/roadmap/<int:feedback_id>", methods=["POST"])
+    @require_auth
+    def api_update_roadmap(feedback_id):
+        """Update roadmap status for a feedback item (OAuth protected)."""
+        try:
+            data = request.get_json()
+            
+            updated = analytics_db.update_feedback_roadmap(
+                feedback_id,
+                roadmap_status=data.get('roadmap_status'),
+                priority=data.get('priority'),
+                target_quarter=data.get('target_quarter'),
+                notes=data.get('notes')
+            )
+            
+            if updated:
+                return jsonify({"status": "ok", "message": "Roadmap updated"})
+            else:
+                return jsonify({"status": "error", "message": "Feedback item not found"}), 404
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+

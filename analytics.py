@@ -143,9 +143,31 @@ class AnalyticsDB:
                 feedback_text TEXT NOT NULL,
                 status TEXT DEFAULT 'new',
                 responded_by TEXT,
-                responded_at TEXT
+                responded_at TEXT,
+                roadmap_status TEXT DEFAULT 'backlog',
+                priority TEXT DEFAULT 'medium',
+                target_quarter TEXT,
+                notes TEXT
             )
         """)
+        
+        # Add roadmap columns to existing feedback table if they don't exist
+        try:
+            cursor.execute("ALTER TABLE feedback ADD COLUMN roadmap_status TEXT DEFAULT 'backlog'")
+        except:
+            pass  # Column already exists
+        try:
+            cursor.execute("ALTER TABLE feedback ADD COLUMN priority TEXT DEFAULT 'medium'")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE feedback ADD COLUMN target_quarter TEXT")
+        except:
+            pass
+        try:
+            cursor.execute("ALTER TABLE feedback ADD COLUMN notes TEXT")
+        except:
+            pass
         
         # Create indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp)")
@@ -306,13 +328,14 @@ class AnalyticsDB:
         return feedback_id
     
     def get_feedback(self, limit: int = 50, status: str = None) -> list[dict]:
-        """Get user feedback submissions."""
+        """Get user feedback submissions with roadmap tracking."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         if status:
             cursor.execute("""
-                SELECT id, timestamp, user_name, feedback_text, status
+                SELECT id, timestamp, user_name, feedback_text, status,
+                       roadmap_status, priority, target_quarter, notes
                 FROM feedback
                 WHERE status = ?
                 ORDER BY timestamp DESC
@@ -320,7 +343,8 @@ class AnalyticsDB:
             """, (status, limit))
         else:
             cursor.execute("""
-                SELECT id, timestamp, user_name, feedback_text, status
+                SELECT id, timestamp, user_name, feedback_text, status,
+                       roadmap_status, priority, target_quarter, notes
                 FROM feedback
                 ORDER BY timestamp DESC
                 LIMIT ?
@@ -333,11 +357,115 @@ class AnalyticsDB:
                 "timestamp": row[1],
                 "user_name": row[2],
                 "feedback_text": row[3],
-                "status": row[4]
+                "status": row[4],
+                "roadmap_status": row[5] or 'backlog',
+                "priority": row[6] or 'medium',
+                "target_quarter": row[7],
+                "notes": row[8]
             })
         
         conn.close()
         return feedback
+    
+    def update_feedback_roadmap(self, feedback_id: int, roadmap_status: str = None, 
+                                priority: str = None, target_quarter: str = None, 
+                                notes: str = None) -> bool:
+        """Update roadmap tracking for a feedback item."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        updates = []
+        params = []
+        
+        if roadmap_status:
+            updates.append("roadmap_status = ?")
+            params.append(roadmap_status)
+        if priority:
+            updates.append("priority = ?")
+            params.append(priority)
+        if target_quarter:
+            updates.append("target_quarter = ?")
+            params.append(target_quarter)
+        if notes is not None:  # Allow empty string
+            updates.append("notes = ?")
+            params.append(notes)
+        
+        if not updates:
+            conn.close()
+            return False
+        
+        params.append(feedback_id)
+        query = f"UPDATE feedback SET {', '.join(updates)} WHERE id = ?"
+        
+        cursor.execute(query, params)
+        conn.commit()
+        success = cursor.rowcount > 0
+        conn.close()
+        
+        return success
+    
+    def get_roadmap_summary(self) -> dict:
+        """Get roadmap overview grouped by status."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Get counts by roadmap status
+        cursor.execute("""
+            SELECT roadmap_status, COUNT(*) as count
+            FROM feedback
+            GROUP BY roadmap_status
+            ORDER BY 
+                CASE roadmap_status
+                    WHEN 'shipped' THEN 1
+                    WHEN 'in-progress' THEN 2
+                    WHEN 'planned' THEN 3
+                    WHEN 'backlog' THEN 4
+                    WHEN 'archived' THEN 5
+                    ELSE 6
+                END
+        """)
+        
+        summary = {
+            "by_status": {row[0]: row[1] for row in cursor.fetchall()}
+        }
+        
+        # Get items by status
+        cursor.execute("""
+            SELECT roadmap_status, id, feedback_text, priority, target_quarter, user_name
+            FROM feedback
+            ORDER BY 
+                CASE roadmap_status
+                    WHEN 'in-progress' THEN 1
+                    WHEN 'planned' THEN 2
+                    WHEN 'backlog' THEN 3
+                    WHEN 'shipped' THEN 4
+                    ELSE 5
+                END,
+                CASE priority
+                    WHEN 'high' THEN 1
+                    WHEN 'medium' THEN 2
+                    WHEN 'low' THEN 3
+                    ELSE 4
+                END
+        """)
+        
+        items_by_status = {}
+        for row in cursor.fetchall():
+            status = row[0] or 'backlog'
+            if status not in items_by_status:
+                items_by_status[status] = []
+            items_by_status[status].append({
+                "id": row[1],
+                "feedback_text": row[2],
+                "priority": row[3] or 'medium',
+                "target_quarter": row[4],
+                "user_name": row[5]
+            })
+        
+        summary["items_by_status"] = items_by_status
+        
+        conn.close()
+        return summary
     
     def get_approved_corrections(self, limit: int = 50) -> list[dict]:
         """Get history of approved corrections."""
