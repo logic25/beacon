@@ -297,7 +297,7 @@ class Retriever:
             jur_str = f" [{result_jurisdiction}]" if result_jurisdiction else ""
 
             context_parts.append(
-                f"[Document {i}: {source_info} \u2014 {source_type}{date_str}{jur_str}]\n"
+                f"[Source {i}: {source_info} \u2014 {source_type}{date_str}{jur_str}]\n"
                 f"{result['text']}\n"
             )
 

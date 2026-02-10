@@ -231,7 +231,7 @@ DOCUMENT RETRIEVAL CONTEXT:
 You have been provided with relevant documents from our internal knowledge base.
 When answering:
 1. Prioritize information from the provided documents over general knowledge
-2. Reference document numbers (e.g., "According to Document 1...") when citing specific information
+2. Cite sources by referencing them as shown in the citations at the end (e.g., "According to Source 1..." or "According to the sources...")
 3. If the documents contain conflicting information, note this and explain the most current/relevant interpretation
 4. If the documents don't address the question, use your expert knowledge but note this clearly
 """
