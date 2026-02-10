@@ -827,14 +827,34 @@ DASHBOARD_V2_HTML = """
                 `).join('');
                 document.getElementById('top-users').innerHTML = usersHtml || '<tr><td colspan="3">No data yet</td></tr>';
                 
-                // Top questions
-                const questionsHtml = data.top_questions.map((q, i) => `
-                    <tr>
-                        <td>${i + 1}</td>
-                        <td>${q.question}</td>
-                        <td>${q.count}</td>
-                    </tr>
-                `).join('');
+                // Top questions - handle both clustered and regular format
+                let questionsHtml;
+                if (data.question_clusters && data.question_clusters.length > 0) {
+                    // Use clustered questions
+                    questionsHtml = data.question_clusters.map((cluster, i) => {
+                        const variationsText = cluster.variations && cluster.variations.length > 1 
+                            ? ` <span style="color: #6b7280; font-size: 12px;">(+${cluster.variations.length - 1} similar)</span>`
+                            : '';
+                        return `
+                        <tr title="${cluster.example_variations ? cluster.example_variations.slice(1, 3).join('; ') : ''}">
+                            <td>${i + 1}</td>
+                            <td>${cluster.representative}${variationsText}</td>
+                            <td>${cluster.total_count}</td>
+                        </tr>
+                    `;
+                    }).join('');
+                } else if (data.top_questions && data.top_questions.length > 0) {
+                    // Fall back to regular top questions
+                    questionsHtml = data.top_questions.map((q, i) => `
+                        <tr>
+                            <td>${i + 1}</td>
+                            <td>${q.question}</td>
+                            <td>${q.count}</td>
+                        </tr>
+                    `).join('');
+                } else {
+                    questionsHtml = '';
+                }
                 document.getElementById('top-questions').innerHTML = questionsHtml || '<tr><td colspan="3">No questions yet</td></tr>';
                 
                 // Failed queries
