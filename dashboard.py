@@ -104,6 +104,23 @@ LOGIN_HTML = """
             font-size: 13px;
             line-height: 1.6;
         }
+    
+        .trend {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 6px;
+            display: inline-block;
+        }
+        .trend-up {
+            color: #059669;
+            background: #d1fae5;
+        }
+        .trend-down {
+            color: #dc2626;
+            background: #fee2e2;
+        }
     </style>
 </head>
 <body>
@@ -475,6 +492,23 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         .metric-card:nth-child(4) { animation-delay: 0.3s; }
         .metric-card:nth-child(5) { animation-delay: 0.4s; }
         .metric-card:nth-child(6) { animation-delay: 0.5s; }
+    
+        .trend {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 6px;
+            display: inline-block;
+        }
+        .trend-up {
+            color: #059669;
+            background: #d1fae5;
+        }
+        .trend-down {
+            color: #dc2626;
+            background: #fee2e2;
+        }
     </style>
 </head>
 <body>
@@ -597,8 +631,26 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
 
 DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
 <div class="page-header">
-    <div class="page-title">📊 Analytics</div>
-    <div class="page-subtitle">Beacon bot performance · Auto-refreshes every 30 seconds · {{ user_email }}</div>
+    <div>
+        <div class="page-title">📊 Analytics</div>
+        <div class="page-subtitle">Beacon bot performance · Auto-refreshes every 30 seconds</div>
+    </div>
+    <div style="display: flex; gap: 12px; align-items: center;">
+        <select id="date-range" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: white; font-size: 13px; cursor: pointer;">
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+            <option value="90">Last 90 Days</option>
+        </select>
+        <button onclick="window.location.reload()" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            Refresh
+        </button>
+        <a href="/logout" style="padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: white; cursor: pointer; text-decoration: none; color: var(--text); font-size: 13px;">
+            Logout
+        </a>
+    </div>
 </div>
 
 <div class="grid grid-6 mb-6">
@@ -606,7 +658,10 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
         <div class="metric-icon" style="background: #fef3c7;">💬</div>
         <div class="metric-value" id="total-questions">-</div>
         <div class="metric-label">Total Questions</div>
-        <div class="metric-sublabel">Last 7 days</div>
+        <div class="metric-sublabel">
+            <span id="total-questions-trend"></span>
+            Last 7 days
+        </div>
     </div>
     
     <div class="metric-card">
@@ -674,9 +729,19 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
 </div>
 
 <script>
+
+function calculateTrend(current, previous) {
+    if (!previous || previous === 0) return '';
+    const change = ((current - previous) / previous) * 100;
+    const arrow = change >= 0 ? '↑' : '↓';
+    const className = change >= 0 ? 'trend-up' : 'trend-down';
+    return `<span class="trend ${className}">${arrow}${Math.abs(change).toFixed(1)}%</span>`;
+}
+
 async function loadDashboardData() {
     try {
-        const response = await fetch('/api/dashboard?days=7');
+        const days = document.getElementById('date-range')?.value || 7;
+        const response = await fetch(`/api/dashboard?days=${days}`);
         const data = await response.json();
         
         document.getElementById('total-questions').textContent = data.total_questions || 0;
@@ -742,6 +807,9 @@ async function loadDashboardData() {
 
 loadDashboardData();
 setInterval(loadDashboardData, 30000);
+
+// Listen for date range changes
+document.getElementById('date-range')?.addEventListener('change', loadDashboardData);
 </script>
 {% endblock %}''')
 
@@ -1020,6 +1088,23 @@ LOGIN_HTML = """
         }
         .google-btn:hover { border-color: #3498db; transform: translateY(-2px); }
         .error { color: #e74c3c; margin-top: 20px; padding: 12px; background: #fee; border-radius: 4px; }
+    
+        .trend {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 6px;
+            display: inline-block;
+        }
+        .trend-up {
+            color: #059669;
+            background: #d1fae5;
+        }
+        .trend-down {
+            color: #dc2626;
+            background: #fee2e2;
+        }
     </style>
 </head>
 <body>
