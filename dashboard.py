@@ -623,6 +623,46 @@ DASHBOARD_V2_HTML = """
         </div>
     </div>
     
+    <!-- User Feedback Section -->
+    <div class="grid-item full-width">
+        <div class="section">
+            <div class="section-title">💬 User Feedback</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>Date</th>
+                        <th>Feedback</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody id="user-feedback">
+                    <tr><td colspan="4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <!-- Approved Corrections History -->
+    <div class="grid-item full-width">
+        <div class="section">
+            <div class="section-title">✅ Approved Corrections History</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Date Approved</th>
+                        <th>Approved By</th>
+                        <th>What Was Wrong</th>
+                        <th>Correction Applied</th>
+                    </tr>
+                </thead>
+                <tbody id="approved-corrections">
+                    <tr><td colspan="4">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
     <!-- Conversation Detail Modal -->
     <div class="modal" id="conversation-modal">
         <div class="modal-content">
@@ -896,6 +936,32 @@ DASHBOARD_V2_HTML = """
                 
                 // Store suggestions data for modal access
                 window.suggestionsData = data.suggestions;
+                
+                // User Feedback
+                const feedbackHtml = data.feedback && data.feedback.length > 0 
+                    ? data.feedback.map(f => `
+                        <tr>
+                            <td>${f.user_name}</td>
+                            <td>${new Date(f.timestamp).toLocaleDateString()}</td>
+                            <td>${f.feedback_text}</td>
+                            <td><span class="badge badge-${f.status === 'new' ? 'warning' : 'info'}">${f.status}</span></td>
+                        </tr>
+                    `).join('')
+                    : '<tr><td colspan="4">No feedback yet</td></tr>';
+                document.getElementById('user-feedback').innerHTML = feedbackHtml;
+                
+                // Approved Corrections History
+                const correctionsHtml = data.approved_corrections && data.approved_corrections.length > 0
+                    ? data.approved_corrections.map(c => `
+                        <tr>
+                            <td>${c.reviewed_at ? new Date(c.reviewed_at).toLocaleString() : 'N/A'}</td>
+                            <td>${c.reviewed_by || 'Unknown'}</td>
+                            <td>${c.wrong_answer.substring(0, 100)}${c.wrong_answer.length > 100 ? '...' : ''}</td>
+                            <td>${c.correct_answer.substring(0, 100)}${c.correct_answer.length > 100 ? '...' : ''}</td>
+                        </tr>
+                    `).join('')
+                    : '<tr><td colspan="4">No approved corrections yet</td></tr>';
+                document.getElementById('approved-corrections').innerHTML = correctionsHtml;
                 
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
@@ -1191,12 +1257,16 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         
         conversations = analytics_db.get_recent_conversations(limit=20)
         suggestions = analytics_db.get_pending_suggestions()
+        feedback = analytics_db.get_feedback(limit=50)
+        approved_corrections = analytics_db.get_approved_corrections(limit=50)
         
         return jsonify({
             **stats,
             "conversations": conversations,
             "suggestions": suggestions,
-            "question_clusters": question_clusters
+            "question_clusters": question_clusters,
+            "feedback": feedback,
+            "approved_corrections": approved_corrections
         })
     
     @app.route("/api/suggestions/<int:suggestion_id>/approve", methods=["POST"])

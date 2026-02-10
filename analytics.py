@@ -305,6 +305,68 @@ class AnalyticsDB:
         
         return feedback_id
     
+    def get_feedback(self, limit: int = 50, status: str = None) -> list[dict]:
+        """Get user feedback submissions."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if status:
+            cursor.execute("""
+                SELECT id, timestamp, user_name, feedback_text, status
+                FROM feedback
+                WHERE status = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (status, limit))
+        else:
+            cursor.execute("""
+                SELECT id, timestamp, user_name, feedback_text, status
+                FROM feedback
+                ORDER BY timestamp DESC
+                LIMIT ?
+            """, (limit,))
+        
+        feedback = []
+        for row in cursor.fetchall():
+            feedback.append({
+                "id": row[0],
+                "timestamp": row[1],
+                "user_name": row[2],
+                "feedback_text": row[3],
+                "status": row[4]
+            })
+        
+        conn.close()
+        return feedback
+    
+    def get_approved_corrections(self, limit: int = 50) -> list[dict]:
+        """Get history of approved corrections."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, timestamp, reviewed_at, reviewed_by, 
+                   wrong_answer, correct_answer
+            FROM suggestions
+            WHERE status = 'approved'
+            ORDER BY reviewed_at DESC
+            LIMIT ?
+        """, (limit,))
+        
+        corrections = []
+        for row in cursor.fetchall():
+            corrections.append({
+                "id": row[0],
+                "timestamp": row[1],
+                "reviewed_at": row[2],
+                "reviewed_by": row[3],
+                "wrong_answer": row[4],
+                "correct_answer": row[5]
+            })
+        
+        conn.close()
+        return corrections
+    
     def get_stats(
         self,
         start_date: Optional[str] = None,
