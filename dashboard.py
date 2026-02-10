@@ -25,6 +25,7 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
 AUTHORIZED_EMAILS = os.getenv("AUTHORIZED_EMAILS", "").split(",")
 OAUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET and OAUTH_AVAILABLE)
 
+
 # Login page HTML
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -133,7 +134,7 @@ LOGIN_HTML = """
 </html>
 """
 
-# Dashboard HTML template (same as before but with logout button)
+# Dashboard HTML template
 DASHBOARD_V2_HTML = """
 <!DOCTYPE html>
 <html>
@@ -155,7 +156,6 @@ DASHBOARD_V2_HTML = """
             align-items: center;
             margin-bottom: 10px;
         }
-        h1 { color: #2c3e50; font-size: 32px; }
         .user-info {
             display: flex;
             align-items: center;
@@ -178,6 +178,7 @@ DASHBOARD_V2_HTML = """
         .logout-btn:hover {
             background: #c0392b;
         }
+        h1 { color: #2c3e50; margin-bottom: 10px; font-size: 32px; }
         .subtitle { color: #7f8c8d; margin-bottom: 20px; font-size: 14px; }
         
         /* Date Range Controls */
@@ -426,7 +427,7 @@ DASHBOARD_V2_HTML = """
         
         <button class="refresh-btn" onclick="loadData()">🔄 Refresh Now</button>
         
-        <!-- Rest of dashboard HTML same as before... -->
+        <!-- Date Range Picker -->
         <div class="date-controls">
             <strong>Date Range:</strong>
             <button class="date-preset active" onclick="setRange(7)">Last 7 Days</button>
@@ -437,9 +438,7 @@ DASHBOARD_V2_HTML = """
             <button class="date-preset" onclick="setRange('all')">All Time</button>
         </div>
         
-        <!-- Metrics, sections, etc. - keeping the same as dashboard_v2.py -->
-        <!-- (Full HTML continues - truncated for brevity, uses same structure) -->
-        
+        <!-- Key Metrics -->
         <div class="metrics">
             <div class="metric-card">
                 <div class="metric-value" id="total-questions">-</div>
@@ -460,26 +459,157 @@ DASHBOARD_V2_HTML = """
                 <div class="metric-label">Total API Cost</div>
                 <div class="metric-sublabel" id="cost-breakdown">-</div>
             </div>
+            <div class="metric-card">
+                <div class="metric-value" id="avg-response-time">-</div>
+                <div class="metric-label">Avg Response Time</div>
+                <div class="metric-sublabel" id="response-time-range">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-value" id="pending-reviews">-</div>
+                <div class="metric-label">Pending Reviews</div>
+                <div class="metric-sublabel"><span id="new-feedback-count">-</span> new feedback</div>
+            </div>
+        </div>
+        
+        <div class="grid-2">
+            <!-- Recent Conversations -->
+            <div class="section">
+                <div class="section-title">💬 Recent Conversations (Last 10)</div>
+                <div id="recent-conversations">Loading...</div>
+            </div>
+            
+            <!-- Topics Breakdown -->
+            <div class="section">
+                <div class="section-title">📊 Questions by Topic</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Topic</th>
+                            <th>Count</th>
+                            <th>%</th>
+                        </tr>
+                    </thead>
+                    <tbody id="topics-table">
+                        <tr><td colspan="3">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Top Users -->
+        <div class="section">
+            <div class="section-title">👥 Most Active Users</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>User</th>
+                        <th>Questions Asked</th>
+                    </tr>
+                </thead>
+                <tbody id="top-users">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <!-- Top Questions -->
+        <div class="section">
+            <div class="section-title">❓ Most Asked Questions</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Question</th>
+                        <th>Times Asked</th>
+                    </tr>
+                </thead>
+                <tbody id="top-questions">
+                    <tr><td colspan="3">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="grid-2">
+            <!-- Failed Queries -->
+            <div class="section">
+                <div class="section-title">⚠️ Failed Queries (Need Attention)</div>
+                <div id="failed-queries">Loading...</div>
+            </div>
+            
+            <!-- Command Usage -->
+            <div class="section">
+                <div class="section-title">⚡ Slash Command Usage</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Uses</th>
+                        </tr>
+                    </thead>
+                    <tbody id="command-usage">
+                        <tr><td colspan="2">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <!-- Suggestions Queue -->
+        <div class="section">
+            <div class="section-title">📝 Suggestions Queue (Pending Review)</div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>User</th>
+                        <th>When</th>
+                        <th>Wrong Answer</th>
+                        <th>Correct Answer</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="suggestions-queue">
+                    <tr><td colspan="5">Loading...</td></tr>
+                </tbody>
+            </table>
         </div>
     </div>
     
-    <!-- Same JavaScript as before -->
+    <!-- Conversation Detail Modal -->
+    <div class="modal" id="conversation-modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <div id="conversation-detail"></div>
+        </div>
+    </div>
+    
     <script>
         let currentRange = { days: 7 };
         
         function setRange(range) {
-            document.querySelectorAll('.date-preset').forEach(btn => btn.classList.remove('active'));
+            // Update active button
+            document.querySelectorAll('.date-preset').forEach(btn => {
+                btn.classList.remove('active');
+            });
             event.target.classList.add('active');
             
+            // Calculate date range
             const now = new Date();
             if (typeof range === 'number') {
                 currentRange = { days: range };
             } else if (range === 'thismonth') {
                 const start = new Date(now.getFullYear(), now.getMonth(), 1);
                 currentRange = { start: start.toISOString(), end: now.toISOString() };
+            } else if (range === 'lastmonth') {
+                const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+                const end = new Date(now.getFullYear(), now.getMonth(), 0);
+                currentRange = { start: start.toISOString(), end: end.toISOString() };
+            } else if (range === 'thisyear') {
+                const start = new Date(now.getFullYear(), 0, 1);
+                currentRange = { start: start.toISOString(), end: now.toISOString() };
             } else if (range === 'all') {
                 currentRange = {};
             }
+            
             loadData();
         }
         
@@ -489,7 +619,9 @@ DASHBOARD_V2_HTML = """
                 const response = await fetch('/api/dashboard?' + params);
                 const data = await response.json();
                 
+                // Update metrics
                 document.getElementById('total-questions').textContent = data.total_questions;
+                
                 const successRate = data.success_rate;
                 const successEl = document.getElementById('success-rate');
                 successEl.textContent = successRate + '%';
@@ -500,16 +632,235 @@ DASHBOARD_V2_HTML = """
                 document.getElementById('active-users').textContent = data.active_users;
                 document.getElementById('total-cost').textContent = '$' + data.total_cost_usd.toFixed(2);
                 
+                // Cost breakdown
                 const costParts = [];
                 if (data.api_costs.anthropic) costParts.push(`Claude: $${data.api_costs.anthropic.toFixed(2)}`);
+                if (data.api_costs.pinecone) costParts.push(`Pinecone: $${data.api_costs.pinecone.toFixed(2)}`);
+                if (data.api_costs.voyage) costParts.push(`Voyage: $${data.api_costs.voyage.toFixed(2)}`);
                 document.getElementById('cost-breakdown').textContent = costParts.join(' • ') || 'N/A';
+                
+                // Response time
+                document.getElementById('avg-response-time').textContent = 
+                    (data.response_time.avg_ms / 1000).toFixed(1) + 's';
+                document.getElementById('response-time-range').textContent = 
+                    `${(data.response_time.min_ms / 1000).toFixed(1)}s - ${(data.response_time.max_ms / 1000).toFixed(1)}s`;
+                
+                document.getElementById('pending-reviews').textContent = data.pending_suggestions;
+                document.getElementById('new-feedback-count').textContent = data.new_feedback;
+                
+                // Date range display
+                if (currentRange.days) {
+                    document.getElementById('date-range-display').textContent = `Last ${currentRange.days} days`;
+                } else if (currentRange.start) {
+                    document.getElementById('date-range-display').textContent = 'Custom range';
+                } else {
+                    document.getElementById('date-range-display').textContent = 'All time';
+                }
+                
+                // Recent conversations
+                displayConversations(data.conversations);
+                
+                // Topics
+                displayTopics(data.topics, data.total_questions);
+                
+                // Top users
+                const usersHtml = data.top_users.map((user, i) => `
+                    <tr>
+                        <td>${i + 1}</td>
+                        <td>${user.name}</td>
+                        <td>${user.count}</td>
+                    </tr>
+                `).join('');
+                document.getElementById('top-users').innerHTML = usersHtml || '<tr><td colspan="3">No data yet</td></tr>';
+                
+                // Top questions
+                const questionsHtml = data.top_questions.map((q, i) => `
+                    <tr>
+                        <td>${i + 1}</td>
+                        <td>${q.question}</td>
+                        <td>${q.count}</td>
+                    </tr>
+                `).join('');
+                document.getElementById('top-questions').innerHTML = questionsHtml || '<tr><td colspan="3">No questions yet</td></tr>';
+                
+                // Failed queries
+                displayFailedQueries(data.failed_queries);
+                
+                // Command usage
+                const commandHtml = data.command_usage.map(c => `
+                    <tr>
+                        <td>${c.command}</td>
+                        <td>${c.count}</td>
+                    </tr>
+                `).join('');
+                document.getElementById('command-usage').innerHTML = commandHtml || '<tr><td colspan="2">No commands used</td></tr>';
+                
+                // Suggestions
+                const suggestionsHtml = data.suggestions.map(s => `
+                    <tr>
+                        <td>${s.user_name}</td>
+                        <td>${new Date(s.timestamp).toLocaleDateString()}</td>
+                        <td>${s.wrong_answer.substring(0, 50)}...</td>
+                        <td>${s.correct_answer.substring(0, 50)}...</td>
+                        <td>
+                            <button class="btn btn-approve" onclick="approveSuggestion(${s.id})">✓</button>
+                            <button class="btn btn-reject" onclick="rejectSuggestion(${s.id})">✗</button>
+                        </td>
+                    </tr>
+                `).join('');
+                document.getElementById('suggestions-queue').innerHTML = suggestionsHtml || '<tr><td colspan="5">No pending suggestions</td></tr>';
+                
             } catch (error) {
                 console.error('Error loading dashboard data:', error);
             }
         }
         
+        function displayConversations(conversations) {
+            if (!conversations || conversations.length === 0) {
+                document.getElementById('recent-conversations').innerHTML = '<p>No conversations yet</p>';
+                return;
+            }
+            
+            const html = conversations.slice(0, 10).map(conv => {
+                const topicClass = 'topic-' + conv.topic.toLowerCase().replace(/ /g, '-');
+                return `
+                    <div class="conversation-item" onclick='showConversation(${JSON.stringify(conv)})'>
+                        <div class="conversation-question">${conv.question}</div>
+                        <div class="conversation-meta">
+                            <span>👤 ${conv.user_name}</span>
+                            <span>🕐 ${new Date(conv.timestamp).toLocaleString()}</span>
+                            <span class="topic-pill ${topicClass}">${conv.topic}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('recent-conversations').innerHTML = html;
+        }
+        
+        function displayTopics(topics, total) {
+            if (!topics || topics.length === 0) {
+                document.getElementById('topics-table').innerHTML = '<tr><td colspan="3">No data yet</td></tr>';
+                return;
+            }
+            
+            const html = topics.map(t => {
+                const pct = ((t.count / total) * 100).toFixed(1);
+                return `
+                    <tr>
+                        <td>${t.topic}</td>
+                        <td>${t.count}</td>
+                        <td>${pct}%</td>
+                    </tr>
+                `;
+            }).join('');
+            
+            document.getElementById('topics-table').innerHTML = html;
+        }
+        
+        function displayFailedQueries(queries) {
+            if (!queries || queries.length === 0) {
+                document.getElementById('failed-queries').innerHTML = '<p>No failed queries - great job!</p>';
+                return;
+            }
+            
+            const html = queries.map(q => `
+                <div class="conversation-item" style="border-left-color: #dc3545;">
+                    <div class="conversation-question">${q.question}</div>
+                    <div class="conversation-meta">
+                        <span class="badge badge-danger">Confidence: ${q.confidence ? (q.confidence * 100).toFixed(0) + '%' : 'N/A'}</span>
+                    </div>
+                </div>
+            `).join('');
+            
+            document.getElementById('failed-queries').innerHTML = html;
+        }
+        
+        function showConversation(conv) {
+            const sources = conv.sources && conv.sources.length > 0 ? 
+                '<div class="sources-list"><strong>Sources:</strong><ul>' + 
+                conv.sources.map(s => `<li>${s}</li>`).join('') +
+                '</ul></div>' : '';
+            
+            const html = `
+                <h2>Conversation Detail</h2>
+                <div style="margin: 20px 0;">
+                    <strong>👤 ${conv.user_name}</strong> • 
+                    <span>${new Date(conv.timestamp).toLocaleString()}</span> • 
+                    <span class="topic-pill topic-${conv.topic.toLowerCase().replace(/ /g, '-')}">${conv.topic}</span>
+                </div>
+                <div>
+                    <h3>Question:</h3>
+                    <div class="response-box">${conv.question}</div>
+                </div>
+                <div>
+                    <h3>Response:</h3>
+                    <div class="response-box">${conv.response || 'No response recorded'}</div>
+                </div>
+                ${sources}
+                <div style="margin-top: 20px; font-size: 12px; color: #7f8c8d;">
+                    ⏱️ Response time: ${conv.response_time_ms}ms • 
+                    💰 Cost: $${(conv.cost_usd || 0).toFixed(4)}
+                </div>
+            `;
+            
+            document.getElementById('conversation-detail').innerHTML = html;
+            document.getElementById('conversation-modal').classList.add('active');
+        }
+        
+        function closeModal() {
+            document.getElementById('conversation-modal').classList.remove('active');
+        }
+        
+        async function approveSuggestion(id) {
+            if (!confirm('Approve this suggestion? It will be applied immediately.')) return;
+            
+            try {
+                const response = await fetch('/api/suggestions/' + id + '/approve', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    alert('✅ Suggestion approved!');
+                    loadData();
+                } else {
+                    alert('❌ Error approving suggestion');
+                }
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+        
+        async function rejectSuggestion(id) {
+            if (!confirm('Reject this suggestion?')) return;
+            
+            try {
+                const response = await fetch('/api/suggestions/' + id + '/reject', {
+                    method: 'POST'
+                });
+                if (response.ok) {
+                    alert('✅ Suggestion rejected');
+                    loadData();
+                } else {
+                    alert('❌ Error rejecting suggestion');
+                }
+            } catch (error) {
+                alert('❌ Error: ' + error.message);
+            }
+        }
+        
+        // Load data on page load
         loadData();
+        
+        // Auto-refresh every 30 seconds
         setInterval(loadData, 30000);
+        
+        // Close modal on outside click
+        window.onclick = function(event) {
+            const modal = document.getElementById('conversation-modal');
+            if (event.target == modal) {
+                closeModal();
+            }
+        }
     </script>
 </body>
 </html>
