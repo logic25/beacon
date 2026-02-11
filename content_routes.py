@@ -6,7 +6,12 @@ Includes inline BASE_TEMPLATE (no imports) to avoid circular dependencies
 from flask import Blueprint, render_template_string, request, jsonify
 from content_engine.engine import ContentEngine
 import traceback
-from intelligent_scorer import IntelligentScorer
+# Optional intelligent scorer
+try:
+    from intelligent_scorer import IntelligentScorer
+    INTELLIGENT_SCORER_AVAILABLE = True
+except ImportError:
+    INTELLIGENT_SCORER_AVAILABLE = False
 
 content_bp = Blueprint('content', __name__)
 engine = ContentEngine()
@@ -667,6 +672,12 @@ def auto_generate_candidates():
 @content_bp.route('/api/content/analyze-opportunities', methods=['POST'])
 def analyze_opportunities():
     """Use Claude + RAG to intelligently score content opportunities."""
+    if not INTELLIGENT_SCORER_AVAILABLE:
+        return jsonify({
+            "success": False,
+            "error": "Intelligent scorer not available"
+        }), 503
+    
     try:
         data = request.get_json() or {}
         days_back = data.get('days_back', 30)
@@ -720,5 +731,4 @@ def analyze_opportunities():
             "success": False,
             "error": str(e)
         }), 500
-
 
