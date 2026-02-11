@@ -428,3 +428,4 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         except Exception as e:
             logger.error(f"Error analyzing cluster '{cluster_name}': {e}")
             return None
+# Deploy fix
