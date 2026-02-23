@@ -22,9 +22,12 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <title>Beacon - Content Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+
         :root {
             --bg: #f8fafc;
             --card: #ffffff;
@@ -36,8 +39,10 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
             --danger: #ef4444;
             --sidebar-width: 240px;
             --sidebar-collapsed: 72px;
+            --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+            --shadow-card-hover: 0 10px 25px -5px rgba(0,0,0,0.08), 0 4px 10px -5px rgba(0,0,0,0.04);
         }
-        
+
         body.dark {
             --bg: #0f172a;
             --card: #1e293b;
@@ -45,13 +50,15 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
             --text: #f1f5f9;
             --text-muted: #cbd5e1;
         }
-        
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg);
             color: var(--text);
             margin: 0;
             transition: background 0.2s, color 0.2s;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         
         .sidebar {
@@ -93,8 +100,9 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
         }
         
         .sidebar-title {
+            font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
-            font-size: 16px;
+            font-size: 15px;
             white-space: nowrap;
             overflow: hidden;
         }

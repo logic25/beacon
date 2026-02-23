@@ -34,10 +34,14 @@ LOGIN_HTML = """
     <title>Beacon Dashboard - Login</title>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            -webkit-font-smoothing: antialiased;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             display: flex;
             align-items: center;
@@ -324,10 +328,13 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <title>Beacon - {{ page_title }}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        
+
         :root {
             --bg: #f8fafc;
             --card: #ffffff;
@@ -339,8 +346,10 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             --danger: #ef4444;
             --sidebar-width: 240px;
             --sidebar-collapsed: 72px;
+            --shadow-card: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
+            --shadow-card-hover: 0 10px 25px -5px rgba(0,0,0,0.08), 0 4px 10px -5px rgba(0,0,0,0.04);
         }
-        
+
         body.dark {
             --bg: #0f172a;
             --card: #1e293b;
@@ -348,12 +357,14 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             --text: #f1f5f9;
             --text-muted: #cbd5e1;
         }
-        
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--bg);
             color: var(--text);
             transition: background 0.2s, color 0.2s;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
         
         .sidebar {
@@ -395,8 +406,9 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         }
         
         .sidebar-title {
-            font-family: monospace;
-            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            font-size: 15px;
             white-space: nowrap;
             overflow: hidden;
             transition: opacity 0.2s, width 0.2s;
@@ -411,17 +423,18 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             align-items: center;
             gap: 12px;
             padding: 10px 12px;
-            margin-bottom: 4px;
+            margin-bottom: 2px;
             border-radius: 8px;
             text-decoration: none;
             color: var(--text-muted);
-            font-size: 14px;
+            font-size: 13.5px;
             font-weight: 500;
-            transition: all 0.2s;
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            letter-spacing: -0.01em;
         }
-        
+
         .nav-item:hover { background: var(--bg); color: var(--text); }
-        .nav-item.active { background: #fef3c7; color: var(--primary); }
+        .nav-item.active { background: #fef3c7; color: var(--primary); font-weight: 600; }
         
         .nav-icon { width: 16px; height: 16px; flex-shrink: 0; }
         
@@ -469,6 +482,7 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         .page-header { margin-bottom: 32px; }
         
         .page-title {
+            font-family: 'JetBrains Mono', monospace;
             font-size: 24px;
             font-weight: 700;
             margin-bottom: 4px;
@@ -485,21 +499,27 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 24px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
-            transition: all 0.2s;
+            box-shadow: var(--shadow-card);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        
+
         .card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            box-shadow: var(--shadow-card-hover);
             transform: translateY(-2px);
         }
-        
+
         .metric-card {
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 20px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+            box-shadow: var(--shadow-card);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .metric-card:hover {
+            box-shadow: var(--shadow-card-hover);
+            transform: translateY(-1px);
         }
         
         .metric-icon {
@@ -514,10 +534,11 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         }
         
         .metric-value {
-            font-family: 'Courier New', monospace;
+            font-family: 'JetBrains Mono', monospace;
             font-size: 32px;
-            font-weight: bold;
+            font-weight: 700;
             margin-bottom: 4px;
+            letter-spacing: -0.02em;
         }
         
         .metric-label { font-size: 14px; color: var(--text); margin-bottom: 2px; }
@@ -577,21 +598,24 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         
         th {
             text-align: left;
-            font-size: 11px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10.5px;
             color: var(--text-muted);
-            font-weight: 600;
+            font-weight: 500;
             padding: 12px;
             border-bottom: 1px solid var(--border);
             text-transform: uppercase;
-            letter-spacing: 0.05em;
+            letter-spacing: 0.06em;
         }
-        
+
         td {
             padding: 12px;
             font-size: 13px;
             border-bottom: 1px solid var(--border);
+            line-height: 1.5;
         }
-        
+
+        tr { transition: background 0.15s ease; }
         tr:hover { background: var(--bg); }
         
         .grid { display: grid; gap: 16px; }
@@ -609,12 +633,14 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
             padding: 20px;
             margin-bottom: 12px;
             cursor: pointer;
-            transition: all 0.2s;
+            box-shadow: var(--shadow-card);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        
+
         .conv-card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            box-shadow: var(--shadow-card-hover);
             border-color: rgba(245, 158, 11, 0.3);
+            transform: translateY(-1px);
         }
         
         .topic-bar {
@@ -624,7 +650,7 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         }
         
         .topic-name { font-size: 13px; font-weight: 500; }
-        .topic-count { font-family: monospace; font-size: 12px; color: var(--text-muted); }
+        .topic-count { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); }
         
         .progress-bar {
             height: 8px;
@@ -637,7 +663,7 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
         
         .progress-fill { height: 100%; transition: width 0.3s; }
         
-        .rank { font-family: monospace; font-weight: bold; color: var(--primary); }
+        .rank { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: var(--primary); }
         
         /* Tab content visibility */
         .tab-content { display: none; }
