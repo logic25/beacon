@@ -3,9 +3,14 @@ Flask routes for Content Intelligence dashboard
 Includes inline BASE_TEMPLATE (no imports) to avoid circular dependencies
 """
 
+import logging
+from datetime import datetime
+
 from flask import Blueprint, render_template_string, request, jsonify
 from content_engine.engine import ContentEngine
 import traceback
+
+logger = logging.getLogger(__name__)
 # Optional intelligent scorer
 try:
     from intelligent_scorer import IntelligentScorer
@@ -530,14 +535,19 @@ def decide():
 
 @content_bp.route('/api/content/auto-generate', methods=['POST'])
 def auto_generate_candidates():
-    """Generate content candidates from analytics data automatically"""
+    """Generate content candidates from analytics data automatically.
+
+    Pulls questions from whichever analytics backend is active:
+    1. Supabase edge function (persistent, preferred)
+    2. Local SQLite beacon_analytics.db (fallback)
+    """
     try:
         import sqlite3
-        
+
         # Topic detection (matches analytics.py logic)
         def detect_topic(text):
             text_lower = text.lower()
-            topics = {
+            topic_map = {
                 "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "contextual"],
                 "DOB": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
                 "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
@@ -548,73 +558,95 @@ def auto_generate_candidates():
                 "Plans": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
                 "COMMAND": ["/correct", "/tip", "/feedback", "/help"],
             }
-            for topic, keywords in topics.items():
+            for topic, keywords in topic_map.items():
                 if any(kw in text_lower for kw in keywords):
                     return topic
             return "General"
-        
+
         import json
-        from datetime import datetime
         import uuid
-        
-        conn = sqlite3.connect('beacon_analytics.db')
-        c = conn.cursor()
-        
-        # First check total questions
-        c.execute("SELECT COUNT(*) FROM interactions")
-        total_count = c.fetchone()[0]
-        print(f"DEBUG: Total questions in analytics: {total_count}")
-        
-        # Check questions with topics
-        c.execute("SELECT COUNT(*) FROM interactions WHERE topic IS NOT NULL")
-        with_topics = c.fetchone()[0]
-        print(f"DEBUG: Questions with topics: {with_topics}")
-        
-        # Get topic breakdown
-        c.execute("""
-            SELECT topic, COUNT(*) as count
-            FROM interactions
-            WHERE topic IS NOT NULL
-            GROUP BY topic
-            ORDER BY count DESC
-        """)
-        all_topics = c.fetchall()
-        print(f"DEBUG: All topics: {all_topics}")
-        
-        # Get all questions and detect topics on the fly
-        c.execute("SELECT question FROM interactions")
-        all_questions = c.fetchall()
-        
-        # Group by detected topic
+        import os
         from collections import defaultdict
+
+        # ----- Pull questions from best available source -----
+        all_question_texts = []
+        source_used = "none"
+
+        # Try 1: Supabase edge function
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+        if supabase_url and analytics_key:
+            try:
+                import requests as req
+                resp = req.post(
+                    f"{supabase_url.rstrip('/')}/functions/v1/beacon-analytics",
+                    json={"action": "get_recent_conversations", "data": {"limit": 200}},
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-beacon-key": analytics_key,
+                    },
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    conversations = resp.json().get("conversations", [])
+                    all_question_texts = [
+                        c.get("question", "")
+                        for c in conversations
+                        if c.get("question")
+                    ]
+                    source_used = "supabase"
+                    logger.info(f"[Content Auto-Gen] Pulled {len(all_question_texts)} questions from Supabase")
+            except Exception as e:
+                logger.warning(f"[Content Auto-Gen] Supabase fetch failed, trying SQLite: {e}")
+
+        # Try 2: Local SQLite fallback
+        if not all_question_texts:
+            try:
+                conn = sqlite3.connect('beacon_analytics.db')
+                c = conn.cursor()
+                c.execute("SELECT question FROM interactions WHERE question IS NOT NULL")
+                all_question_texts = [row[0] for row in c.fetchall()]
+                conn.close()
+                source_used = "sqlite"
+                logger.info(f"[Content Auto-Gen] Pulled {len(all_question_texts)} questions from SQLite")
+            except Exception as e:
+                logger.warning(f"[Content Auto-Gen] SQLite fetch also failed: {e}")
+
+        if not all_question_texts:
+            return jsonify({
+                "success": True,
+                "message": "No questions found in analytics. Ask Beacon some questions first.",
+                "candidates_created": 0,
+                "source": source_used,
+            })
+
+        # ----- Group questions by detected topic -----
         topic_questions = defaultdict(list)
-        
-        for (question,) in all_questions:
+        for question in all_question_texts:
             detected_topic = detect_topic(question)
             topic_questions[detected_topic].append(question)
-        
-        # Filter to topics with 2+ questions
-        topics = [
-            (topic, len(questions), '|||'.join(questions))
+
+        # Filter to topics with 2+ questions (skip COMMAND)
+        topic_groups = [
+            (topic, len(questions), questions[:5])
             for topic, questions in topic_questions.items()
-            if len(questions) >= 2
+            if len(questions) >= 2 and topic != "COMMAND"
         ]
-        topics.sort(key=lambda x: x[1], reverse=True)  # Sort by count
-        print(f"DEBUG: Topics with 2+ questions: {topics}")
-        conn.close()
-        
-        if not topics:
+        topic_groups.sort(key=lambda x: x[1], reverse=True)
+
+        if not topic_groups:
             return jsonify({
-                "success": True, 
-                "message": f"Found {with_topics} questions with topics, but none have 2+ questions per topic. Topics: {[t[0] for t in all_topics]}", 
+                "success": True,
+                "message": f"Found {len(all_question_texts)} questions but none have 2+ per topic yet.",
                 "candidates_created": 0,
-                "debug": {"total": total_count, "with_topics": with_topics, "all_topics": all_topics}
+                "source": source_used,
             })
-        
+
+        # ----- Create content candidates -----
         candidates_created = []
         content_conn = sqlite3.connect(engine.db_path)
         content_c = content_conn.cursor()
-        
+
         content_c.execute("""
             CREATE TABLE IF NOT EXISTS content_candidates (
                 id TEXT PRIMARY KEY, title TEXT, content_type TEXT, priority TEXT,
@@ -624,13 +656,11 @@ def auto_generate_candidates():
                 source_url TEXT, content_preview TEXT, status TEXT, created_at TEXT
             )
         """)
-        
-        for topic, count, questions_str in topics:
-            questions = questions_str.split('|||')[:5]
-            
+
+        for topic, count, questions in topic_groups:
             priority = "high" if count >= 5 else ("medium" if count >= 3 else "low")
             content_type = "blog_post" if count >= 3 else "newsletter"
-            
+
             services = []
             t = topic.lower()
             if 'zoning' in t:
@@ -641,19 +671,23 @@ def auto_generate_candidates():
                 services.append('Violation Removal')
             if not services:
                 services = ['General']
-            
+
             angle = "Process guidance"
             if any('how long' in q.lower() for q in questions):
                 angle = "Timeline concerns"
             elif any('require' in q.lower() for q in questions):
                 angle = "Requirement clarification"
-            
+
             candidate_id = f"cand_{uuid.uuid4().hex[:12]}"
-            
-            content_c.execute("SELECT id FROM content_candidates WHERE key_topics LIKE ? AND status = 'pending'", (f'%{topic}%',))
+
+            # Skip if already pending for this topic
+            content_c.execute(
+                "SELECT id FROM content_candidates WHERE key_topics LIKE ? AND status = 'pending'",
+                (f'%{topic}%',),
+            )
             if content_c.fetchone():
                 continue
-            
+
             content_c.execute("""
                 INSERT INTO content_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
@@ -662,16 +696,25 @@ def auto_generate_candidates():
                 json.dumps([topic]), f"Team asked {count} questions about {topic}.",
                 f"Create comprehensive {topic} guide?", count, json.dumps(questions),
                 angle, "internal_analysis", f"Based on {count} questions...",
-                "pending", datetime.now().isoformat()
+                "pending", datetime.now().isoformat(),
             ))
-            
-            candidates_created.append({"title": f"Guide to {topic} in NYC", "priority": priority, "questions": count})
-        
+
+            candidates_created.append({
+                "title": f"Guide to {topic} in NYC",
+                "priority": priority,
+                "questions": count,
+            })
+
         content_conn.commit()
         content_conn.close()
-        
-        return jsonify({"success": True, "candidates_created": len(candidates_created), "candidates": candidates_created})
-        
+
+        return jsonify({
+            "success": True,
+            "candidates_created": len(candidates_created),
+            "candidates": candidates_created,
+            "source": source_used,
+        })
+
     except Exception as e:
         import traceback
         traceback.print_exc()

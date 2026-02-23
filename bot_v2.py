@@ -610,30 +610,6 @@ Daily limits: 100 requests, 100K tokens"""
             return "❌ Sorry, couldn't save your feedback. Please try again."
 
 
-    # Log slash command interaction
-    if analytics_db and ANALYTICS_AVAILABLE:
-        try:
-            analytics_db.log_interaction(Interaction(
-                timestamp=datetime.now().isoformat(),
-                user_id=user_id,
-                user_name=user_display_name,
-                space_name=space_name or "DM",
-                question=user_message,
-                response=response_text,
-                command=command,
-                answered=True,
-                response_length=len(response_text),
-                had_sources=False,
-                sources_used=None,
-                tokens_used=0,
-                cost_usd=0.0,
-                response_time_ms=0,
-                confidence=None,
-                topic="Command"
-            ))
-        except Exception as log_err:
-            logger.warning(f"Failed to log command interaction: {log_err}")
-    
     return None  # Not a recognized command
 
 
@@ -796,43 +772,43 @@ def process_message_async(
         session_manager.add_assistant_message(user_id, space_name, ai_response)
 
         # === LOG TO ANALYTICS ===
-        if analytics_db and ANALYTICS_AVAILABLE:
+        if analytics_db:
             try:
                 from datetime import datetime
-                
+
                 # Calculate metrics
                 response_time = int((time.time() - request_start_time) * 1000)
                 has_sources = bool(rag_sources)
-                
+
                 # Estimate tokens (rough: 4 chars = 1 token)
                 tokens_used = (len(user_message) + len(ai_response)) // 4
-                
+
                 # Estimate cost (Haiku: ~$0.25 per 1M input, ~$1.25 per 1M output)
                 cost_usd = (tokens_used / 1_000_000) * 0.75
-                
+
                 interaction = Interaction(
                     timestamp=datetime.now().isoformat(),
                     user_id=user_id,
                     user_name=user_display_name or "Unknown User",
                     space_name=space_name or "DM",
                     question=user_message,
-                    response=ai_response,  # NEW for v2
+                    response=ai_response,
                     command=None,
                     answered=True,
                     response_length=len(ai_response),
                     had_sources=has_sources,
-                    sources_used=json.dumps([s.get('file', '') for s in rag_sources]) if rag_sources else None,  # NEW for v2
+                    sources_used=json.dumps([s.get('file', '') for s in rag_sources]) if rag_sources else None,
                     tokens_used=tokens_used,
                     cost_usd=cost_usd,
                     response_time_ms=response_time,
                     confidence=None,
                     topic=None,  # Auto-categorized by analytics v2
                 )
-                
+
                 analytics_db.log_interaction(interaction)
-                logger.info(f"Logged interaction to analytics")
+                logger.info(f"Logged interaction to analytics (backend={'supabase' if SUPABASE_ANALYTICS else 'sqlite'})")
             except Exception as e:
-                logger.error(f"Failed to log analytics: {e}")
+                logger.error(f"Failed to log analytics: {e}", exc_info=True)
 
         # === SEND RESPONSE ===
         if not ai_response:
@@ -960,6 +936,53 @@ def api_chat():
             return jsonify({"error": "No message provided"}), 400
 
         logger.info(f"[API Chat] {user_name} ({user_id}): {user_message[:100]}")
+
+        # === SLASH COMMAND HANDLING ===
+        if user_message.startswith("/"):
+            parts = user_message.split(maxsplit=1)
+            command = parts[0]
+            args = parts[1] if len(parts) > 1 else ""
+
+            response = handle_slash_command(
+                command, args, user_id, space_id,
+                user_email=data.get("user_email", ""),
+                user_display_name=user_name,
+            )
+            if response:
+                response_time_ms = int((time.time() - request_start_time) * 1000)
+                # Log slash command to analytics
+                if analytics_db:
+                    try:
+                        interaction = Interaction(
+                            timestamp=datetime.now().isoformat(),
+                            user_id=user_id,
+                            user_name=user_name,
+                            space_name=space_id,
+                            question=user_message,
+                            response=response[:500],
+                            command=command,
+                            answered=True,
+                            response_length=len(response),
+                            had_sources=False,
+                            sources_used=None,
+                            tokens_used=0,
+                            cost_usd=0.0,
+                            response_time_ms=response_time_ms,
+                            confidence=None,
+                            topic="COMMAND",
+                        )
+                        analytics_db.log_interaction(interaction)
+                    except Exception as e:
+                        logger.error(f"[API Chat] Failed to log slash command: {e}")
+
+                return jsonify({
+                    "response": response,
+                    "confidence": 1.0,
+                    "sources": [],
+                    "flow_type": "command",
+                    "cached": False,
+                    "response_time_ms": response_time_ms,
+                })
 
         # === OFF-TOPIC FILTER ===
         if RATE_LIMITER_AVAILABLE:
@@ -1105,7 +1128,7 @@ def api_chat():
         # === LOG TO ANALYTICS ===
         response_time_ms = int((time.time() - request_start_time) * 1000)
 
-        if analytics_db and ANALYTICS_AVAILABLE:
+        if analytics_db:
             try:
                 input_tokens = len(user_message + (combined_context or "")) // 4
                 output_tokens = len(ai_response) // 4
@@ -1133,8 +1156,9 @@ def api_chat():
                     topic=None,
                 )
                 analytics_db.log_interaction(interaction)
+                logger.info(f"[API Chat] Logged to analytics (backend={'supabase' if SUPABASE_ANALYTICS else 'sqlite'})")
             except Exception as e:
-                logger.error(f"[API Chat] Analytics logging failed: {e}")
+                logger.error(f"[API Chat] Analytics logging failed: {e}", exc_info=True)
 
         return jsonify({
             "response": ai_response or "I wasn't able to generate a response. Please try again.",
@@ -1224,8 +1248,8 @@ def api_analytics():
         start_date = request.args.get("start_date")
         end_date = request.args.get("end_date")
 
-        if not analytics_db or not ANALYTICS_AVAILABLE:
-            return jsonify({"error": "Analytics not available"}), 503
+        if not analytics_db:
+            return jsonify({"error": "Analytics not available (no analytics backend configured)"}), 503
 
         stats = analytics_db.get_stats(
             days=days if not start_date else None,

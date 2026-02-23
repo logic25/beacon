@@ -43,10 +43,26 @@ class SupabaseAnalyticsDB:
                 headers=self.headers,
                 timeout=15,
             )
-            resp.raise_for_status()
-            return resp.json()
+            if resp.status_code != 200:
+                logger.error(
+                    f"Edge function ({action}) returned {resp.status_code}: {resp.text[:500]}"
+                )
+                return {}
+            result = resp.json()
+            if "error" in result:
+                logger.error(f"Edge function ({action}) error: {result['error']}")
+            return result
+        except requests.exceptions.ConnectionError as e:
+            logger.error(
+                f"Edge function ({action}) connection failed — is the beacon-analytics "
+                f"edge function deployed? URL: {self.base_url} — {e}"
+            )
+            return {}
+        except requests.exceptions.Timeout:
+            logger.error(f"Edge function ({action}) timed out after 15s")
+            return {}
         except Exception as e:
-            logger.error(f"Edge function call failed ({action}): {e}")
+            logger.error(f"Edge function ({action}) unexpected error: {e}", exc_info=True)
             return {}
 
     # ------------------------------------------------------------------
@@ -136,6 +152,26 @@ class SupabaseAnalyticsDB:
             return result.get("id", 0)
         except Exception as e:
             logger.error(f"log_feedback failed: {e}")
+            return 0
+
+    def create_roadmap_item(self, title: str, priority: str = "medium",
+                            roadmap_status: str = "backlog",
+                            target_quarter: str = None,
+                            notes: str = None,
+                            created_by: str = "admin") -> int:
+        """Create a standalone roadmap item (not tied to user feedback)."""
+        try:
+            result = self._call("create_roadmap_item", {
+                "title": title,
+                "priority": priority,
+                "roadmap_status": roadmap_status,
+                "target_quarter": target_quarter,
+                "notes": notes,
+                "created_by": created_by,
+            })
+            return result.get("id", 0)
+        except Exception as e:
+            logger.error(f"create_roadmap_item failed: {e}")
             return 0
 
     # ------------------------------------------------------------------

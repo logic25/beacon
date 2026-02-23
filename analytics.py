@@ -332,7 +332,7 @@ class AnalyticsDB:
         """Log a feature request / feedback."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             INSERT INTO feedback (
                 timestamp, user_id, user_name, feedback_text, status
@@ -343,12 +343,43 @@ class AnalyticsDB:
             user_name,
             feedback,
         ))
-        
+
         feedback_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        
+
         return feedback_id
+
+    def create_roadmap_item(self, title: str, priority: str = "medium",
+                            roadmap_status: str = "backlog",
+                            target_quarter: str = None,
+                            notes: str = None,
+                            created_by: str = "admin") -> int:
+        """Create a standalone roadmap item (not tied to user feedback)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO feedback (
+                timestamp, user_id, user_name, feedback_text, status,
+                roadmap_status, priority, target_quarter, notes
+            ) VALUES (?, ?, ?, ?, 'roadmap', ?, ?, ?, ?)
+        """, (
+            datetime.now().isoformat(),
+            f"admin:{created_by}",
+            created_by,
+            title,
+            roadmap_status,
+            priority,
+            target_quarter,
+            notes,
+        ))
+
+        item_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        return item_id
     
     def get_feedback(self, limit: int = 50, status: str = None) -> list[dict]:
         """Get user feedback submissions with roadmap tracking."""

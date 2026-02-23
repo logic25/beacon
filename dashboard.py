@@ -1724,9 +1724,54 @@ function showTab(tabName) {
 # Roadmap page with status summary cards
 
 ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
-<div class="page-header">
-    <div class="page-title"><svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z"/></svg> Roadmap</div>
-    <div class="page-subtitle">Track feature requests and development progress</div>
+<div class="page-header" style="display: flex; justify-content: space-between; align-items: flex-start;">
+    <div>
+        <div class="page-title"><svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M9 6.75V15m6-6v8.25m.503 3.498l4.875-2.437c.381-.19.622-.58.622-1.006V4.82c0-.836-.88-1.38-1.628-1.006l-3.869 1.934c-.317.159-.69.159-1.006 0L9.503 3.252a1.125 1.125 0 00-1.006 0L3.622 5.689C3.24 5.88 3 6.27 3 6.695V19.18c0 .836.88 1.38 1.628 1.006l3.869-1.934c.317-.159.69-.159 1.006 0l4.994 2.497c.317.158.69.158 1.006 0z"/></svg> Roadmap</div>
+        <div class="page-subtitle">Track feature requests and development progress</div>
+    </div>
+    <button class="btn btn-primary" onclick="openNewItemModal()" style="white-space: nowrap;">+ New Item</button>
+</div>
+
+<!-- New Roadmap Item Modal -->
+<div id="new-item-modal" class="modal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 999; display: none; align-items: center; justify-content: center;">
+    <div style="background: var(--card); border-radius: 12px; padding: 32px; max-width: 500px; width: 90%; margin: auto; position: relative; top: 50%; transform: translateY(-50%);">
+        <h3 style="font-size: 18px; font-weight: 600; margin-bottom: 20px;">New Roadmap Item</h3>
+        <div style="margin-bottom: 16px;">
+            <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-muted);">Title *</label>
+            <input id="ri-title" type="text" placeholder="e.g. Add multi-language support" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg); color: var(--text);">
+        </div>
+        <div style="display: flex; gap: 12px; margin-bottom: 16px;">
+            <div style="flex: 1;">
+                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-muted);">Priority</label>
+                <select id="ri-priority" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg); color: var(--text);">
+                    <option value="low">Low</option>
+                    <option value="medium" selected>Medium</option>
+                    <option value="high">High</option>
+                </select>
+            </div>
+            <div style="flex: 1;">
+                <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-muted);">Status</label>
+                <select id="ri-status" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg); color: var(--text);">
+                    <option value="backlog" selected>Backlog</option>
+                    <option value="planned">Planned</option>
+                    <option value="in-progress">In Progress</option>
+                    <option value="shipped">Shipped</option>
+                </select>
+            </div>
+        </div>
+        <div style="margin-bottom: 16px;">
+            <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-muted);">Target Quarter</label>
+            <input id="ri-quarter" type="text" placeholder="e.g. Q2 2026" style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg); color: var(--text);">
+        </div>
+        <div style="margin-bottom: 20px;">
+            <label style="display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text-muted);">Notes</label>
+            <textarea id="ri-notes" rows="3" placeholder="Optional details..." style="width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; background: var(--bg); color: var(--text); resize: vertical;"></textarea>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+            <button class="btn btn-outline" onclick="closeNewItemModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="createRoadmapItem()">Create Item</button>
+        </div>
+    </div>
 </div>
 
 <div class="grid grid-4 mb-6">
@@ -1828,7 +1873,54 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
 </div>
 
 <script>
-// Roadmap page - no conversations data needed
+// Roadmap page
+
+function openNewItemModal() {
+    document.getElementById('new-item-modal').style.display = 'block';
+}
+
+function closeNewItemModal() {
+    document.getElementById('new-item-modal').style.display = 'none';
+}
+
+async function createRoadmapItem() {
+    const title = document.getElementById('ri-title').value.trim();
+    if (!title) { alert('Title is required'); return; }
+
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+
+    try {
+        const resp = await fetch('/api/roadmap/create', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                title: title,
+                priority: document.getElementById('ri-priority').value,
+                roadmap_status: document.getElementById('ri-status').value,
+                target_quarter: document.getElementById('ri-quarter').value || null,
+                notes: document.getElementById('ri-notes').value || null,
+            })
+        });
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            window.location.reload();
+        } else {
+            alert('Error: ' + data.message);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Item';
+    }
+}
+
+// Close modal on background click
+document.getElementById('new-item-modal')?.addEventListener('click', function(e) {
+    if (e.target === this) closeNewItemModal();
+});
 
 function openConvModal(idx) {
     const c = convsData[idx];
@@ -2362,7 +2454,7 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         """Update roadmap status for a feedback item (OAuth protected)."""
         try:
             data = request.get_json()
-            
+
             updated = analytics_db.update_feedback_roadmap(
                 feedback_id,
                 roadmap_status=data.get('roadmap_status'),
@@ -2370,11 +2462,35 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
                 target_quarter=data.get('target_quarter'),
                 notes=data.get('notes')
             )
-            
+
             if updated:
                 return jsonify({"status": "ok", "message": "Roadmap updated"})
             else:
                 return jsonify({"status": "error", "message": "Feedback item not found"}), 404
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+
+    @app.route("/api/roadmap/create", methods=["POST"])
+    @require_auth
+    def api_create_roadmap_item():
+        """Create a standalone roadmap item (OAuth protected)."""
+        try:
+            data = request.get_json()
+            title = (data.get("title") or "").strip()
+            if not title:
+                return jsonify({"status": "error", "message": "Title is required"}), 400
+
+            created_by = session.get("user_email", "admin")
+            item_id = analytics_db.create_roadmap_item(
+                title=title,
+                priority=data.get("priority", "medium"),
+                roadmap_status=data.get("roadmap_status", "backlog"),
+                target_quarter=data.get("target_quarter"),
+                notes=data.get("notes"),
+                created_by=created_by,
+            )
+
+            return jsonify({"status": "ok", "id": item_id, "message": "Roadmap item created"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 400
 
