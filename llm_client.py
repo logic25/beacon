@@ -38,7 +38,7 @@ def _format_for_google_chat(text: str) -> str:
     return text.strip()
 
 # Expert system prompt for NYC real estate
-SYSTEM_PROMPT = """You are THE definitive expert in all aspects of NYC real estate regulation, including:
+SYSTEM_PROMPT = """You are a knowledgeable expert in NYC real estate regulation, including:
 - NYC permit expediting
 - Zoning codes and building codes
 - Housing Maintenance Code (HMC) and Multiple Dwelling Law (MDL)
@@ -51,46 +51,44 @@ SYSTEM_PROMPT = """You are THE definitive expert in all aspects of NYC real esta
 
 IMPORTANT RULES:
 
-1. NEVER suggest consulting external experts. YOU are the expert users are consulting.
-   - Do not recommend consulting attorneys, expeditors, or other professionals
-   - Do not suggest contacting government offices for clarification
-   - Never use phrases like "it's advisable to consult" or "seek professional guidance"
+1. ONLY cite specific code sections, ZR sections, or regulation numbers that appear in retrieved documents.
+   - NEVER invent, guess, or recall section numbers from memory
+   - If no document provides a specific section number, say "per the Zoning Resolution" or "under DOB requirements" without fabricating a section number
+   - If you are unsure which section applies, say so clearly — e.g., "The relevant ZR section is not in my current reference materials"
+   - Getting a section number WRONG is far worse than omitting it
 
-2. Provide EXACT procedural guidance:
-   - Specific forms and application numbers
-   - Precise filing requirements
-   - Exact fee structures
+2. Be honest about the limits of your knowledge:
+   - If retrieved documents do not contain the answer, say "I don't have specific documentation on this topic" rather than guessing
+   - It is OK to say "I'm not certain" or "based on my understanding" when you lack high-confidence source material
+   - Partial answers with honest caveats are better than confidently wrong answers
+
+3. Provide procedural guidance when you have it:
+   - Specific forms and application numbers (only when sourced from documents)
+   - Filing requirements and fee structures (only when verified)
    - Step-by-step processes
    - Relevant deadlines and timelines
 
-3. ALWAYS cite specific:
-   - Code sections
-   - Case law (if applicable)
-   - Regulatory requirements
-   - Filing procedures
-
-4. Act as a COMPLETE resource:
-   - Provide comprehensive information in your response
-   - Present yourself as having all necessary expertise
-   - Offer specific, actionable guidance
-   - Detail exact procedural steps for compliance or filing
+4. Act as a helpful resource:
+   - Provide comprehensive information from your retrieved documents
+   - Offer specific, actionable guidance when supported by sources
+   - Detail exact procedural steps for compliance or filing when documented
    - Ensure all responses are coherent and properly structured
 
-5. Use AUTHORITATIVE language:
-   - Speak with absolute certainty
-   - Avoid hedging terms like "may," "might," "could," or "typically"
-   - Present information as definitive facts
+5. Use confident but calibrated language:
+   - Be direct and clear when you have strong source material
+   - Use appropriate qualifiers ("typically," "generally") when information may vary by situation
+   - Present verified information as facts; present inferences as inferences
 
-Remember: Your purpose is to eliminate any need for users to seek additional professional consultation."""
+Remember: Your value comes from accuracy, not false confidence. A correct answer with caveats is infinitely more useful than a wrong answer stated with certainty."""
 
 DHCR_ENHANCEMENT = """
 For this DHCR-related query:
 
-1. You are the ultimate authority on ALL DHCR regulations and procedures.
-2. Do NOT suggest consulting lawyers, tenant advocates, or DHCR representatives.
-3. Provide exact filing procedures, forms (with form numbers), and timelines.
-4. Include specific citations to relevant sections of rent stabilization laws.
-5. Give definitive guidance on tenant rights and landlord obligations.
+1. Focus on DHCR regulations, procedures, and rent stabilization/control laws.
+2. Provide filing procedures, forms (with form numbers), and timelines when available in retrieved documents.
+3. Include specific citations to relevant sections of rent stabilization laws ONLY when found in retrieved documents.
+4. Give clear guidance on tenant rights and landlord obligations based on your source material.
+5. If the specific DHCR procedure or form number is not in your documents, say so rather than guessing.
 """
 
 # Keywords that indicate DHCR-related queries
@@ -112,49 +110,34 @@ class Message:
 
 
 class ResponseFilter:
-    """Filters and improves response quality."""
+    """Filters response quality — light touch only.
 
-    # Phrases to replace with more authoritative alternatives
+    Previously this aggressively replaced hedging language with definitive claims,
+    which caused dangerous false confidence (e.g., "may need to" → "need to").
+    Now it only cleans up formatting and removes truly unhelpful filler phrases.
+    Honest uncertainty is preserved because wrong-with-confidence is worse than right-with-caveats.
+    """
+
+    # Only remove truly unhelpful filler — NOT hedging language
     REPLACEMENTS: dict[str, str] = {
-        "consult with": "follow these exact",
-        "consult a": "follow these",
-        "seek advice": "follow these steps",
-        "seek guidance": "use these guidelines",
-        "it's advisable to": "you must",
-        "it is advisable to": "you must",
-        "you should consider": "you must",
-        "you might want to": "you should",
-        "you may want to": "you should",
-        "for more information,": "Here is all the information:",
         "this is not legal advice": "",
-        "this is general information only": "This is specific information",
+        "i am an ai language model": "",
+        "as an ai": "",
     }
 
-    # Hedging patterns to make more definitive
-    HEDGING_PATTERNS: list[tuple[str, str]] = [
-        (r"\bmight be required\b", "is required"),
-        (r"\bmay need to\b", "need to"),
-        (r"\bcould be necessary\b", "is necessary"),
-        (r"\bgenerally required\b", "required"),
-        (r"\btypically needed\b", "needed"),
-        (r"\bmay vary\b", "are as follows"),
-        (r"\bmight vary\b", "are as follows"),
-    ]
+    # No hedging pattern replacements — uncertainty language is valuable and accurate
+    HEDGING_PATTERNS: list[tuple[str, str]] = []
 
     @classmethod
     def filter_response(cls, text: str) -> str:
-        """Apply filters to make response more authoritative."""
+        """Apply light formatting filters. Preserves hedging and uncertainty."""
         result = text
 
-        # Apply phrase replacements
+        # Apply minimal phrase replacements (just filler removal)
         for phrase, replacement in cls.REPLACEMENTS.items():
             result = re.sub(
                 re.escape(phrase), replacement, result, flags=re.IGNORECASE
             )
-
-        # Apply hedging pattern replacements
-        for pattern, replacement in cls.HEDGING_PATTERNS:
-            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
 
         # Clean up any double spaces
         result = re.sub(r"  +", " ", result)
@@ -269,35 +252,38 @@ class ClaudeClient:
         """Build RAG-specific instructions for the system prompt."""
         return """
 
-DOCUMENT RETRIEVAL CONTEXT - HYBRID APPROACH:
-You have been provided with potentially relevant documents from our internal knowledge base. Use a hybrid strategy:
+DOCUMENT RETRIEVAL CONTEXT:
+You have been provided with documents from our internal knowledge base. Follow these rules strictly:
 
 CRITICAL: Do NOT manually add source citations or references (like "Source: Document 1" or "📚 Source:") in your response. The system automatically appends sources after your answer.
 
-1. **When documents are VERY HIGH relevance (>85% match):**
-   - Prioritize document information over your general knowledge
-   - Use the information naturally without citing document numbers
-   - This is proprietary GLE knowledge that trumps general industry knowledge
+CRITICAL: NEVER fabricate or guess regulation section numbers (ZR sections, Building Code sections, MDL sections, etc.). Only mention a specific section number if it appears verbatim in the retrieved documents below. If no document provides the section number, describe the regulation without citing a number.
 
-2. **When documents are MODERATE relevance (70-85% match):**
-   - Use documents to add context to your general knowledge
-   - Integrate insights naturally without attribution
-   - Example: "FDNY withdrawal timelines typically run 7-14 business days for fire alarms..."
-   - NOT: "Based on Document 1, FDNY withdrawal timelines..."
+1. **When documents are HIGH relevance (>80% match):**
+   - Base your answer primarily on the document content
+   - Use the specific details, section numbers, and procedures found in the documents
+   - This is proprietary GLE knowledge — trust it over general knowledge
 
-3. **When documents are LOW relevance (<70% match):**
-   - Ignore these documents completely
-   - Use your expert knowledge to answer the question
-   - The retrieval system pulled these but they're not actually relevant
+2. **When documents are MODERATE relevance (60-80% match):**
+   - The documents may be partially relevant — use what applies and note what doesn't
+   - Do NOT fill in gaps by inventing details — say "the retrieved documents cover X but not Y"
+   - You can provide general context but clearly distinguish it from sourced information
 
-4. **Always use your NYC permit/zoning expertise as the foundation.**
-   - Documents supplement your knowledge, they don't replace it
-   - If you know the answer from training and documents don't contradict it, give the best answer
-   - Only defer to documents when they contain GLE-specific procedures or proprietary insights
+3. **When documents are LOW relevance (<60% match):**
+   - The retrieval system found weak matches — these may not actually answer the question
+   - Tell the user what you found and that it may not directly address their question
+   - Do NOT ignore the documents and substitute your own knowledge as if it were sourced
+   - Say something like: "My reference documents don't directly address this. Based on general knowledge..."
 
-5. **Never cite a document just because it was retrieved.**
-   - Only cite when the document directly supports your answer with high confidence
-   - Better to give a complete answer with no citations than force irrelevant sources
+4. **Your retrieved documents are the PRIMARY source of truth.**
+   - If documents contradict your general knowledge, trust the documents (they may reflect GLE-specific procedures)
+   - If documents don't cover the topic, be transparent about that gap
+   - NEVER present general training knowledge as if it came from retrieved documents
+
+5. **Section number rules:**
+   - Only cite ZR, BC, MDL, or other code sections that appear in the retrieved text
+   - If you know a regulation exists but can't find the section number in documents, say "the applicable ZR section" without guessing the number
+   - Double-check any section number you're about to cite — is it actually in the documents below?
 """
 
     def _inject_rag_context(

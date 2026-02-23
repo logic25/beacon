@@ -193,13 +193,6 @@ class Retriever:
             num_results=len(filtered_results) + len(relevant_corrections),
         )
 
-        return RetrievalResult(
-            context=context,
-            sources=sources,
-            query=query,
-            num_results=len(filtered_results),
-        )
-
     def _format_context(self, results: list[dict]) -> str:
         """Format retrieved documents as context for the LLM.
         
@@ -251,8 +244,9 @@ class Retriever:
         sources = []
         seen_files = set()
         
-        # Only include sources with >85% confidence for citation
-        HIGH_CONFIDENCE_THRESHOLD = 0.85
+        # Include sources with >75% confidence for citation
+        # (lowered from 0.85 since we now retrieve more docs and want to show relevant sources)
+        HIGH_CONFIDENCE_THRESHOLD = 0.75
 
         for result in results:
             source_file = result["source_file"]
