@@ -37,68 +37,47 @@ def _format_for_google_chat(text: str) -> str:
     
     return text.strip()
 
-# Expert system prompt for NYC real estate
-SYSTEM_PROMPT = """You are a knowledgeable expert in NYC real estate regulation, including:
-- NYC permit expediting
-- Zoning codes and building codes
-- Housing Maintenance Code (HMC) and Multiple Dwelling Law (MDL)
-- DHCR (Division of Housing and Community Renewal) regulations and procedures
-- Rent stabilization and rent control laws
-- Tenant and landlord rights
-- Real estate transaction requirements
-- Department of Buildings (DOB) procedures
-- All other NYC and NYS housing-related regulations
+# Expert system prompt — focused on GLE's actual work
+SYSTEM_PROMPT = """You are Beacon, the AI assistant for Greenlight Expediting (GLE), a NYC permit expediting and consulting firm. Your primary expertise:
 
-IMPORTANT RULES:
+CORE (what GLE does every day):
+- DOB permit applications: ALT1, ALT2, ALT3, NB, DM, SIGN, PAA filings
+- DOB NOW vs BIS filing workflows and requirements
+- Plan examination, objections, and resolution strategies
+- Zoning analysis: use groups, FAR calculations, zoning lot mergers, variances, special permits
+- Code compliance: NYC Building Code, Zoning Resolution, Multiple Dwelling Law
+- Violations: DOB, ECB, and HPD — how to resolve, dismiss, or cure them
+- Certificate of Occupancy (TCO/CO) applications and processes
+- Construction classifications, occupancy groups, and building types
+- Landmarks and historic districts (LPC review process)
+- Site safety plans, DOB inspections, and sign-offs
+- After-hours work permits and variances
+- Facade inspections (FISP/Local Law 11)
 
-1. ONLY cite specific code sections, ZR sections, or regulation numbers that appear in retrieved documents.
-   - NEVER invent, guess, or recall section numbers from memory
-   - If no document provides a specific section number, say "per the Zoning Resolution" or "under DOB requirements" without fabricating a section number
-   - If you are unsure which section applies, say so clearly — e.g., "The relevant ZR section is not in my current reference materials"
-   - Getting a section number WRONG is far worse than omitting it
+SECONDARY (comes up occasionally):
+- HPD and housing maintenance issues
+- DHCR, rent stabilization (when it intersects with building work)
+- Environmental reviews (CEQR, Phase I/II)
+- Tenant protection plans for occupied buildings during construction
+- ADA/accessibility compliance for alterations
 
-2. Be honest about the limits of your knowledge:
-   - If retrieved documents do not contain the answer, say "I don't have specific documentation on this topic" rather than guessing
-   - It is OK to say "I'm not certain" or "based on my understanding" when you lack high-confidence source material
-   - Partial answers with honest caveats are better than confidently wrong answers
+RULES:
+1. ONLY cite code sections (ZR, BC, MDL) that appear in retrieved documents. NEVER guess section numbers — getting one wrong is worse than omitting it.
+2. Be honest about limits. If documents don't cover it, say so. Partial answers with caveats beat confidently wrong answers.
+3. Give actionable guidance: specific forms, filing steps, fee amounts, timelines — but only when sourced from documents.
+4. Be direct when you have strong source material. Use qualifiers ("typically," "generally") when info may vary.
+5. When referencing GLE's internal processes or procedures, treat retrieved documents as the source of truth — they reflect how GLE actually operates."""
 
-3. Provide procedural guidance when you have it:
-   - Specific forms and application numbers (only when sourced from documents)
-   - Filing requirements and fee structures (only when verified)
-   - Step-by-step processes
-   - Relevant deadlines and timelines
-
-4. Act as a helpful resource:
-   - Provide comprehensive information from your retrieved documents
-   - Offer specific, actionable guidance when supported by sources
-   - Detail exact procedural steps for compliance or filing when documented
-   - Ensure all responses are coherent and properly structured
-
-5. Use confident but calibrated language:
-   - Be direct and clear when you have strong source material
-   - Use appropriate qualifiers ("typically," "generally") when information may vary by situation
-   - Present verified information as facts; present inferences as inferences
-
-Remember: Your value comes from accuracy, not false confidence. A correct answer with caveats is infinitely more useful than a wrong answer stated with certainty."""
-
+# Supplemental prompt for specialized topics
 DHCR_ENHANCEMENT = """
-For this DHCR-related query:
-
-1. Focus on DHCR regulations, procedures, and rent stabilization/control laws.
-2. Provide filing procedures, forms (with form numbers), and timelines when available in retrieved documents.
-3. Include specific citations to relevant sections of rent stabilization laws ONLY when found in retrieved documents.
-4. Give clear guidance on tenant rights and landlord obligations based on your source material.
-5. If the specific DHCR procedure or form number is not in your documents, say so rather than guessing.
+This query involves DHCR/rent regulation. Provide filing procedures, form numbers, and timelines when available in retrieved documents. If the specific procedure isn't in your documents, say so rather than guessing.
 """
 
-# Keywords that indicate DHCR-related queries
+# Keywords that trigger DHCR supplemental prompt
 DHCR_KEYWORDS: set[str] = {
     "dhcr", "division of housing", "rent stabilization", "rent control",
-    "rent regulated", "overcharge", "lease renewal", "preferential rent",
-    "legal regulated rent", "fair market rent", "apartment registration",
-    "vacancy allowance", "major capital improvement", "individual apartment improvement",
-    "mci", "iai", "rent increase", "rent reduction", "emergency tenant protection act",
-    "etpa", "harassment", "tenant complaint", "housing court", "eviction"
+    "rent regulated", "overcharge", "preferential rent", "mci", "iai",
+    "rent increase", "rent reduction", "etpa",
 }
 
 
@@ -145,6 +124,72 @@ class ResponseFilter:
         return result.strip()
 
 
+# Model routing constants
+HAIKU_MODEL = "claude-haiku-4-5-20251001"
+SONNET_MODEL = "claude-sonnet-4-5-20250929"
+
+# Questions that need Sonnet's deeper reasoning
+SONNET_SIGNALS = {
+    # Complex analysis keywords
+    "analyze", "analysis", "strategy", "recommend", "should i", "should we",
+    "what's the best", "compare", "difference between", "pros and cons",
+    "how do i handle", "what are my options", "help me understand",
+    "objection", "resolve", "appeal", "variance", "special permit",
+    # Multi-step reasoning
+    "step by step", "walk me through", "explain how", "plan for",
+    # Zoning complexity
+    "far calculation", "zoning lot", "use group", "non-conforming",
+    "change of use", "certificate of occupancy",
+}
+
+# Questions that Haiku handles fine
+HAIKU_SIGNALS = {
+    "status", "what is", "what's the fee", "how much", "when is",
+    "where do i", "phone number", "address", "hours", "deadline",
+    "define", "definition", "what does", "lookup", "look up",
+    "hello", "hi", "hey", "thanks", "thank you",
+}
+
+
+def route_model(user_message: str, has_rag_context: bool = False, flow_type: str = "rag_llm") -> str:
+    """Decide which Claude model to use based on question complexity.
+
+    Args:
+        user_message: The user's question
+        has_rag_context: Whether RAG documents were retrieved
+        flow_type: The processing flow type
+
+    Returns:
+        Model string to use for this request
+    """
+    msg_lower = user_message.lower()
+
+    # Property lookups just need formatting — use Haiku
+    if flow_type == "property_lookup":
+        return HAIKU_MODEL
+
+    # Check for Sonnet signals first (complex reasoning needed)
+    for signal in SONNET_SIGNALS:
+        if signal in msg_lower:
+            return SONNET_MODEL
+
+    # RAG with multiple documents usually means complex question
+    if has_rag_context:
+        # Short questions with RAG are usually simple lookups
+        if len(user_message.split()) <= 8:
+            return HAIKU_MODEL
+        # Longer questions with RAG context → Sonnet for better synthesis
+        return SONNET_MODEL
+
+    # Check for Haiku signals (simple questions)
+    for signal in HAIKU_SIGNALS:
+        if signal in msg_lower:
+            return HAIKU_MODEL
+
+    # Default: Haiku for cost efficiency
+    return HAIKU_MODEL
+
+
 class ClaudeClient:
     """Client for interacting with Claude API."""
 
@@ -180,7 +225,9 @@ class ClaudeClient:
         conversation_history: list[Message],
         rag_context: Optional[str] = None,
         rag_sources: Optional[list[dict]] = None,
-    ) -> str:
+        format_for: str = "google_chat",
+        model_override: Optional[str] = None,
+    ) -> tuple[str, str]:
         """Get a response from Claude, optionally with RAG context.
 
         Args:
@@ -188,14 +235,17 @@ class ClaudeClient:
             conversation_history: Previous messages in the conversation.
             rag_context: Optional retrieved document context.
             rag_sources: Optional list of source documents for citations.
+            format_for: Output format — "google_chat" (strips markdown) or "web" (preserves markdown).
+            model_override: Specific model to use (bypasses default). If None, uses settings.
 
         Returns:
-            The assistant's response text (with citations if sources provided).
+            Tuple of (response_text, model_used) so callers can log which model handled the request.
 
         Raises:
             anthropic.APIError: If the API call fails.
         """
         try:
+            model = model_override or self.settings.claude_model
             system_prompt = self._build_system_prompt(user_message)
 
             # Add RAG instructions to system prompt if context is provided
@@ -204,17 +254,23 @@ class ClaudeClient:
 
             messages = self._convert_history(conversation_history)
 
+            # Ensure the current user message is always the last message.
+            # Callers may or may not have already added it to conversation_history,
+            # so check if it's already there to avoid duplicating it.
+            if not messages or messages[-1].get("role") != "user" or messages[-1].get("content") != user_message:
+                messages.append({"role": "user", "content": user_message})
+
             # Enhance the last user message with RAG context
             if rag_context and messages:
                 messages = self._inject_rag_context(messages, rag_context)
 
             logger.info(
-                f"Sending request to Claude ({self.settings.claude_model}) "
+                f"Sending request to Claude ({model}) "
                 f"with {len(messages)} messages, RAG: {bool(rag_context)}"
             )
 
             response = self.client.messages.create(
-                model=self.settings.claude_model,
+                model=model,
                 max_tokens=self.settings.claude_max_tokens,
                 temperature=self.settings.claude_temperature,
                 system=system_prompt,
@@ -226,27 +282,32 @@ class ClaudeClient:
 
             # Apply response filtering
             filtered_response = self.filter.filter_response(raw_response)
-            
-            # Format for Google Chat (strip unsupported markdown)
-            formatted_response = _format_for_google_chat(filtered_response)
+
+            # Format based on target platform
+            if format_for == "google_chat":
+                # Google Chat has limited markdown — convert to its format
+                formatted_response = _format_for_google_chat(filtered_response)
+            else:
+                # Web clients (Ordino widget) support full markdown
+                formatted_response = filtered_response
 
             # Add source citations if available
             if rag_sources:
                 formatted_response += self._format_citations(rag_sources)
 
             logger.info(
-                f"Received response: {len(formatted_response)} chars, "
+                f"Received response ({model}): {len(formatted_response)} chars, "
                 f"usage: {response.usage.input_tokens} in / {response.usage.output_tokens} out"
             )
 
-            return formatted_response
+            return formatted_response, model
 
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e}")
             raise
         except Exception as e:
             logger.error(f"Unexpected error getting Claude response: {e}")
-            return "I apologize, but I encountered an error processing your request. Please try again."
+            return "I apologize, but I encountered an error processing your request. Please try again.", model
 
     def _build_rag_instructions(self) -> str:
         """Build RAG-specific instructions for the system prompt."""

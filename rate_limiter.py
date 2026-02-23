@@ -316,16 +316,14 @@ def get_off_topic_response() -> str:
 
 # Model pricing (per 1M tokens)
 MODEL_PRICING = {
-    # Claude models
-    "claude-haiku-4-5-20251001": {"input": 0.25, "output": 1.25},
-    "claude-3-5-haiku-20241022": {"input": 0.25, "output": 1.25},
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
-    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
+    # Claude 4.5 series (current — per million tokens)
+    "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
+    "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
 
-    # OpenAI models (for reference)
-    "gpt-4o": {"input": 2.50, "output": 10.00},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
+    # Claude 4 / 3.5 series (legacy)
+    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00},
+    "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
 
     # Gemini (for intent classification)
     "gemini-1.5-flash": {"input": 0.075, "output": 0.30},

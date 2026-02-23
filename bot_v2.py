@@ -721,12 +721,16 @@ def process_message_async(
                 combined_context = "\n\n---\n\n".join(context_parts)
 
             # === GET RESPONSE FROM CLAUDE ===
-            ai_response = claude_client.get_response(
+            from llm_client import route_model
+            selected_model = route_model(user_message, has_rag_context=bool(combined_context))
+            ai_response, model_used = claude_client.get_response(
                 user_message=user_message,
                 conversation_history=session.chat_history,
                 rag_context=combined_context,
                 rag_sources=rag_sources,
+                model_override=selected_model,
             )
+            logger.info(f"Model routing: {model_used} for '{user_message[:50]}...'")
 
         # === TRACK USAGE ===
         if usage_tracker and RATE_LIMITER_AVAILABLE:
@@ -743,7 +747,7 @@ def process_message_async(
                 # Estimate tokens (rough: 4 chars per token)
                 input_tokens = len(user_message + (combined_context or "")) // 4
                 output_tokens = len(ai_response) // 4
-                cost = calculate_cost(settings.claude_model, input_tokens, output_tokens)
+                cost = calculate_cost(model_used, input_tokens, output_tokens)
 
                 usage_tracker.record_usage(
                     user_id=user_id,
@@ -953,11 +957,12 @@ def api_chat():
                     "response_time_ms": int((time.time() - request_start_time) * 1000)
                 })
 
-        # === PROPERTY LOOKUP ===
+        # === PROPERTY LOOKUP (gather data as context for Claude) ===
         ai_response = None
         flow_type = "rag_llm"
         rag_sources_list = []
         confidence = 0.0
+        property_context = None
 
         if nyc_data_client is not None and OPEN_DATA_AVAILABLE:
             try:
@@ -965,84 +970,102 @@ def api_chat():
                 if address_info:
                     address, borough = address_info
                     property_info = nyc_data_client.get_property_info(address, borough)
-                    ai_response = property_info.to_context_string()
+                    property_context = property_info.to_context_string()
                     flow_type = "property_lookup"
                     confidence = 0.95
+                    logger.info(f"[API Chat] Property data found for {address}, {borough}")
             except Exception as e:
                 logger.warning(f"[API Chat] Property lookup failed: {e}")
 
-        # === RAG + LLM ===
-        if not ai_response:
-            rag_context = None
-            rag_sources = None
-            objections_context = None
+        # === RAG + LLM (always run through Claude for web API) ===
+        rag_context = None
+        rag_sources = None
+        objections_context = None
 
-            # Objections context
-            if objections_kb and OBJECTIONS_AVAILABLE:
-                filing_types = ["ALT1", "ALT2", "ALT3", "NB", "DM", "SIGN", "PAA"]
-                msg_upper = user_message.upper()
-                for ft in filing_types:
-                    if ft in msg_upper or f"ALT {ft[-1]}" in msg_upper:
-                        try:
-                            objections = objections_kb.get_objections_for_filing(ft)
-                            if objections:
-                                objections_context = f"Common {ft} objections:\n"
-                                for obj in objections[:3]:
-                                    objections_context += f"- {obj.objection} (Resolve: {obj.typical_resolution})\n"
-                        except Exception as e:
-                            logger.warning(f"Objections lookup failed: {e}")
-                        break
+        # Objections context
+        if objections_kb and OBJECTIONS_AVAILABLE:
+            filing_types = ["ALT1", "ALT2", "ALT3", "NB", "DM", "SIGN", "PAA"]
+            msg_upper = user_message.upper()
+            for ft in filing_types:
+                if ft in msg_upper or f"ALT {ft[-1]}" in msg_upper:
+                    try:
+                        objections = objections_kb.get_objections_for_filing(ft)
+                        if objections:
+                            objections_context = f"Common {ft} objections:\n"
+                            for obj in objections[:3]:
+                                objections_context += f"- {obj.objection} (Resolve: {obj.typical_resolution})\n"
+                    except Exception as e:
+                        logger.warning(f"Objections lookup failed: {e}")
+                    break
 
-            # RAG retrieval
-            if retriever is not None:
-                try:
-                    retrieval_result = retriever.retrieve(
-                        query=user_message,
-                        top_k=settings.rag_top_k if settings else 5,
-                        min_score=settings.rag_min_score if settings else 0.3,
-                    )
-                    if retrieval_result.num_results > 0:
-                        rag_context = retrieval_result.context
-                        rag_sources = retrieval_result.sources
+        # RAG retrieval
+        if retriever is not None:
+            try:
+                retrieval_result = retriever.retrieve(
+                    query=user_message,
+                    top_k=settings.rag_top_k if settings else 5,
+                    min_score=settings.rag_min_score if settings else 0.3,
+                )
+                if retrieval_result.num_results > 0:
+                    rag_context = retrieval_result.context
+                    rag_sources = retrieval_result.sources
 
-                        # Build sources list for response
-                        for src in (rag_sources or []):
-                            rag_sources_list.append({
-                                "title": src.get("file", src.get("title", "Unknown")),
-                                "score": src.get("score", 0.0),
-                                "chunk_preview": src.get("text", "")[:200]
-                            })
+                    # Build sources list for response
+                    for src in (rag_sources or []):
+                        rag_sources_list.append({
+                            "title": src.get("file", src.get("title", "Unknown")),
+                            "score": src.get("score", 0.0),
+                            "chunk_preview": src.get("text", "")[:200]
+                        })
 
-                        # Confidence from avg source score
-                        if rag_sources_list:
-                            confidence = sum(s["score"] for s in rag_sources_list) / len(rag_sources_list)
-                except Exception as e:
-                    logger.warning(f"[API Chat] RAG retrieval failed: {e}")
+                    # Confidence from avg source score
+                    if rag_sources_list:
+                        confidence = sum(s["score"] for s in rag_sources_list) / len(rag_sources_list)
+            except Exception as e:
+                logger.warning(f"[API Chat] RAG retrieval failed: {e}")
 
-            # Combine context
-            context_parts = []
-            if objections_context:
-                context_parts.append(f"RELEVANT OBJECTIONS:\n{objections_context}")
-            if rag_context:
-                context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
-            combined_context = "\n\n---\n\n".join(context_parts) if context_parts else None
+        # Combine all context (property data + objections + RAG docs)
+        context_parts = []
+        if property_context:
+            context_parts.append(f"LIVE PROPERTY DATA (from NYC Open Data):\n{property_context}")
+        if objections_context:
+            context_parts.append(f"RELEVANT OBJECTIONS:\n{objections_context}")
+        if rag_context:
+            context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
+        combined_context = "\n\n---\n\n".join(context_parts) if context_parts else None
 
-            # Get session history for context
-            session = session_manager.get_or_create_session(user_id, space_id) if session_manager else None
-            chat_history = session.chat_history if session else []
+        # Get session history for context
+        session = session_manager.get_or_create_session(user_id, space_id) if session_manager else None
 
-            # Call Claude
-            ai_response = claude_client.get_response(
-                user_message=user_message,
-                conversation_history=chat_history,
-                rag_context=combined_context,
-                rag_sources=rag_sources,
-            )
+        # Add user message to session BEFORE calling Claude
+        # (so it's included in conversation_history like the webhook flow)
+        if session_manager:
+            session_manager.add_user_message(user_id, space_id, user_message)
 
-            # Store in session
-            if session_manager:
-                session_manager.add_user_message(user_id, space_id, user_message)
-                session_manager.add_assistant_message(user_id, space_id, ai_response)
+        chat_history = session.chat_history if session else []
+
+        # Route to appropriate model based on question complexity
+        from llm_client import route_model
+        selected_model = route_model(
+            user_message,
+            has_rag_context=bool(combined_context),
+            flow_type=flow_type,
+        )
+
+        # Call Claude (format_for="web" preserves full markdown for Ordino widget)
+        ai_response, model_used = claude_client.get_response(
+            user_message=user_message,
+            conversation_history=chat_history,
+            rag_context=combined_context,
+            rag_sources=rag_sources,
+            format_for="web",
+            model_override=selected_model,
+        )
+        logger.info(f"[API Chat] Model routing: {model_used} for '{user_message[:50]}...'")
+
+        # Store assistant response in session
+        if session_manager:
+            session_manager.add_assistant_message(user_id, space_id, ai_response)
 
         # === CACHE RESPONSE ===
         if response_cache and CACHE_AVAILABLE:
@@ -1053,8 +1076,12 @@ def api_chat():
 
         if analytics_db and ANALYTICS_AVAILABLE:
             try:
-                tokens_used = (len(user_message) + len(ai_response)) // 4
-                cost_usd = (tokens_used / 1_000_000) * 0.75
+                input_tokens = len(user_message + (combined_context or "")) // 4
+                output_tokens = len(ai_response) // 4
+                tokens_used = input_tokens + output_tokens
+                # Use rate_limiter's accurate per-model pricing
+                from rate_limiter import calculate_cost
+                cost_usd = calculate_cost(model_used, input_tokens, output_tokens)
 
                 interaction = Interaction(
                     timestamp=datetime.now().isoformat(),
@@ -1084,7 +1111,8 @@ def api_chat():
             "sources": rag_sources_list,
             "flow_type": flow_type,
             "cached": False,
-            "response_time_ms": response_time_ms
+            "response_time_ms": response_time_ms,
+            "model": model_used,
         })
 
     except Exception as e:
@@ -1147,6 +1175,52 @@ def analytics_data() -> tuple[Response, int]:
         analytics_data["top_questions"] = response_cache.get_top_questions(20)
 
     return jsonify(analytics_data), 200
+
+
+@app.route("/api/analytics", methods=["GET"])
+def api_analytics():
+    """Analytics API for Ordino's admin panel.
+    Returns Beacon usage stats, costs, and activity so Ordino can display
+    Beacon AI costs alongside Gemini costs in the AI Usage page.
+
+    Query params:
+        days: Number of days to look back (default: 30)
+        start_date: ISO format start date (alternative to days)
+        end_date: ISO format end date
+    """
+    try:
+        days = request.args.get("days", 30, type=int)
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
+
+        if not analytics_db or not ANALYTICS_AVAILABLE:
+            return jsonify({"error": "Analytics not available"}), 503
+
+        stats = analytics_db.get_stats(
+            days=days if not start_date else None,
+            start_date=start_date,
+            end_date=end_date,
+        )
+
+        # Reshape for Ordino's AI Usage page
+        return jsonify({
+            "provider": "anthropic",
+            "service": "beacon",
+            "period_days": days,
+            "total_requests": stats["total_questions"],
+            "total_cost_usd": stats["total_cost_usd"],
+            "success_rate": stats["success_rate"],
+            "active_users": stats["active_users"],
+            "avg_response_time_ms": stats["response_time"]["avg_ms"],
+            "cost_breakdown": stats["api_costs"],
+            "top_users": stats["top_users"],
+            "topics": stats["topics"],
+            "daily_usage": stats.get("daily_usage", []),
+        })
+
+    except Exception as e:
+        logger.exception(f"[API Analytics] Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/", methods=["GET"])
