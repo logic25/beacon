@@ -23,6 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from flask import Flask, redirect, url_for, Response, jsonify, request
+from flask_cors import CORS
 
 from config import Settings, get_settings
 from google_chat import GoogleChatClient
@@ -123,6 +124,10 @@ app = Flask(__name__)
 # Configure Flask secret key for sessions (required for OAuth)
 import os
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
+
+# Enable CORS for web API endpoints (Ordino dashboard calls /api/chat)
+ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', '*').split(',')
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
 
 # Initialize components (will be set up in main)
 settings: Settings | None = None
@@ -900,6 +905,199 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
     except Exception as e:
         logger.exception(f"Error in webhook handler: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    """Web API chat endpoint for Ordino's Ask Beacon widget.
+    Processes questions synchronously (no Google Chat) and returns structured JSON.
+    """
+    request_start_time = time.time()
+
+    try:
+        data = request.get_json() or {}
+        user_message = data.get("message", "").strip()
+        user_id = data.get("user_id", "web-user")
+        user_name = data.get("user_name", "Web User")
+        space_id = data.get("space_id", "ordino-web")
+
+        if not user_message:
+            return jsonify({"error": "No message provided"}), 400
+
+        logger.info(f"[API Chat] {user_name} ({user_id}): {user_message[:100]}")
+
+        # === OFF-TOPIC FILTER ===
+        if RATE_LIMITER_AVAILABLE:
+            off_topic, reason = is_off_topic(user_message)
+            if off_topic:
+                return jsonify({
+                    "response": get_off_topic_response(),
+                    "confidence": 0.0,
+                    "sources": [],
+                    "flow_type": "off_topic",
+                    "cached": False,
+                    "response_time_ms": int((time.time() - request_start_time) * 1000)
+                })
+
+        # === CHECK CACHE ===
+        if response_cache and CACHE_AVAILABLE:
+            cached = response_cache.get(user_message)
+            if cached:
+                logger.info(f"[API Chat] Cache hit for: {user_message[:50]}")
+                return jsonify({
+                    "response": cached,
+                    "confidence": 0.85,
+                    "sources": [],
+                    "flow_type": "cache",
+                    "cached": True,
+                    "response_time_ms": int((time.time() - request_start_time) * 1000)
+                })
+
+        # === PROPERTY LOOKUP ===
+        ai_response = None
+        flow_type = "rag_llm"
+        rag_sources_list = []
+        confidence = 0.0
+
+        if nyc_data_client is not None and OPEN_DATA_AVAILABLE:
+            try:
+                address_info = extract_address_from_query(user_message)
+                if address_info:
+                    address, borough = address_info
+                    property_info = nyc_data_client.get_property_info(address, borough)
+                    ai_response = property_info.to_context_string()
+                    flow_type = "property_lookup"
+                    confidence = 0.95
+            except Exception as e:
+                logger.warning(f"[API Chat] Property lookup failed: {e}")
+
+        # === RAG + LLM ===
+        if not ai_response:
+            rag_context = None
+            rag_sources = None
+            objections_context = None
+
+            # Objections context
+            if objections_kb and OBJECTIONS_AVAILABLE:
+                filing_types = ["ALT1", "ALT2", "ALT3", "NB", "DM", "SIGN", "PAA"]
+                msg_upper = user_message.upper()
+                for ft in filing_types:
+                    if ft in msg_upper or f"ALT {ft[-1]}" in msg_upper:
+                        try:
+                            objections = objections_kb.get_objections_for_filing(ft)
+                            if objections:
+                                objections_context = f"Common {ft} objections:\n"
+                                for obj in objections[:3]:
+                                    objections_context += f"- {obj.objection} (Resolve: {obj.typical_resolution})\n"
+                        except Exception as e:
+                            logger.warning(f"Objections lookup failed: {e}")
+                        break
+
+            # RAG retrieval
+            if retriever is not None:
+                try:
+                    retrieval_result = retriever.retrieve(
+                        query=user_message,
+                        top_k=settings.rag_top_k if settings else 5,
+                        min_score=settings.rag_min_score if settings else 0.3,
+                    )
+                    if retrieval_result.num_results > 0:
+                        rag_context = retrieval_result.context
+                        rag_sources = retrieval_result.sources
+
+                        # Build sources list for response
+                        for src in (rag_sources or []):
+                            rag_sources_list.append({
+                                "title": src.get("file", src.get("title", "Unknown")),
+                                "score": src.get("score", 0.0),
+                                "chunk_preview": src.get("text", "")[:200]
+                            })
+
+                        # Confidence from avg source score
+                        if rag_sources_list:
+                            confidence = sum(s["score"] for s in rag_sources_list) / len(rag_sources_list)
+                except Exception as e:
+                    logger.warning(f"[API Chat] RAG retrieval failed: {e}")
+
+            # Combine context
+            context_parts = []
+            if objections_context:
+                context_parts.append(f"RELEVANT OBJECTIONS:\n{objections_context}")
+            if rag_context:
+                context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
+            combined_context = "\n\n---\n\n".join(context_parts) if context_parts else None
+
+            # Get session history for context
+            session = session_manager.get_or_create_session(user_id, space_id) if session_manager else None
+            chat_history = session.chat_history if session else []
+
+            # Call Claude
+            ai_response = claude_client.get_response(
+                user_message=user_message,
+                conversation_history=chat_history,
+                rag_context=combined_context,
+                rag_sources=rag_sources,
+            )
+
+            # Store in session
+            if session_manager:
+                session_manager.add_user_message(user_id, space_id, user_message)
+                session_manager.add_assistant_message(user_id, space_id, ai_response)
+
+        # === CACHE RESPONSE ===
+        if response_cache and CACHE_AVAILABLE:
+            response_cache.set(user_message, ai_response)
+
+        # === LOG TO ANALYTICS ===
+        response_time_ms = int((time.time() - request_start_time) * 1000)
+
+        if analytics_db and ANALYTICS_AVAILABLE:
+            try:
+                tokens_used = (len(user_message) + len(ai_response)) // 4
+                cost_usd = (tokens_used / 1_000_000) * 0.75
+
+                interaction = Interaction(
+                    timestamp=datetime.now().isoformat(),
+                    user_id=user_id,
+                    user_name=user_name,
+                    space_name=space_id,
+                    question=user_message,
+                    response=ai_response,
+                    command=None,
+                    answered=True,
+                    response_length=len(ai_response),
+                    had_sources=bool(rag_sources_list),
+                    sources_used=json.dumps([s["title"] for s in rag_sources_list]) if rag_sources_list else None,
+                    tokens_used=tokens_used,
+                    cost_usd=cost_usd,
+                    response_time_ms=response_time_ms,
+                    confidence=confidence,
+                    topic=None,
+                )
+                analytics_db.log_interaction(interaction)
+            except Exception as e:
+                logger.error(f"[API Chat] Analytics logging failed: {e}")
+
+        return jsonify({
+            "response": ai_response or "I wasn't able to generate a response. Please try again.",
+            "confidence": confidence,
+            "sources": rag_sources_list,
+            "flow_type": flow_type,
+            "cached": False,
+            "response_time_ms": response_time_ms
+        })
+
+    except Exception as e:
+        logger.exception(f"[API Chat] Error: {e}")
+        return jsonify({
+            "error": str(e),
+            "response": "I encountered an error processing your request. Please try again.",
+            "confidence": 0.0,
+            "sources": [],
+            "flow_type": "error",
+            "cached": False,
+            "response_time_ms": int((time.time() - request_start_time) * 1000)
+        }), 500
 
 
 @app.route("/health", methods=["GET"])
