@@ -306,14 +306,14 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
     
     <main class="main">
         <div class="page-header">
-            <div class="page-title">💡 Content Intelligence</div>
+            <div class="page-title"><svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"/></svg> Content Intelligence</div>
             <div class="page-subtitle">AI-identified content opportunities from team questions and trends</div>
         </div>
         
         <div class="tabs">
-            <button class="tab active" onclick="showTab('pipeline')">🔍 Pipeline <span id="pipeline-count" style="background: #fef3c7; color: #f59e0b; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-left: 4px;">0</span></button>
-            <button class="tab" onclick="showTab('published')">📊 Published</button>
-            <button class="tab" onclick="showTab('newsletters')">📧 Newsletters</button>
+            <button class="tab active" onclick="showTab('pipeline')">Pipeline <span id="pipeline-count" style="background: #fef3c7; color: #f59e0b; padding: 2px 8px; border-radius: 12px; font-size: 10px; margin-left: 4px;">0</span></button>
+            <button class="tab" onclick="showTab('published')">Published</button>
+            <button class="tab" onclick="showTab('newsletters')">Newsletters</button>
         </div>
         
         <div id="pipeline-tab" class="tab-content active">
@@ -390,11 +390,11 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
                             <div style="display: flex; gap: 16px; margin: 12px 0; font-size: 13px; flex-wrap: wrap;">
                                 <div style="color: var(--text-muted);">⭐ ${c.relevance_score}% relevance</div>
                                 <div style="color: var(--text-muted);">📈 ${c.search_interest} search interest</div>
-                                <div style="color: var(--text-muted);">👥 ${c.team_questions_count} team questions</div>
+                                <div style="color: var(--text-muted);">${c.team_questions_count} team questions</div>
                             </div>
-                            ${c.review_question ? `<div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin: 12px 0; font-size: 13px;">💡 <strong>Review Question:</strong> ${c.review_question}</div>` : ''}
+                            ${c.review_question ? `<div style="background: #fef3c7; padding: 12px; border-radius: 8px; margin: 12px 0; font-size: 13px;"><strong>Review Question:</strong> ${c.review_question}</div>` : ''}
                             <div style="margin-top: 16px;">
-                                <button class="btn btn-primary" onclick="generateContent(${c.id}, 'blog_post')">✨ Generate</button>
+                                <button class="btn btn-primary" onclick="generateContent(${c.id}, 'blog_post')">Generate</button>
                                 ${c.source_url !== 'internal_analysis' ? '<button class="btn btn-outline" onclick="viewSource(\''+c.source_url+'\')">🔗 Source</button>' : ''}
                             </div>
                         `;
@@ -427,7 +427,7 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
                 alert('Error: ' + error);
             } finally {
                 btn.disabled = false;
-                btn.textContent = '✨ Generate';
+                btn.textContent = 'Generate';
             }
         }
         
@@ -449,7 +449,7 @@ CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
             const data = await response.json();
             
             if (data.success && data.candidates_created > 0) {
-                alert(`✅ Created ${data.candidates_created} content opportunities!`);
+                alert(`Created ${data.candidates_created} content opportunities!`);
                 window.location.reload();
             } else {
                 alert('Need at least 2 questions per topic to generate content ideas');
