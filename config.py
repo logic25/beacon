@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", description="OpenAI API key for embeddings")
     openai_embedding_model: str = Field(default="text-embedding-3-small")
 
+    # Supabase Settings (persistent analytics storage)
+    supabase_url: str = Field(default="", description="Supabase project URL")
+    supabase_service_key: str = Field(default="", description="Supabase service role key (server-side only)")
+    beacon_analytics_key: str = Field(default="", description="Shared secret for beacon-analytics edge function")
+
     @field_validator("claude_model")
     @classmethod
     def validate_model(cls, v: str) -> str:

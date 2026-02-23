@@ -90,6 +90,8 @@ except ImportError:
     PLAN_READER_AVAILABLE = False
 
 # Analytics and Dashboard (optional)
+# Prefer Supabase for persistence; fall back to SQLite
+SUPABASE_ANALYTICS = False
 try:
     from analytics import AnalyticsDB, Interaction, get_analytics_db
     from dashboard import add_dashboard_routes
@@ -98,6 +100,12 @@ except Exception as e:
     ANALYTICS_AVAILABLE = False
     import logging
     logging.error(f"Failed to import analytics/dashboard: {e}", exc_info=True)
+
+try:
+    from analytics_supabase import SupabaseAnalyticsDB
+    SUPABASE_ANALYTICS_AVAILABLE = True
+except ImportError:
+    SUPABASE_ANALYTICS_AVAILABLE = False
 
 # Content Intelligence (optional)
 try:
@@ -258,14 +266,37 @@ def initialize_app() -> None:
             zoning_analyzer = None
 
     # Initialize analytics and dashboard
-    if ANALYTICS_AVAILABLE:
+    # Prefer Supabase (persists across deploys) over SQLite (ephemeral)
+    global SUPABASE_ANALYTICS
+    beacon_analytics_key = settings.beacon_analytics_key if hasattr(settings, 'beacon_analytics_key') else ""
+    if not beacon_analytics_key:
+        import os
+        beacon_analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+
+    if SUPABASE_ANALYTICS_AVAILABLE and settings.supabase_url and beacon_analytics_key:
+        try:
+            analytics_db = SupabaseAnalyticsDB(settings.supabase_url, beacon_analytics_key)
+            SUPABASE_ANALYTICS = True
+            logger.info("✅ Supabase analytics initialized (persistent via edge function)")
+        except Exception as e:
+            logger.warning(f"Supabase analytics failed, falling back to SQLite: {e}")
+            analytics_db = None
+
+    if analytics_db is None and ANALYTICS_AVAILABLE:
         try:
             analytics_db = get_analytics_db()
-            add_dashboard_routes(app, analytics_db)
-            logger.info("✅ Analytics and dashboard initialized")
+            logger.info("✅ SQLite analytics initialized (ephemeral — set SUPABASE_URL and BEACON_ANALYTICS_KEY for persistence)")
         except Exception as e:
             logger.warning(f"Analytics initialization failed: {e}")
             analytics_db = None
+
+    # Dashboard routes (works with either analytics backend)
+    if analytics_db and ANALYTICS_AVAILABLE:
+        try:
+            add_dashboard_routes(app, analytics_db)
+            logger.info("✅ Dashboard routes registered")
+        except Exception as e:
+            logger.warning(f"Dashboard routes failed: {e}")
 
     # Register Content Intelligence blueprint
     if CONTENT_INTELLIGENCE_AVAILABLE:
@@ -1220,6 +1251,243 @@ def api_analytics():
 
     except Exception as e:
         logger.exception(f"[API Analytics] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ingest", methods=["POST"])
+def api_ingest():
+    """Ingest a document into the Beacon knowledge base (Pinecone).
+
+    Accepts:
+      - JSON with {text, title, source_type, metadata} for markdown/text content
+      - multipart/form-data with file upload (PDF or markdown) + optional source_type
+
+    Called by Ordino when a document is uploaded to the Beacon Knowledge Base folder.
+    Also used by the email ingestion pipeline.
+    """
+    try:
+        if retriever is None or not RAG_AVAILABLE:
+            return jsonify({"error": "RAG not configured (missing Pinecone/Voyage keys)"}), 503
+
+        from document_processor import DocumentProcessor, detect_document_type
+        from vector_store import VectorStore
+        import tempfile
+        import os
+
+        processor = DocumentProcessor()
+        vector_store = retriever.vector_store
+
+        # Check if it's a file upload or JSON text
+        if request.content_type and "multipart/form-data" in request.content_type:
+            # File upload
+            if "file" not in request.files:
+                return jsonify({"error": "No file provided"}), 400
+
+            file = request.files["file"]
+            filename = file.filename or "unknown.md"
+            source_type = request.form.get("source_type", "")
+            folder_hint = request.form.get("folder", "")
+
+            ext = os.path.splitext(filename)[1].lower()
+            if ext not in {".pdf", ".md", ".txt"}:
+                return jsonify({"error": f"Unsupported file type: {ext}. Use .pdf, .md, or .txt"}), 400
+
+            # Auto-detect source type from folder hint or filename
+            if not source_type:
+                if "service_notice" in folder_hint.lower() or "service" in folder_hint.lower():
+                    source_type = "service_notice"
+                elif "bulletin" in folder_hint.lower():
+                    source_type = "technical_bulletin"
+                elif "policy" in folder_hint.lower():
+                    source_type = "policy_memo"
+                elif "guide" in folder_hint.lower() or "process" in folder_hint.lower():
+                    source_type = "procedure"
+                elif "zoning" in folder_hint.lower():
+                    source_type = "zoning"
+                elif "code" in folder_hint.lower():
+                    source_type = "building_code"
+                elif "case" in folder_hint.lower() or "historical" in folder_hint.lower():
+                    source_type = "historical_determination"
+                else:
+                    source_type = detect_document_type(filename)
+
+            # Save to temp file and process
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                file.save(tmp.name)
+                tmp_path = tmp.name
+
+            try:
+                if ext == ".pdf":
+                    document = processor.process_pdf(tmp_path, source_type=source_type)
+                else:
+                    text = open(tmp_path, "r", encoding="utf-8").read()
+                    from ingest import extract_md_metadata
+                    metadata = extract_md_metadata(text) if ext == ".md" else {}
+                    metadata["file_path"] = filename
+                    document = processor.process_text(
+                        text=text,
+                        title=metadata.get("title", os.path.splitext(filename)[0]),
+                        source_type=source_type,
+                        metadata=metadata,
+                    )
+            finally:
+                os.unlink(tmp_path)
+
+        else:
+            # JSON text submission
+            data = request.get_json() or {}
+            text = data.get("text", "").strip()
+            title = data.get("title", "Untitled")
+            source_type = data.get("source_type", "document")
+            metadata = data.get("metadata", {})
+
+            if not text:
+                return jsonify({"error": "No text provided"}), 400
+
+            document = processor.process_text(
+                text=text,
+                title=title,
+                source_type=source_type,
+                metadata=metadata,
+            )
+
+        # Upload chunks to Pinecone
+        count = vector_store.upsert_chunks(document.chunks)
+
+        logger.info(f"[API Ingest] Ingested {count} chunks from '{document.title}' (type={source_type})")
+
+        return jsonify({
+            "success": True,
+            "title": document.title,
+            "source_type": source_type,
+            "chunks_created": count,
+            "total_characters": len(document.content),
+        })
+
+    except Exception as e:
+        logger.exception(f"[API Ingest] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/ingest-email", methods=["POST"])
+def api_ingest_email():
+    """Process a forwarded DOB newsletter email.
+
+    Accepts JSON with {html_content} — the raw HTML of a DOB Buildings News email.
+    Parses the newsletter, ingests each update into the knowledge base,
+    and feeds them to the Content Intelligence engine.
+
+    This endpoint can be called by:
+      - SendGrid Inbound Parse webhook
+      - Mailgun Routes webhook
+      - A scheduled task that checks Gmail for DOB newsletters
+    """
+    try:
+        data = request.get_json() or {}
+        html_content = data.get("html_content", "").strip()
+
+        if not html_content:
+            return jsonify({"error": "No html_content provided"}), 400
+
+        # Parse the newsletter
+        from content_engine.parser import DOBNewsletterParser
+        parser = DOBNewsletterParser()
+        result = parser.parse_email(html_content)
+
+        updates = result.get("updates", [])
+        newsletter_date = result.get("newsletter_date", "unknown")
+
+        if not updates:
+            return jsonify({
+                "success": True,
+                "message": "No updates found in newsletter",
+                "newsletter_date": newsletter_date,
+                "updates_processed": 0,
+            })
+
+        ingested = []
+        content_candidates = []
+
+        for update in updates:
+            title = update.get("title", "Untitled Update")
+            summary = update.get("summary", "")
+            full_content = update.get("full_content", summary)
+            category = update.get("category", "General")
+            source_url = update.get("source_url", "")
+
+            # Map category to source type for chunking
+            category_to_type = {
+                "Service Updates": "service_notice",
+                "Local Laws": "policy_memo",
+                "Buildings Bulletins": "technical_bulletin",
+                "Hearings": "policy_memo",
+                "Rules": "policy_memo",
+                "Weather": "service_notice",
+                "Code Notes": "building_code",
+            }
+            source_type = category_to_type.get(category, "service_notice")
+
+            # 1) Ingest into Pinecone (so Beacon learns about it)
+            if retriever is not None and RAG_AVAILABLE and full_content:
+                try:
+                    from document_processor import DocumentProcessor
+                    processor = DocumentProcessor()
+
+                    # Build markdown content with metadata header
+                    md_content = f"""Title: {title}
+Category: {category}
+Date Issued: {newsletter_date}
+Source URL: {source_url}
+Type: {source_type}
+
+# {title}
+
+{full_content}
+"""
+                    document = processor.process_text(
+                        text=md_content,
+                        title=title,
+                        source_type=source_type,
+                        metadata={
+                            "category": category,
+                            "date_issued": newsletter_date,
+                            "source_url": source_url,
+                        },
+                    )
+
+                    count = retriever.vector_store.upsert_chunks(document.chunks)
+                    ingested.append({"title": title, "chunks": count})
+                    logger.info(f"[Email Ingest] Ingested '{title}' → {count} chunks")
+                except Exception as e:
+                    logger.error(f"[Email Ingest] Failed to ingest '{title}': {e}")
+
+            # 2) Feed to Content Intelligence engine (for blog/newsletter generation)
+            try:
+                from content_engine.engine import ContentEngine
+                engine = ContentEngine()
+                candidate = engine.analyze_update(title, summary or full_content[:500], source_url)
+                content_candidates.append({
+                    "id": candidate.id,
+                    "title": candidate.title,
+                    "priority": candidate.priority,
+                    "content_type": candidate.content_type,
+                })
+                logger.info(f"[Email Ingest] Content candidate created: '{candidate.title}' ({candidate.priority})")
+            except Exception as e:
+                logger.error(f"[Email Ingest] Content engine failed for '{title}': {e}")
+
+        return jsonify({
+            "success": True,
+            "newsletter_date": newsletter_date,
+            "updates_found": len(updates),
+            "updates_ingested": len(ingested),
+            "content_candidates_created": len(content_candidates),
+            "ingested": ingested,
+            "content_candidates": content_candidates,
+        })
+
+    except Exception as e:
+        logger.exception(f"[Email Ingest] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 

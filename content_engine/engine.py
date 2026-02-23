@@ -130,64 +130,113 @@ class ContentEngine:
         return candidate
     
     def _check_team_questions(self, title: str, summary: str, days: int = 60) -> Dict:
-        """Check if team has been asking about this topic"""
-        
+        """Check if team has been asking about this topic.
+
+        Tries Supabase first (persistent), falls back to SQLite.
+        """
         # Extract keywords
         text = f"{title} {summary}".lower()
         keywords = [w for w in text.split() if len(w) > 4][:5]
-        
+
         if not keywords:
             return {"count": 0}
-        
+
         try:
-            # Query analytics
-            conn = sqlite3.connect("beacon_analytics.db")
-            c = conn.cursor()
-            
-            where_clauses = " OR ".join([f"LOWER(question) LIKE '%{kw}%'" for kw in keywords])
-            
-            c.execute(f"""
-                SELECT question, user_name 
-                FROM analytics 
-                WHERE ({where_clauses})
-                AND timestamp > datetime('now', '-{days} days')
-                LIMIT 10
-            """)
-            
-            results = c.fetchall()
-            conn.close()
-            
-            if not results:
+            results = self._query_team_questions_supabase(keywords, days)
+        except Exception:
+            results = None
+
+        if results is None:
+            try:
+                results = self._query_team_questions_sqlite(keywords, days)
+            except Exception as e:
+                print(f"Error checking questions: {e}")
                 return {"count": 0}
-            
-            questions = [r[0] for r in results]
-            users = list(set([r[1] for r in results]))
-            
-            # Get angle with Claude
-            if len(questions) > 0:
-                from llm_client import Message
-                
-                angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
-                angle_msg = Message(role="user", content=angle_prompt)
-                
-                angle = self.claude.get_response(
-                    user_message=angle_prompt,
-                    conversation_history=[angle_msg]
-                )
-            else:
-                angle = None
-            
-            return {
-                "count": len(questions),
-                "questions": questions[:5],
-                "users": users,
-                "angle": angle
-            }
-            
-        except Exception as e:
-            print(f"Error checking questions: {e}")
+
+        if not results:
             return {"count": 0}
-    
+
+        questions = [r[0] for r in results]
+        users = list(set([r[1] for r in results]))
+
+        # Get angle with Claude
+        if len(questions) > 0:
+            from llm_client import Message
+
+            angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
+            angle_msg = Message(role="user", content=angle_prompt)
+
+            result = self.claude.get_response(
+                user_message=angle_prompt,
+                conversation_history=[angle_msg]
+            )
+            # get_response returns (text, model_used) tuple
+            angle = result[0] if isinstance(result, tuple) else result
+        else:
+            angle = None
+
+        return {
+            "count": len(questions),
+            "questions": questions[:5],
+            "users": users,
+            "angle": angle
+        }
+
+    def _query_team_questions_supabase(self, keywords: List[str], days: int) -> Optional[List]:
+        """Query team questions via Supabase edge function."""
+        import os
+        import requests as req
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+        if not supabase_url or not analytics_key:
+            return None
+
+        try:
+            resp = req.post(
+                f"{supabase_url.rstrip('/')}/functions/v1/beacon-analytics",
+                json={
+                    "action": "get_recent_conversations",
+                    "data": {"limit": 50}
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "x-beacon-key": analytics_key,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            conversations = resp.json().get("conversations", [])
+
+            # Filter by keywords
+            results = []
+            for conv in conversations:
+                q = conv.get("question", "").lower()
+                if any(kw in q for kw in keywords):
+                    results.append((conv.get("question", ""), conv.get("user_name", "")))
+
+            return results[:10] if results else None
+        except Exception:
+            return None
+
+    def _query_team_questions_sqlite(self, keywords: List[str], days: int) -> Optional[List]:
+        """Query team questions from SQLite (fallback)."""
+        conn = sqlite3.connect("beacon_analytics.db")
+        c = conn.cursor()
+
+        where_clauses = " OR ".join([f"LOWER(question) LIKE '%{kw}%'" for kw in keywords])
+
+        c.execute(f"""
+            SELECT question, user_name
+            FROM interactions
+            WHERE ({where_clauses})
+            AND timestamp > datetime('now', '-{days} days')
+            LIMIT 10
+        """)
+
+        results = c.fetchall()
+        conn.close()
+        return results
+
     def _analyze_with_claude(self, title: str, summary: str, team_context: Dict) -> Dict:
         """Get AI analysis"""
         
@@ -220,11 +269,13 @@ Respond JSON:
         # Create a message object with the prompt as user message
         user_msg = Message(role="user", content=prompt)
         
-        response = self.claude.get_response(
+        result = self.claude.get_response(
             user_message=prompt,
             conversation_history=[user_msg]  # Pass the message in history
         )
-        
+        # get_response returns (text, model_used) tuple
+        response = result[0] if isinstance(result, tuple) else result
+
         # Parse JSON
         try:
             response = response.replace("```json", "").replace("```", "").strip()
@@ -339,18 +390,20 @@ Format: Markdown with # headers"""
         from llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
-        content = self.claude.get_response(
+        result = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg]
         )
-        
+        # get_response returns (text, model_used) tuple
+        content = result[0] if isinstance(result, tuple) else result
+
         # Save generated content
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute("""
             INSERT INTO generated_content VALUES (?,?,?,?,?,?,?)
-        """, (gen_id, candidate_id, "blog_post", candidate.title, content, 
+        """, (gen_id, candidate_id, "blog_post", candidate.title, content,
               len(content.split()), datetime.now().isoformat()))
         conn.commit()
         conn.close()
@@ -387,11 +440,13 @@ Tone: Direct, actionable"""
         from llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
-        content = self.claude.get_response(
+        result = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg]
         )
-        
+        # get_response returns (text, model_used) tuple
+        content = result[0] if isinstance(result, tuple) else result
+
         # Save
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
         conn = sqlite3.connect(self.db_path)
