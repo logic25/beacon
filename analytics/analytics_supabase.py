@@ -215,6 +215,8 @@ class SupabaseAnalyticsDB:
         """Get all pending suggestions for review."""
         try:
             result = self._call("get_pending_suggestions")
+            if isinstance(result, list):
+                return result
             return result.get("suggestions", []) if result else []
         except Exception as e:
             logger.error(f"get_pending_suggestions failed: {e}")

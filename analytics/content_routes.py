@@ -21,6 +21,16 @@ except ImportError:
 content_bp = Blueprint('content', __name__)
 engine = ContentEngine()
 
+
+@content_bp.before_request
+def check_auth():
+    """Require login for all content engine routes."""
+    import os
+    from flask import session as flask_session, redirect, url_for
+    oauth_enabled = bool(os.environ.get("GOOGLE_CLIENT_ID"))
+    if oauth_enabled and 'user_email' not in flask_session:
+        return redirect(url_for('login'))
+
 # Full template with sidebar (inline, no imports needed)
 CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>
 <html>
@@ -588,7 +598,9 @@ def auto_generate_candidates():
                     timeout=15,
                 )
                 if resp.status_code == 200:
-                    conversations = resp.json().get("conversations", [])
+                    result = resp.json()
+                    # Edge function returns array directly or {"conversations": [...]}
+                    conversations = result if isinstance(result, list) else result.get("conversations", [])
                     all_question_texts = [
                         c.get("question", "")
                         for c in conversations

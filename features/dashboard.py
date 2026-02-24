@@ -1720,7 +1720,10 @@ function showTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
     document.getElementById(tabName + '-tab').classList.add('active');
-    event.target.classList.add('active');
+    // Find the button that triggered this — walk up from event.target to the .tab button
+    let btn = event.target;
+    while (btn && !btn.classList.contains('tab')) btn = btn.parentElement;
+    if (btn) btn.classList.add('active');
 }
 </script>
 {% endblock %}''')
