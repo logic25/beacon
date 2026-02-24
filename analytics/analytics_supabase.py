@@ -401,14 +401,15 @@ class SupabaseAnalyticsDB:
         topics = {
             "Noise/Hours": ["what time", "work until", "noise", "after hours", "construction hours"],
             "FDNY": ["fdny", "fire alarm", "sprinkler", "standpipe", "suppression", "ansul"],
-            "Certificates": ["co", "certificate of occupancy", "tco", "temporary co"],
-            "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation"],
+            "Certificates": ["co ", "certificate of occupancy", "tco", "temporary co", "sign-off"],
+            "Violations": ["violation", "ecb", "bis ", "hpd violation", "dob violation", "penalty"],
             "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
-            "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "nb", "dm", "paa", "objection"],
-            "Building Code": ["building code", "egress", "fire safety", "occupancy group"],
+            "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "alt-1", "alt-2", "nb ", "dm ", "paa", "objection"],
+            "Building Code": ["building code", "egress", "fire safety", "occupancy group", "means of egress"],
             "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
-            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr"],
-            "Property Lookup": ["lookup", "address", "bin", "block", "lot"],
+            "Zoning": ["zoning", "use group", "far ", "setback", "variance", "zr ", "r6", "r7", "r8", "r9", "r10", "c1", "c2", "c4", "c6", "m1", "m2", "m3"],
+            "Landmarks": ["landmark", "lpc", "historic"],
+            "Property Lookup": ["lookup", "address", "bin ", "block", "lot ", "bbl"],
             "Plans/Drawings": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
         }
 

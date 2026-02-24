@@ -77,8 +77,8 @@ A: FDNY"""
         """Initialize classifier."""
         self.settings = settings or get_settings()
         self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
-        # Use Haiku for speed and cost efficiency
-        self.model = "claude-3-5-haiku-20241022"
+        # Use Haiku 4.5 for speed and cost efficiency
+        self.model = "claude-haiku-4-5-20251001"
     
     def classify(self, question: str, response: str = "") -> str:
         """Classify a question into a topic category.
@@ -116,9 +116,36 @@ A: FDNY"""
                 logger.warning(f"Unknown topic '{topic}' for question '{question[:50]}...', defaulting to General")
                 return "General"
                 
+        except anthropic.APIError as e:
+            logger.error(f"Topic classification API error: {e}")
+            # Fall through to keyword fallback below
+            return self._keyword_fallback(question, response)
         except Exception as e:
-            logger.error(f"Topic classification failed: {e}")
-            return "General"  # Fallback to General on error
+            logger.error(f"Topic classification failed: {e}", exc_info=True)
+            return self._keyword_fallback(question, response)
+
+    def _keyword_fallback(self, question: str, response: str = "") -> str:
+        """Keyword-based classification when LLM is unavailable."""
+        combined = (question + " " + response).lower()
+        topics = {
+            "Noise/Hours": ["what time", "work until", "noise", "after hours", "construction hours"],
+            "FDNY": ["fdny", "fire alarm", "sprinkler", "standpipe", "suppression", "ansul"],
+            "Certificates": ["co ", "certificate of occupancy", "tco", "temporary co", "sign-off"],
+            "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation", "penalty"],
+            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+            "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "alt-1", "alt-2", "nb", "dm", "paa", "objection"],
+            "Building Code": ["building code", "egress", "fire safety", "occupancy group", "means of egress"],
+            "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
+            "Zoning": ["zoning", "use group", "far ", "setback", "variance", "zr ", "r6", "r7", "r8", "c4", "c6", "m1"],
+            "Landmarks": ["landmark", "lpc", "historic"],
+            "Property Lookup": ["lookup", "address", "bin ", "block", "lot ", "bbl"],
+            "Plans/Drawings": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
+        }
+        for topic, keywords in topics.items():
+            if any(kw in combined for kw in keywords):
+                logger.info(f"Keyword fallback classified '{question[:50]}...' as {topic}")
+                return topic
+        return "General"
 
 
 # Singleton instance
