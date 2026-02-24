@@ -1832,48 +1832,9 @@ ROADMAP_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% 
     <div style="font-size: 14px;">Feature requests will appear here</div>
 </div>
 {% endif %}
-{% endblock %}
-<!-- Conversation Detail Modal -->
-<div id="conv-modal" class="modal" style="display: none;">
-    <div class="modal-content" style="max-width: 800px;">
-        <div class="modal-header">
-            <div>
-                <div class="modal-title" id="conv-modal-question"></div>
-                <div style="margin-top: 8px; font-size: 13px; color: var(--text-muted);" id="conv-modal-meta"></div>
-            </div>
-            <button class="modal-close" onclick="closeConvModal()">×</button>
-        </div>
-        
-        <div style="display: flex; gap: 24px; margin: 24px 0; padding: 16px; background: var(--bg); border-radius: 8px;">
-            <div style="text-align: center; flex: 1;">
-                <div style="font-size: 24px; font-weight: 700;" id="conv-modal-time">-</div>
-                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Response Time</div>
-            </div>
-            <div style="text-align: center; flex: 1;">
-                <div style="font-size: 24px; font-weight: 700;">92%</div>
-                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Confidence</div>
-            </div>
-            <div style="text-align: center; flex: 1;">
-                <div style="font-size: 24px; font-weight: 700;">3</div>
-                <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Sources Used</div>
-            </div>
-        </div>
-        
-        <div style="margin-bottom: 24px;">
-            <div style="font-weight: 600; font-size: 12px; color: var(--text-muted); margin-bottom: 12px; letter-spacing: 0.5px;">BEACON'S RESPONSE</div>
-            <div id="conv-modal-response" style="line-height: 1.7; font-size: 14px;"></div>
-        </div>
-        
-        <div class="modal-actions">
-            <button class="btn-cancel" onclick="closeConvModal()">Close</button>
-            <button class="btn-reject-modal">Flag as incorrect</button>
-            <button class="btn-approve-modal">Suggest Correction</button>
-        </div>
-    </div>
-</div>
 
 <script>
-// Roadmap page
+// Roadmap page scripts
 
 function openNewItemModal() {
     document.getElementById('new-item-modal').style.display = 'block';
@@ -1922,19 +1883,8 @@ document.getElementById('new-item-modal')?.addEventListener('click', function(e)
     if (e.target === this) closeNewItemModal();
 });
 
-function openConvModal(idx) {
-    const c = convsData[idx];
-    document.getElementById('conv-modal-question').textContent = c.question;
-    document.getElementById('conv-modal-meta').textContent = c.user_name + ' · ' + c.timestamp;
-    document.getElementById('conv-modal-time').textContent = c.response_time + 's';
-    document.getElementById('conv-modal-response').textContent = c.response;
-    document.getElementById('conv-modal').style.display = 'block';
-}
-
-function closeConvModal() {
-    document.getElementById('conv-modal').style.display = 'none';
-}
 </script>
+{% endblock %}
 ''')
 
 # Login page
@@ -2271,7 +2221,8 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             f"redirect_uri={redirect_uri}&"
             f"response_type=code&"
             f"scope=openid email profile&"
-            f"access_type=offline"
+            f"access_type=offline&"
+            f"prompt=select_account"
         )
         
         return render_template_string(LOGIN_HTML, auth_url=auth_url, error=None)

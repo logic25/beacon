@@ -203,6 +203,9 @@ class SupabaseAnalyticsDB:
                 "limit": limit,
                 "user_id": user_id,
             })
+            # Edge function returns array directly, not wrapped in {conversations: [...]}
+            if isinstance(result, list):
+                return result
             return result.get("conversations", []) if result else []
         except Exception as e:
             logger.error(f"get_recent_conversations failed: {e}")
@@ -267,6 +270,29 @@ class SupabaseAnalyticsDB:
         except Exception as e:
             logger.error(f"get_roadmap_summary failed: {e}")
             return {"by_status": {}, "items_by_status": {}}
+
+    def get_approved_corrections(self, limit: int = 50) -> list[dict]:
+        """Get approved corrections history."""
+        try:
+            result = self._call("get_approved_corrections", {"limit": limit})
+            if isinstance(result, list):
+                return result
+            return result.get("corrections", []) if result else []
+        except Exception as e:
+            logger.error(f"get_approved_corrections failed: {e}")
+            return []
+
+    def get_question_clusters(self, threshold: float = 0.85) -> list[dict]:
+        """Get question clusters for grouping similar questions.
+        Not yet implemented in edge function — returns empty for now."""
+        try:
+            result = self._call("get_question_clusters", {"threshold": threshold})
+            if isinstance(result, list):
+                return result
+            return result.get("clusters", []) if result else []
+        except Exception as e:
+            logger.warning(f"get_question_clusters not available: {e}")
+            return []
 
     # ------------------------------------------------------------------
     # Helpers
