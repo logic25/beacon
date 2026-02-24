@@ -227,7 +227,7 @@ class ClaudeClient:
         rag_sources: Optional[list[dict]] = None,
         format_for: str = "google_chat",
         model_override: Optional[str] = None,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict]:
         """Get a response from Claude, optionally with RAG context.
 
         Args:
@@ -239,7 +239,8 @@ class ClaudeClient:
             model_override: Specific model to use (bypasses default). If None, uses settings.
 
         Returns:
-            Tuple of (response_text, model_used) so callers can log which model handled the request.
+            Tuple of (response_text, model_used, usage_dict) where usage_dict has
+            'input_tokens' and 'output_tokens' from the API response.
 
         Raises:
             anthropic.APIError: If the API call fails.
@@ -295,19 +296,24 @@ class ClaudeClient:
             if rag_sources:
                 formatted_response += self._format_citations(rag_sources)
 
+            usage = {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            }
+
             logger.info(
                 f"Received response ({model}): {len(formatted_response)} chars, "
-                f"usage: {response.usage.input_tokens} in / {response.usage.output_tokens} out"
+                f"usage: {usage['input_tokens']} in / {usage['output_tokens']} out"
             )
 
-            return formatted_response, model
+            return formatted_response, model, usage
 
         except anthropic.APIError as e:
             logger.error(f"Claude API error: {e}")
             raise
         except Exception as e:
             logger.error(f"Unexpected error getting Claude response: {e}")
-            return "I apologize, but I encountered an error processing your request. Please try again.", model
+            return "I apologize, but I encountered an error processing your request. Please try again.", model, {"input_tokens": 0, "output_tokens": 0}
 
     def _build_rag_instructions(self) -> str:
         """Build RAG-specific instructions for the system prompt."""

@@ -666,6 +666,9 @@ def process_message_async(
         # === CHECK FOR PROPERTY LOOKUP (skip RAG/LLM — return data directly) ===
         is_property_query = False
         ai_response = None
+        model_used = "none"
+        api_usage = {"input_tokens": 0, "output_tokens": 0}
+        rag_sources = None
         if nyc_data_client is not None and OPEN_DATA_AVAILABLE:
             try:
                 address_info = extract_address_from_query(user_message)
@@ -729,7 +732,7 @@ def process_message_async(
             # === GET RESPONSE FROM CLAUDE ===
             from core.llm_client import route_model
             selected_model = route_model(user_message, has_rag_context=bool(combined_context))
-            ai_response, model_used = claude_client.get_response(
+            ai_response, model_used, api_usage = claude_client.get_response(
                 user_message=user_message,
                 conversation_history=session.chat_history,
                 rag_context=combined_context,
@@ -750,9 +753,9 @@ def process_message_async(
                     feature="property_lookup"
                 )
             else:
-                # Estimate tokens (rough: 4 chars per token)
-                input_tokens = len(user_message + (combined_context or "")) // 4
-                output_tokens = len(ai_response) // 4
+                # Use actual token counts from the API response
+                input_tokens = api_usage.get("input_tokens", 0)
+                output_tokens = api_usage.get("output_tokens", 0)
                 cost = calculate_cost(model_used, input_tokens, output_tokens)
 
                 usage_tracker.record_usage(
@@ -779,11 +782,11 @@ def process_message_async(
                 response_time = int((time.time() - request_start_time) * 1000)
                 has_sources = bool(rag_sources)
 
-                # Estimate tokens (rough: 4 chars = 1 token)
-                tokens_used = (len(user_message) + len(ai_response)) // 4
-
-                # Estimate cost (Haiku: ~$0.25 per 1M input, ~$1.25 per 1M output)
-                cost_usd = (tokens_used / 1_000_000) * 0.75
+                # Use actual token counts from the API response
+                input_tokens = api_usage.get("input_tokens", 0)
+                output_tokens = api_usage.get("output_tokens", 0)
+                tokens_used = input_tokens + output_tokens
+                cost_usd = calculate_cost(model_used, input_tokens, output_tokens)
 
                 interaction = Interaction(
                     timestamp=datetime.now().isoformat(),
@@ -1106,7 +1109,7 @@ def api_chat():
         )
 
         # Call Claude (format_for="web" preserves full markdown for Ordino widget)
-        ai_response, model_used = claude_client.get_response(
+        ai_response, model_used, api_usage = claude_client.get_response(
             user_message=user_message,
             conversation_history=chat_history,
             rag_context=combined_context,
@@ -1129,10 +1132,10 @@ def api_chat():
 
         if analytics_db:
             try:
-                input_tokens = len(user_message + (combined_context or "")) // 4
-                output_tokens = len(ai_response) // 4
+                # Use actual token counts from the API response
+                input_tokens = api_usage.get("input_tokens", 0)
+                output_tokens = api_usage.get("output_tokens", 0)
                 tokens_used = input_tokens + output_tokens
-                # Use rate_limiter's accurate per-model pricing
                 from core.rate_limiter import calculate_cost
                 cost_usd = calculate_cost(model_used, input_tokens, output_tokens)
 
