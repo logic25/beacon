@@ -77,8 +77,9 @@ A: FDNY"""
         """Initialize classifier."""
         self.settings = settings or get_settings()
         self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
-        # Use Haiku 4.5 for speed and cost efficiency
-        self.model = "claude-haiku-4-5-20251001"
+        # Use Haiku 3 — cheapest ($0.25/$1.25 per MTok), plenty for simple classification
+        # Deprecated April 2026 but saves ~75% vs Haiku 4.5 for this trivial task
+        self.model = "claude-3-haiku-20240307"
     
     def classify(self, question: str, response: str = "") -> str:
         """Classify a question into a topic category.

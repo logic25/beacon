@@ -924,6 +924,12 @@ BASE_TEMPLATE = '''<!DOCTYPE html>
                 </svg>
                 <span class="nav-label">Feedback</span>
             </a>
+            <a href="/knowledge-base" class="nav-item {{ 'active' if active_page == 'knowledge' }}">
+                <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                <span class="nav-label">Knowledge Base</span>
+            </a>
             <a href="/content-intelligence" class="nav-item {{ 'active' if active_page == 'content' }}">
                 <svg class="nav-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
@@ -1894,6 +1900,145 @@ document.getElementById('new-item-modal')?.addEventListener('click', function(e)
 {% endblock %}
 ''')
 
+# Knowledge Base page
+KNOWLEDGE_BASE_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{% block content %}
+<div class="page-header">
+    <div class="page-title">
+        <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color: var(--primary);"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" /></svg>
+        Knowledge Base
+    </div>
+    <div class="page-subtitle">RAG documents, team knowledge, and document reference analytics</div>
+</div>
+
+<!-- Stats Cards -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px;">
+    <div class="metric-card">
+        <div class="metric-value" id="kb-total-vectors">—</div>
+        <div class="metric-label">RAG Vectors</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value" id="kb-total-entries">—</div>
+        <div class="metric-label">Knowledge Entries</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value" id="kb-doc-count">—</div>
+        <div class="metric-label">Documents Indexed</div>
+    </div>
+    <div class="metric-card">
+        <div class="metric-value" id="kb-cache-entries">—</div>
+        <div class="metric-label">Cached Responses</div>
+    </div>
+</div>
+
+<!-- KB by Type -->
+<div class="section" style="margin-bottom: 24px;">
+    <h3 style="margin: 0 0 16px 0; font-size: 15px; font-weight: 600;">Entries by Type</h3>
+    <div id="kb-by-type" style="display: flex; flex-wrap: wrap; gap: 8px;">
+        <span style="color: var(--text-muted); font-size: 13px;">Loading...</span>
+    </div>
+</div>
+
+<!-- Most Referenced Documents -->
+<div class="section" style="margin-bottom: 24px;">
+    <h3 style="margin: 0 0 16px 0; font-size: 15px; font-weight: 600;">Most Referenced Documents (Last 30 Days)</h3>
+    <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">Documents most frequently cited in Beacon's responses</p>
+    <div id="kb-doc-refs">
+        <span style="color: var(--text-muted); font-size: 13px;">Loading...</span>
+    </div>
+</div>
+
+<!-- Knowledge Entries by Topic -->
+<div class="section" style="margin-bottom: 24px;">
+    <h3 style="margin: 0 0 16px 0; font-size: 15px; font-weight: 600;">Entries by Topic</h3>
+    <div id="kb-by-topic">
+        <span style="color: var(--text-muted); font-size: 13px;">Loading...</span>
+    </div>
+</div>
+
+<!-- Ingestion Instructions -->
+<div class="section" style="margin-bottom: 24px;">
+    <h3 style="margin: 0 0 16px 0; font-size: 15px; font-weight: 600;">Adding Documents</h3>
+    <div style="background: var(--bg); border-radius: 8px; padding: 16px; font-size: 13px; line-height: 1.6;">
+        <p style="margin: 0 0 8px 0;"><strong>To add documents to Beacon's knowledge base:</strong></p>
+        <ol style="margin: 0; padding-left: 20px;">
+            <li>Place <code>.md</code> or <code>.txt</code> files in the <code>knowledge/</code> folder</li>
+            <li>Run: <code style="background: rgba(0,0,0,0.06); padding: 2px 6px; border-radius: 3px;">python ingestion/ingest.py knowledge/ --type knowledge_base</code></li>
+            <li>Documents will be chunked, embedded, and indexed in Pinecone</li>
+        </ol>
+        <p style="margin: 12px 0 0 0; color: var(--text-muted);">Supported types: DOB bulletins, zoning guides, code references, team tips, Q&A pairs, corrections</p>
+    </div>
+</div>
+
+<script>
+async function loadKBData() {
+    try {
+        const response = await fetch('/api/knowledge-base');
+        const data = await response.json();
+
+        // Stats
+        document.getElementById('kb-total-vectors').textContent = (data.rag_vectors || 0).toLocaleString();
+        document.getElementById('kb-total-entries').textContent = (data.total_entries || 0).toLocaleString();
+        document.getElementById('kb-doc-count').textContent = (data.doc_count || 0).toLocaleString();
+        document.getElementById('kb-cache-entries').textContent = (data.cache_entries || 0).toLocaleString();
+
+        // By Type
+        const byTypeEl = document.getElementById('kb-by-type');
+        if (data.by_type && Object.keys(data.by_type).length > 0) {
+            const colors = ['#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899'];
+            byTypeEl.innerHTML = Object.entries(data.by_type).map(([type, count], i) =>
+                `<div style="background: ${colors[i % colors.length]}15; border: 1px solid ${colors[i % colors.length]}30; border-radius: 8px; padding: 12px 16px; min-width: 120px;">
+                    <div style="font-size: 20px; font-weight: 600; color: ${colors[i % colors.length]};">${count}</div>
+                    <div style="font-size: 12px; color: var(--text-muted); text-transform: capitalize;">${type.replace('_', ' ')}</div>
+                </div>`
+            ).join('');
+        } else {
+            byTypeEl.innerHTML = '<span style="color: var(--text-muted); font-size: 13px;">No entries yet</span>';
+        }
+
+        // By Topic
+        const byTopicEl = document.getElementById('kb-by-topic');
+        if (data.by_topic && Object.keys(data.by_topic).length > 0) {
+            const sorted = Object.entries(data.by_topic).sort((a, b) => b[1] - a[1]);
+            const maxCount = sorted[0][1];
+            byTopicEl.innerHTML = sorted.map(([topic, count]) => {
+                const pct = Math.round((count / maxCount) * 100);
+                return `<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                    <span style="font-size: 13px; font-weight: 500; width: 150px; flex-shrink: 0;">${topic}</span>
+                    <div style="flex: 1; height: 24px; background: var(--bg); border-radius: 4px; overflow: hidden;">
+                        <div style="height: 100%; width: ${pct}%; background: #f59e0b; border-radius: 4px; transition: width 0.6s ease;"></div>
+                    </div>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); width: 40px; text-align: right;">${count}</span>
+                </div>`;
+            }).join('');
+        } else {
+            byTopicEl.innerHTML = '<span style="color: var(--text-muted); font-size: 13px;">No topic data</span>';
+        }
+
+        // Document References
+        const docRefsEl = document.getElementById('kb-doc-refs');
+        if (data.doc_references && data.doc_references.length > 0) {
+            docRefsEl.innerHTML = `<table><thead><tr>
+                <th>Document</th><th>Times Referenced</th><th>Type</th>
+            </tr></thead><tbody>` +
+            data.doc_references.map(doc =>
+                `<tr>
+                    <td><strong>${doc.title || doc.source || 'Unknown'}</strong></td>
+                    <td style="font-family: monospace;">${doc.count}</td>
+                    <td><span class="badge badge-warning">${doc.type || 'document'}</span></td>
+                </tr>`
+            ).join('') + '</tbody></table>';
+        } else {
+            docRefsEl.innerHTML = '<span style="color: var(--text-muted); font-size: 13px;">No reference data yet — this populates as Beacon answers questions</span>';
+        }
+
+    } catch (err) {
+        console.error('Failed to load KB data:', err);
+    }
+}
+loadKBData();
+</script>
+{% endblock %}''')
+
 # Login page
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -2343,7 +2488,67 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
             active_page='roadmap',
             page_title='Roadmap',
             roadmap=roadmap)
-    
+
+    @app.route("/knowledge-base")
+    @require_auth
+    def knowledge_base_page():
+        """Knowledge Base page."""
+        return render_template_string(KNOWLEDGE_BASE_PAGE,
+            active_page='knowledge',
+            page_title='Knowledge Base')
+
+    @app.route("/api/knowledge-base")
+    @require_auth
+    def api_knowledge_base():
+        """Knowledge base stats API."""
+        from bot_v2 import knowledge_base, retriever, response_cache
+
+        data = {
+            "total_entries": 0,
+            "by_type": {},
+            "by_topic": {},
+            "rag_vectors": 0,
+            "doc_count": 0,
+            "cache_entries": 0,
+            "doc_references": [],
+        }
+
+        # Knowledge base stats
+        if knowledge_base:
+            try:
+                kb_stats = knowledge_base.get_stats()
+                data["total_entries"] = kb_stats.get("total_entries", 0)
+                data["by_type"] = kb_stats.get("by_type", {})
+                data["by_topic"] = kb_stats.get("by_topic", {})
+            except Exception as e:
+                logger.warning(f"KB stats error: {e}")
+
+        # RAG vector stats
+        if retriever:
+            try:
+                rag_stats = retriever.vector_store.get_stats()
+                data["rag_vectors"] = rag_stats.get("total_vectors", 0)
+            except Exception as e:
+                logger.warning(f"RAG stats error: {e}")
+
+        # Cache stats
+        if response_cache:
+            try:
+                cache_stats = response_cache.get_cache_stats()
+                data["cache_entries"] = cache_stats.get("total_entries", 0)
+            except Exception as e:
+                logger.warning(f"Cache stats error: {e}")
+
+        # Document references from analytics
+        try:
+            doc_refs = analytics_db.get_document_references(days=30) if hasattr(analytics_db, 'get_document_references') else []
+            data["doc_references"] = doc_refs
+            data["doc_count"] = len(doc_refs) if doc_refs else data["rag_vectors"]
+        except Exception as e:
+            logger.warning(f"Doc references error: {e}")
+
+        return jsonify(data)
+
     @app.route("/api/dashboard")
     @require_auth
     def api_dashboard():
