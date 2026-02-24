@@ -166,12 +166,11 @@ class ContentEngine:
             angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
             angle_msg = Message(role="user", content=angle_prompt)
 
-            result = self.claude.get_response(
+            response_text, _, _ = self.claude.get_response(
                 user_message=angle_prompt,
                 conversation_history=[angle_msg]
             )
-            # get_response returns (text, model_used) tuple
-            angle = result[0] if isinstance(result, tuple) else result
+            angle = response_text
         else:
             angle = None
 
@@ -205,7 +204,8 @@ class ContentEngine:
                 timeout=10,
             )
             resp.raise_for_status()
-            conversations = resp.json().get("conversations", [])
+            result = resp.json()
+            conversations = result if isinstance(result, list) else result.get("conversations", [])
 
             # Filter by keywords
             results = []
@@ -269,12 +269,10 @@ Respond JSON:
         # Create a message object with the prompt as user message
         user_msg = Message(role="user", content=prompt)
         
-        result = self.claude.get_response(
+        response, _, _ = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[user_msg]  # Pass the message in history
+            conversation_history=[user_msg]
         )
-        # get_response returns (text, model_used) tuple
-        response = result[0] if isinstance(result, tuple) else result
 
         # Parse JSON
         try:
@@ -390,12 +388,10 @@ Format: Markdown with # headers"""
         from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
-        result = self.claude.get_response(
+        content, _, _ = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg]
         )
-        # get_response returns (text, model_used) tuple
-        content = result[0] if isinstance(result, tuple) else result
 
         # Save generated content
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
@@ -440,12 +436,10 @@ Tone: Direct, actionable"""
         from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
-        result = self.claude.get_response(
+        content, _, _ = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg]
         )
-        # get_response returns (text, model_used) tuple
-        content = result[0] if isinstance(result, tuple) else result
 
         # Save
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
