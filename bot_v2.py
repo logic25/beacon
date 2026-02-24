@@ -313,9 +313,9 @@ def handle_slash_command(command: str, args: str, user_id: str, space_name: str,
     command = command.lower().strip()
 
     if command == "/help":
-        lines = ["📋 **Available Commands:**"]
+        lines = ["**Available Commands:**\n"]
         for cmd, desc in SLASH_COMMANDS.items():
-            lines.append(f"  `{cmd}` - {desc}")
+            lines.append(f"- `{cmd}` — {desc}")
         return "\n".join(lines)
 
     elif command == "/correct":
