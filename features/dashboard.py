@@ -1271,17 +1271,21 @@ function generateInsights(data) {
     document.getElementById('insights-section').style.display = insights.length ? 'block' : 'none';
 }
 
-function renderUsageChart(conversations) {
+function renderUsageChart(dailyUsage, conversations) {
     const ctx = document.getElementById('usage-chart');
     if (!ctx) return;
 
-    // Group conversations by date
+    // Use server-computed daily_usage if available, else fall back to conversations
     const dailyCounts = {};
-    (conversations || []).forEach(c => {
-        if (!c.timestamp) return;
-        const date = c.timestamp.split(' ')[0]; // YYYY-MM-DD or similar
-        dailyCounts[date] = (dailyCounts[date] || 0) + 1;
-    });
+    if (dailyUsage && dailyUsage.length > 0) {
+        dailyUsage.forEach(d => { dailyCounts[d.date] = d.count; });
+    } else {
+        (conversations || []).forEach(c => {
+            if (!c.timestamp) return;
+            const date = c.timestamp.includes('T') ? c.timestamp.split('T')[0] : c.timestamp.split(' ')[0];
+            dailyCounts[date] = (dailyCounts[date] || 0) + 1;
+        });
+    }
 
     // Fill last 14 days
     const labels = [];
@@ -1368,8 +1372,8 @@ async function loadDashboardData() {
         document.getElementById('pending-reviews').textContent = data.pending_suggestions || 0;
         document.getElementById('feedback-count').textContent = (data.new_feedback || 0) + ' new feedback';
 
-        // Render usage chart
-        renderUsageChart(data.conversations);
+        // Render usage chart (prefer server-computed daily_usage)
+        renderUsageChart(data.daily_usage, data.conversations);
 
         const tbody = document.querySelector('#conversations-table tbody');
         tbody.innerHTML = '';
@@ -2365,9 +2369,34 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
         roadmap_summary = analytics_db.get_roadmap_summary()
         approved_corrections = analytics_db.get_approved_corrections(limit=50)
         
+        # Compute command_usage from conversations
+        # The edge function stores 'command' field on interactions but
+        # getRecentConversations may not include it yet. Also check question
+        # text for slash commands as a fallback.
+        command_counts = {}
+        for conv in conversations:
+            c = conv if isinstance(conv, dict) else vars(conv) if hasattr(conv, '__dict__') else {}
+            cmd = c.get("command")
+            if not cmd:
+                # Fallback: detect slash commands from question text
+                q = c.get("question", "")
+                if q.startswith("/"):
+                    cmd = q.split()[0]  # e.g. "/help" or "/correct"
+            if cmd:
+                command_counts[cmd] = command_counts.get(cmd, 0) + 1
+        command_usage = [
+            {"command": cmd, "count": cnt}
+            for cmd, cnt in sorted(command_counts.items(), key=lambda x: -x[1])
+        ]
+
+        # Filter "COMMAND" from topics breakdown (slash commands pollute it)
+        if "topics" in stats:
+            stats["topics"] = [t for t in stats["topics"] if t.get("topic") != "COMMAND"]
+
         return jsonify({
             **stats,
             "conversations": conversations,
+            "command_usage": command_usage,
             "suggestions": suggestions,
             "question_clusters": question_clusters,
             "feedback": feedback,
