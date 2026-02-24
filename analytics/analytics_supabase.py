@@ -297,6 +297,79 @@ class SupabaseAnalyticsDB:
             return []
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Content Engine
+    # ------------------------------------------------------------------
+
+    def save_content_candidate(self, candidate: dict) -> dict:
+        """Save or update a content candidate in Supabase."""
+        result = self._call("save_content_candidate", candidate)
+        return result or {}
+
+    def get_content_candidates(self, status: str = "pending",
+                                content_type: str = None,
+                                limit: int = 50) -> list[dict]:
+        """Get content candidates by status."""
+        try:
+            payload = {"status": status, "limit": limit}
+            if content_type:
+                payload["content_type"] = content_type
+            result = self._call("get_content_candidates", payload)
+            if isinstance(result, list):
+                return result
+            return result.get("candidates", []) if result else []
+        except Exception as e:
+            logger.error(f"get_content_candidates failed: {e}")
+            return []
+
+    def update_content_candidate(self, candidate_id: str, **kwargs) -> dict:
+        """Update a content candidate's status, priority, etc."""
+        result = self._call("update_content_candidate", {"id": candidate_id, **kwargs})
+        return result or {}
+
+    def save_generated_content(self, content_data: dict) -> dict:
+        """Save a generated draft."""
+        result = self._call("save_generated_content", content_data)
+        return result or {}
+
+    def get_generated_content(self, status: str = "draft",
+                               limit: int = 20) -> list[dict]:
+        """Get generated content by status (draft, review, approved, published)."""
+        try:
+            result = self._call("get_generated_content", {"status": status, "limit": limit})
+            if isinstance(result, list):
+                return result
+            return result.get("content", []) if result else []
+        except Exception as e:
+            logger.error(f"get_generated_content failed: {e}")
+            return []
+
+    def get_document_references(self, days: int = 30) -> list[dict]:
+        """Get document reference counts from interactions."""
+        try:
+            result = self._call("get_document_references", {"days": days})
+            if isinstance(result, list):
+                return result
+            return []
+        except Exception as e:
+            logger.error(f"get_document_references failed: {e}")
+            return []
+
+    def get_content_stats(self) -> dict:
+        """Get content pipeline statistics."""
+        try:
+            result = self._call("get_content_stats")
+            return result or {
+                "total_candidates": 0,
+                "candidates_by_status": {},
+                "candidates_by_type": {},
+                "total_drafts": 0,
+                "drafts_by_status": {},
+            }
+        except Exception as e:
+            logger.error(f"get_content_stats failed: {e}")
+            return {"total_candidates": 0, "candidates_by_status": {}, "total_drafts": 0}
+
     # Helpers
     # ------------------------------------------------------------------
 
