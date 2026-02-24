@@ -133,9 +133,8 @@ app = Flask(__name__)
 import os
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
 
-# Enable CORS for web API endpoints and health check (Ordino widget calls /api/chat and /)
-ALLOWED_ORIGINS = os.getenv('CORS_ALLOWED_ORIGINS', '*').split(',')
-CORS(app, resources={r"/api/*": {"origins": ALLOWED_ORIGINS}, r"/": {"origins": ALLOWED_ORIGINS}, r"/health": {"origins": ALLOWED_ORIGINS}}, supports_credentials=True)
+# Enable CORS for all routes (Ordino widget on different domain calls /api/chat and /)
+CORS(app, supports_credentials=True)
 
 # Initialize components (will be set up in main)
 settings: Settings | None = None
