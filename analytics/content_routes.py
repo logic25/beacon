@@ -13,7 +13,7 @@ import traceback
 logger = logging.getLogger(__name__)
 # Optional intelligent scorer
 try:
-    from intelligent_scorer import IntelligentScorer
+    from analytics.intelligent_scorer import IntelligentScorer
     INTELLIGENT_SCORER_AVAILABLE = True
 except ImportError:
     INTELLIGENT_SCORER_AVAILABLE = False

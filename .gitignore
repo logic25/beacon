@@ -6,6 +6,7 @@ __pycache__/
 venv/
 .venv/
 env/
+beacon-env/
 *.egg-info/
 dist/
 build/
@@ -30,10 +31,13 @@ google-chat-bot-key.json
 user_sessions.json
 *.log
 flask_debug.log
+beacon_analytics.db
+beacon_analytics.db-journal
+beacon_content.db
+beacon_content.db-journal
 
-# Data files (ingested docs — too large for repo)
-data/
-zoning/
+# Backups
+*.bak
 
 # OS files
 .DS_Store
@@ -45,14 +49,12 @@ Thumbs.db
 *.swp
 *.swo
 
+# Temp/archive folders
+recovered_prompts/
+node_modules/
+
 # Keep these config files
 !railway.json
 !render.yaml
 !Procfile
 !Dockerfile
-knowledge/
-beacon-env/
-*.bak
-*.bak
-beacon_analytics.db
-beacon_analytics.db-journal

@@ -30,8 +30,8 @@ from pathlib import Path
 from typing import Optional
 
 from config import get_settings
-from document_processor import DocumentProcessor
-from vector_store import VectorStore
+from ingestion.document_processor import DocumentProcessor
+from core.vector_store import VectorStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -239,7 +239,7 @@ class ZRProcessor:
 
         # Create chunks from sections
         chunks = []
-        from document_processor import DocumentChunk
+        from ingestion.document_processor import DocumentChunk
         import hashlib
 
         for section in sections:
@@ -268,7 +268,7 @@ class ZRProcessor:
 
     def _chunk_section(self, section: ZRSection) -> list:
         """Split a large section into multiple chunks."""
-        from document_processor import DocumentChunk
+        from ingestion.document_processor import DocumentChunk
         import hashlib
 
         chunks = []

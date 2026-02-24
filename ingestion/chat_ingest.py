@@ -492,7 +492,7 @@ def ingest_qa_to_rag(qa_file: str):
     Args:
         qa_file: Path to JSON file with Q&A pairs
     """
-    from vector_store import VectorStore
+    from core.vector_store import VectorStore
     from config import get_settings
 
     settings = get_settings()

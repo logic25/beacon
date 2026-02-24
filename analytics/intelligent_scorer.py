@@ -13,7 +13,7 @@ import anthropic
 from dataclasses import dataclass
 
 from config import get_settings
-from retriever import RAGRetriever
+from core.retriever import Retriever
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ Return JSON with intelligent analysis:
         self.db_path = db_path
         self.settings = get_settings()
         self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
-        self.retriever = RAGRetriever()
+        self.retriever = Retriever()
         self._cache = {}  # Simple in-memory cache
         self._cache_ttl = timedelta(hours=1)
         
@@ -317,23 +317,23 @@ Return JSON with intelligent analysis:
         try:
             # Query RAG for relevant knowledge
             sample_question = questions[0]["question"]
-            rag_results = self.retriever.search(sample_question, top_k=5)
-            
+            retrieval_result = self.retriever.retrieve(sample_question, top_k=5)
+
             # Build context for Claude
             total_count = sum(q["count"] for q in questions)
             question_list = "\n".join([
                 f"- \"{q['question']}\" (asked {q['count']}x)"
                 for q in questions[:5]  # Top 5 questions
             ])
-            
+
             knowledge_context = ""
             knowledge_files = []
-            if rag_results:
+            if retrieval_result.sources:
                 knowledge_context = "\n\n**Available Knowledge Base:**\n"
-                for i, result in enumerate(rag_results[:3], 1):
-                    knowledge_files.append(result["source_file"])
-                    knowledge_context += f"\n{i}. {result['source_file']} ({result['score']:.0%} match)\n"
-                    knowledge_context += f"   Content: {result['content'][:200]}...\n"
+                for i, src in enumerate(retrieval_result.sources[:3], 1):
+                    knowledge_files.append(src["file"])
+                    knowledge_context += f"\n{i}. {src['file']} ({src.get('relevance', '?')} match)\n"
+                    knowledge_context += f"   Content: {src.get('text', '')[:200]}...\n"
             else:
                 knowledge_context = "\n\n**No relevant knowledge base documents found.**\n"
             

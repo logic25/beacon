@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import Settings, get_settings
-from llm_client import Message
+from core.llm_client import Message
 
 logger = logging.getLogger(__name__)
 

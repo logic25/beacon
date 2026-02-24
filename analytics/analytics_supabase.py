@@ -73,7 +73,7 @@ class SupabaseAnalyticsDB:
         """Log a user interaction. Accepts an analytics.Interaction dataclass."""
         try:
             if not interaction.topic:
-                interaction.topic = self._categorize_topic_keywords(
+                interaction.topic = self._categorize_topic(
                     interaction.question, interaction.response or ""
                 )
 
@@ -283,8 +283,18 @@ class SupabaseAnalyticsDB:
             "date_range": {"start": "", "end": "", "days": days},
         }
 
+    def _categorize_topic(self, question: str, response: str = "") -> str:
+        """Auto-categorize using LLM classifier, fall back to keywords."""
+        try:
+            from analytics.topic_classifier import get_classifier
+            classifier = get_classifier()
+            return classifier.classify(question, response)
+        except Exception as e:
+            logger.warning(f"LLM classification failed, using keyword fallback: {e}")
+            return self._categorize_topic_keywords(question, response)
+
     def _categorize_topic_keywords(self, question: str, response: str = "") -> str:
-        """Keyword-based topic categorization."""
+        """Keyword-based topic categorization (fallback)."""
         combined = (question + " " + response).lower()
 
         topics = {

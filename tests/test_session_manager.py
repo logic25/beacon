@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from session_manager import Session, SessionManager
-from llm_client import Message
+from core.session_manager import Session, SessionManager
+from core.llm_client import Message
 
 
 class TestSession:

@@ -1,46 +1,150 @@
 # Beacon
 
-**NYC Zoning & Permit Expert — RAG-powered Google Chat Bot**
+**NYC Construction & Expediting AI Assistant — RAG-powered, multi-interface**
 
-Internal tool for Green Light Expediting. Provides instant answers on NYC zoning codes, building codes, MDL, HMC, DHCR regulations, and DOB filing procedures.
+AI assistant for Greenlight Expediting (GLE). Provides instant answers on NYC zoning codes, building codes, MDL, HMC, DHCR regulations, DOB filing procedures, and team-specific knowledge. Available via Google Chat and the Ordino CRM widget.
 
 ---
 
 ## Architecture
 
-* **LLM**: Claude (Anthropic) — Haiku for speed, Sonnet for complex queries
-* **Vector Store**: Pinecone (1024-dim, cosine similarity)
-* **Embeddings**: Voyage AI (voyage-2)
-* **Hosting**: Railway (auto-deploy from GitHub)
-* **Interface**: Google Chat (webhook)
-* **Analytics**: SQLite database with web dashboard
+| Layer | Technology |
+|-------|-----------|
+| **LLM** | Claude (Anthropic) — Haiku for speed, Sonnet for complex queries |
+| **Vector Store** | Pinecone (1024-dim, cosine similarity) |
+| **Embeddings** | Voyage AI (voyage-2) |
+| **Hosting** | Railway (auto-deploy from GitHub) |
+| **Interfaces** | Google Chat (webhook) + Ordino CRM widget (`/api/chat`) |
+| **Analytics** | Supabase (primary) + SQLite (fallback) |
+| **Frontend CRM** | Ordino — built on Lovable/Supabase at ordinocrm.com |
+
+### How It Works
+
+```
+User Question (Google Chat or Ordino Widget)
+    │
+    ├─ Slash Command? → handle_slash_command() → response
+    │
+    ├─ Property Lookup? → NYC Open Data API → formatted response
+    │
+    └─ Regular Question
+         ├─ Pinecone RAG retrieval (authority-sorted, with corrections)
+         ├─ Objections KB lookup (if filing-type detected)
+         ├─ Topic classification (LLM → keyword fallback)
+         ├─ Model routing (Haiku for simple, Sonnet for complex)
+         └─ Claude generates response with source citations
+              │
+              └─ Log to Supabase analytics (via edge function)
+```
 
 ---
 
-## Key Files
+## Project Structure
 
-| File | Purpose |
-|------|---------|
-| `bot_v2.py` | Main Flask app — webhook handler, slash commands |
-| `analytics.py` | **NEW** — Analytics database (tracks all interactions) |
-| `dashboard.py` | **NEW** — Web dashboard for usage analytics |
-| `llm_client.py` | Claude API integration, system prompts, response filtering |
-| `google_chat.py` | Google Chat API client (send/update messages) |
-| `retriever.py` | RAG retrieval — queries Pinecone, formats context |
-| `vector_store.py` | Pinecone operations (search, upsert, stats) |
-| `config.py` | Pydantic settings — all env vars validated here |
-| `ingest.py` | Document ingestion pipeline (PDF → chunks → vectors) |
-| `zoning_ingest.py` | Specialized ZR article ingestion |
-| `chat_ingest.py` | Google Chat export ingestion |
-| `nyc_open_data.py` | Live NYC property lookups (BIS, DOB, HPD) |
-| `objections.py` | Common DOB objections knowledge base |
-| `plan_reader.py` | Plan reading capabilities |
-| `knowledge_capture.py` | Team corrections & tips (`/correct`, `/tip`) |
-| `rate_limiter.py` | Usage tracking and cost controls |
-| `response_cache.py` | Semantic response caching |
-| `session_manager.py` | Conversation history per user |
-| `document_processor.py` | PDF/text chunking and processing |
-| `document_metadata.py` | Document metadata extraction |
+```
+beacon/
+├── bot_v2.py                  # Main Flask app (entry point for Railway)
+├── config.py                  # Pydantic settings — all env vars validated here
+├── requirements.txt           # Python dependencies
+├── Procfile                   # Railway/Heroku process definition
+├── railway.json               # Railway deploy config
+├── render.yaml                # Render.com backup deploy config
+├── .env / env.example         # Environment variables
+│
+├── core/                      # Runtime modules (imported by bot_v2.py)
+│   ├── llm_client.py          #   Claude API client, system prompts, model routing
+│   ├── retriever.py           #   RAG retrieval — authority sort, corrections, scoring
+│   ├── vector_store.py        #   Pinecone operations (search, upsert, filters)
+│   ├── session_manager.py     #   Conversation history per user
+│   ├── rate_limiter.py        #   Usage tracking and cost controls
+│   ├── response_cache.py      #   Semantic response caching
+│   └── google_chat.py         #   Google Chat API client
+│
+├── features/                  # Feature modules (imported by bot_v2.py)
+│   ├── objections.py          #   Common DOB objections knowledge base
+│   ├── plan_reader.py         #   Architectural plan reading capabilities
+│   ├── nyc_open_data.py       #   Live NYC property lookups (BIS, DOB, HPD)
+│   ├── knowledge_capture.py   #   Team corrections & tips (/correct, /tip)
+│   └── dashboard.py           #   Railway admin dashboard (OAuth protected)
+│
+├── analytics/                 # Analytics & classification
+│   ├── analytics.py           #   SQLite analytics backend (fallback)
+│   ├── analytics_supabase.py  #   Supabase edge function proxy (primary)
+│   ├── topic_classifier.py    #   LLM-based topic classification for dashboard
+│   ├── intelligent_scorer.py  #   Content candidate scoring with Claude + RAG
+│   └── content_routes.py      #   Content Intelligence API (Flask blueprint)
+│
+├── content_engine/            # Content Intelligence (newsletter parsing)
+│   ├── engine.py              #   Main engine: parses DOB newsletters, scores content
+│   └── parser.py              #   Email/newsletter parsing logic
+│
+├── zoning/                    # Zoning analysis module
+│   ├── analyzer.py            #   ZoningAnalyzer for property zoning lookups
+│   ├── rules/                 #   Zoning rules: bulk, parking, use groups
+│   └── data_sources/          #   NYC data: PLUTO, flood zones, landmarks, tax maps
+│
+├── ingestion/                 # Offline tooling (not runtime)
+│   ├── ingest.py              #   Document ingestion pipeline (file → Pinecone)
+│   ├── zoning_ingest.py       #   Specialized Zoning Resolution ingestion
+│   ├── chat_ingest.py         #   Google Chat history ingestion
+│   └── document_processor.py  #   PDF/text chunking and processing
+│
+├── knowledge/                 # 89 markdown files — the RAG knowledge base
+│   ├── processes/             #   44 filing guides, permits, inspections
+│   ├── dob_notices/           #   17 Buildings Bulletins, service notices
+│   ├── historical/            #   8 past project case files
+│   ├── mdl/                   #   6 Multiple Dwelling Law sections
+│   ├── building_code_2022/    #   3 NYC Building Code chapters
+│   ├── zoning/                #   3 Zoning Resolution articles
+│   ├── building_code/         #   2 general building code references
+│   ├── building_code_1968/    #   1 1968 Building Code
+│   ├── hmc/                   #   1 Housing Maintenance Code
+│   ├── rcny/                  #   1 Rules of the City of New York
+│   └── communication/         #   1 communication patterns
+│
+├── tests/                     # Unit tests
+│   ├── test_llm_client.py
+│   ├── test_session_manager.py
+│   └── test_intelligent_scorer.py
+│
+└── docs/                      # Reference documentation
+    ├── GLE_Ordino_Beacon_Handoff.docx
+    ├── BeaconChatWidget.tsx
+    ├── architecture.jsx
+    ├── cross_reference_engine_spec.md
+    ├── supabase_schema.sql
+    └── generate_handoff_doc.js
+```
+
+---
+
+## API Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/webhook` | POST | Google Chat webhook handler |
+| `/api/chat` | POST | Ordino widget chat (JSON API) |
+| `/api/analytics` | GET | Analytics stats for Ordino AI Usage page |
+| `/api/ingest` | POST | Upload documents to Pinecone knowledge base |
+| `/api/ingest-email` | POST | Parse DOB newsletter emails |
+| `/api/knowledge/list` | GET | List all knowledge base files |
+| `/api/knowledge/<path>` | GET | Serve a specific knowledge base file |
+| `/api/roadmap/create` | POST | Create standalone roadmap item |
+| `/dashboard` | GET | Railway admin dashboard (OAuth protected) |
+
+---
+
+## Dashboard
+
+Admin dashboard at `https://beacon-production.up.railway.app/dashboard`
+
+**Pages:** Analytics, Conversations, Feedback, Roadmap, Content Engine
+
+**Analytics page shows:** Total Questions, Success Rate, Active Users, API Cost, Avg Response Time, Pending Reviews, Recent Conversations (with topic classification), Daily Usage chart, Questions by Topic distribution.
+
+**Topic Classification:** Every question is classified by an LLM (Claude Haiku) into categories: DOB Filings, Zoning, DHCR, Violations, Certificates, Building Code, FDNY, MDL, Noise/Hours, Landmarks, Property Lookup, Plans/Drawings, General. Falls back to keyword matching if the LLM call fails.
+
+**Authentication:** Google OAuth (admin-only). Update `ADMIN_EMAILS` in `bot_v2.py`.
 
 ---
 
@@ -50,79 +154,50 @@ Internal tool for Green Light Expediting. Provides instant answers on NYC zoning
 |---------|-------------|
 | `/help` | Show available commands |
 | `/lookup <address>, <borough>` | Property lookup via NYC Open Data |
-| `/zoning <address>, <borough>` | Full zoning analysis |
-| `/correct <wrong> \| <right>` | Flag a correction (admin only) |
-| `/suggest <wrong> \| <right>` | Suggest a correction for review |
+| `/correct <wrong> → <right>` | Flag a correction (admin only) |
+| `/suggest <wrong> → <right>` | Suggest a correction for review |
 | `/tip <your tip>` | Add team knowledge |
-| `/feedback <your idea>` | **NEW** — Suggest feature improvements |
-| `/objections <filing type>` | Common DOB objections (ALT1, NB, etc.) |
-| `/plans` | Plan reading capabilities |
-| `/stats` | Knowledge base stats |
-| `/usage` | Your usage stats |
+| `/feedback <your idea>` | Suggest feature improvements |
+| `/status` | Beacon system status |
+
+Works in both Google Chat and the Ordino widget.
 
 ---
 
-## Analytics Dashboard
+## Knowledge Base
 
-**NEW**: Real-time analytics dashboard at `/dashboard`
+**89 markdown files** in `knowledge/` organized into 14 subfolders.
 
-**Features:**
-- Total questions asked (last 7 days)
-- Success rate percentage
-- Active users count
-- API cost tracking
-- Top 10 most active users
-- Top 20 most asked questions
-- Suggestions queue (approve/reject pending corrections)
+**Document authority hierarchy** — When sources conflict, Beacon prioritizes: Determinations & Code (10) > Technical Bulletins (8) > Policy Memos (7) > Service Notices (6) > Internal Procedures (5) > Reference (4) > Historical (3)
 
-**Access:** `https://your-railway-url.up.railway.app/dashboard`
-
-**Authentication:** Google OAuth (admin-only access)
-
-See `OAUTH_SETUP.md` for setup instructions.
-
----
-
-## Smart Features
-
-### **Automatic RAG Filtering**
-Beacon skips document retrieval for simple greetings and tests, improving response speed:
-- "test" → no RAG lookup
-- "what is zoning?" → RAG lookup
-
-### **Response Caching**
-Semantically similar questions hit cache for instant responses
-
-### **Rate Limiting**
-- 100 requests per user per day
-- 100K tokens per user per day
-- Cost tracking per user
-
-### **Knowledge Capture**
-- `/correct` (admin) — applies immediately
-- `/suggest` (team) — logs for review
-- `/tip` — captures team wisdom
-- `/feedback` — feature requests
+**Adding documents:**
+```bash
+python ingestion/ingest.py path/to/document.pdf          # Single file
+python ingestion/ingest.py path/to/documents/             # Entire folder
+python ingestion/zoning_ingest.py path/to/zr_pdfs/        # Zoning Resolution
+```
 
 ---
 
 ## Setup
 
-See `DEPLOYMENT_GUIDE.md` for full instructions.
-
-**Quick start:**
-
-1. Copy `.env.example` to `.env` and fill in API keys
+1. Copy `env.example` to `.env` and fill in API keys
 2. `pip install -r requirements.txt`
 3. `python bot_v2.py`
 
 **Required env vars:**
-- `ANTHROPIC_API_KEY`
-- `PINECONE_API_KEY`
-- `VOYAGE_API_KEY`
-- `GOOGLE_SERVICE_ACCOUNT_FILE`
+- `ANTHROPIC_API_KEY` — Claude API
+- `PINECONE_API_KEY` — Vector store
+- `VOYAGE_API_KEY` — Embeddings
 
-**Optional (for OAuth dashboard):**
+**Supabase analytics:**
+- `SUPABASE_URL` — Supabase project URL
+- `BEACON_ANALYTICS_KEY` — Shared secret for edge function
+
+**Google Chat:**
+- `GOOGLE_SERVICE_ACCOUNT_FILE` — Service account JSON
+
+**Dashboard OAuth:**
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `FLASK_SECRET_KEY`
@@ -131,108 +206,16 @@ See `DEPLOYMENT_GUIDE.md` for full instructions.
 
 ## Deploy
 
-Push to `main` → Railway auto-deploys via `railway.json`.
+Push to `main` → Railway auto-deploys.
 
-**Start command:**
 ```bash
 gunicorn bot_v2:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 ```
-
-**Post-deployment:**
-1. Verify bot responds in Google Chat
-2. Visit `/dashboard` to confirm analytics tracking
-3. Set up OAuth (see `OAUTH_SETUP.md`)
-
----
-
-## Knowledge Base
-
-**Current sources:**
-- DOB Building Bulletins
-- DOB Service Notices
-- MDL regulations
-- DHCR guidelines
-- Team corrections and tips
-
-**Adding documents:**
-```bash
-# Single file
-python ingest.py path/to/document.pdf
-
-# Entire folder
-python ingest.py path/to/documents/
-
-# Zoning Resolution
-python zoning_ingest.py path/to/zr_pdfs/ --article II
-```
-
----
-
-## Admin Access
-
-**Admins (can use `/correct`):**
-- manny@greenlightexpediting.com
-- chris@greenlightexpediting.com
-
-Update `ADMIN_EMAILS` in `bot_v2.py` to add admins.
-
----
-
-## Monitoring
-
-**Dashboard metrics:**
-- Questions per day/week
-- Success rate (answered vs "I don't know")
-- Most active users
-- Most asked questions
-- Pending suggestions
-- API costs
-
-**Cost estimate:** $10-30/month for team of 5-6 users
-
----
-
-## Troubleshooting
-
-### Bot not responding
-1. Check Railway logs for errors
-2. Verify environment variables are set
-3. Test `/health` endpoint
-
-### Dashboard not loading
-1. Ensure `analytics.py` and `dashboard.py` are deployed
-2. Check Railway logs for import errors
-3. Verify database file is created (`beacon_analytics.db`)
-
-### "I don't have access" on dashboard
-1. Check Google OAuth credentials
-2. Verify your email is in `AUTHORIZED_EMAILS` (in `dashboard_auth.py`)
-3. Clear browser cookies and try again
-
----
-
-## Security
-
-- Analytics data stored locally in SQLite
-- Dashboard protected by Google OAuth
-- Only authorized emails can access dashboard
-- Service account credentials in environment variables (not committed)
-- `.gitignore` excludes `beacon_analytics.db`
-
----
-
-## Documentation
-
-- `DEPLOYMENT_GUIDE.md` — Full deployment walkthrough
-- `OAUTH_SETUP.md` — Google OAuth configuration
-- `ANALYTICS_INTEGRATION.md` — Analytics implementation details
 
 ---
 
 ## License
 
-Internal tool for Green Light Expediting. Not for redistribution.
+Internal tool for Greenlight Expediting. Not for redistribution.
 
----
-
-*Last updated: February 2026*
+*Last updated: February 24, 2026*

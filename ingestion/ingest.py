@@ -16,8 +16,8 @@ import sys
 from pathlib import Path
 
 from config import get_settings
-from document_processor import DocumentProcessor, detect_document_type
-from vector_store import VectorStore
+from ingestion.document_processor import DocumentProcessor, detect_document_type
+from core.vector_store import VectorStore
 
 logging.basicConfig(
     level=logging.INFO,

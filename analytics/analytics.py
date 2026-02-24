@@ -11,6 +11,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Optional
 import re
+from analytics.topic_classifier import get_classifier
 
 logger = logging.getLogger(__name__)
 

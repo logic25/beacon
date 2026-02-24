@@ -6,7 +6,7 @@ Only authorized users (AUTHORIZED_EMAILS) can access.
 
 from flask import render_template_string, jsonify, request, redirect, url_for, session
 from datetime import datetime, timedelta
-from analytics import AnalyticsDB
+from analytics.analytics import AnalyticsDB
 import os
 from functools import wraps
 
@@ -1237,7 +1237,7 @@ function generateInsights(data) {
     }
 
     if (totalQ === 0) {
-        insights.push({ type: 'info', icon: 'info', title: 'No questions yet', desc: 'Beacon hasn\'t received any questions in this period.' });
+        insights.push({ type: 'info', icon: 'info', title: 'No questions yet', desc: "Beacon has not received any questions in this period." });
     }
 
     const grid = document.getElementById('insights-grid');
@@ -1536,7 +1536,7 @@ FEEDBACK_PAGE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '''{%
             </thead>
             <tbody>
                 {% for s in suggestions %}
-                <tr style="cursor: pointer;" onclick="openFeedbackModal({{ s.id }}, '{{ s.user_name }}', '{{ s.timestamp }}', `{{ s.wrong_answer|replace('`', '') }}`, `{{ s.correct_answer|replace('`', '') }}`)">
+                <tr style="cursor: pointer;" onclick="openFeedbackModal({{ s.id }}, {{ s.user_name|tojson }}, {{ s.timestamp|tojson }}, {{ s.wrong_answer|tojson }}, {{ s.correct_answer|tojson }})">
                     <td><strong>{{ s.user_name }}</strong></td>
                     <td style="color: var(--text-muted); font-size: 12px;">{{ s.timestamp }}</td>
                     <td style="font-size: 13px;">

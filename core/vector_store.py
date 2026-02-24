@@ -9,7 +9,7 @@ from typing import Optional
 from pinecone import Pinecone, ServerlessSpec
 
 from config import Settings, get_settings
-from document_processor import DocumentChunk
+from ingestion.document_processor import DocumentChunk
 
 logger = logging.getLogger(__name__)
 

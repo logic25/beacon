@@ -6,7 +6,7 @@ Tests edge cases, performance, and accuracy
 import sqlite3
 import time
 from datetime import datetime, timedelta
-from intelligent_scorer import IntelligentScorer
+from analytics.intelligent_scorer import IntelligentScorer
 
 class StressTest:
     """Comprehensive stress testing for intelligent scorer."""

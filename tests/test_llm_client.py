@@ -5,7 +5,7 @@ Unit tests for the LLM client module.
 import pytest
 from unittest.mock import MagicMock, patch
 
-from llm_client import (
+from core.llm_client import (
     ClaudeClient,
     Message,
     ResponseFilter,

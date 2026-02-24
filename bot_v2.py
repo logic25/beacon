@@ -26,41 +26,41 @@ from flask import Flask, redirect, url_for, Response, jsonify, request
 from flask_cors import CORS
 
 from config import Settings, get_settings
-from google_chat import GoogleChatClient
-from llm_client import ClaudeClient
-from session_manager import SessionManager
+from core.google_chat import GoogleChatClient
+from core.llm_client import ClaudeClient
+from core.session_manager import SessionManager
 
 # RAG imports (optional - graceful degradation if not configured)
 try:
-    from retriever import Retriever
+    from core.retriever import Retriever
     RAG_AVAILABLE = True
 except ImportError:
     RAG_AVAILABLE = False
 
 # NYC Open Data imports (optional)
 try:
-    from nyc_open_data import NYCOpenDataClient, extract_address_from_query
+    from features.nyc_open_data import NYCOpenDataClient, extract_address_from_query
     OPEN_DATA_AVAILABLE = True
 except ImportError:
     OPEN_DATA_AVAILABLE = False
 
 # Knowledge capture imports (optional)
 try:
-    from knowledge_capture import KnowledgeBase
+    from features.knowledge_capture import KnowledgeBase
     KNOWLEDGE_CAPTURE_AVAILABLE = True
 except ImportError:
     KNOWLEDGE_CAPTURE_AVAILABLE = False
 
 # Response caching (optional)
 try:
-    from response_cache import SemanticCache
+    from core.response_cache import SemanticCache
     CACHE_AVAILABLE = True
 except ImportError:
     CACHE_AVAILABLE = False
 
 # Rate limiting and cost control (optional)
 try:
-    from rate_limiter import (
+    from core.rate_limiter import (
         UsageTracker, is_off_topic, get_off_topic_response,
         calculate_cost, get_tracker
     )
@@ -70,7 +70,7 @@ except ImportError:
 
 # Objections knowledge base (optional)
 try:
-    from objections import ObjectionsKB, get_objections_response
+    from features.objections import ObjectionsKB, get_objections_response
     OBJECTIONS_AVAILABLE = True
 except ImportError:
     OBJECTIONS_AVAILABLE = False
@@ -84,7 +84,7 @@ except ImportError:
 
 # Plan reader capabilities (optional)
 try:
-    from plan_reader import get_capabilities_response as get_plan_capabilities
+    from features.plan_reader import get_capabilities_response as get_plan_capabilities
     PLAN_READER_AVAILABLE = True
 except ImportError:
     PLAN_READER_AVAILABLE = False
@@ -93,8 +93,8 @@ except ImportError:
 # Prefer Supabase for persistence; fall back to SQLite
 SUPABASE_ANALYTICS = False
 try:
-    from analytics import AnalyticsDB, Interaction, get_analytics_db
-    from dashboard import add_dashboard_routes
+    from analytics.analytics import AnalyticsDB, Interaction, get_analytics_db
+    from features.dashboard import add_dashboard_routes
     ANALYTICS_AVAILABLE = True
 except Exception as e:
     ANALYTICS_AVAILABLE = False
@@ -102,14 +102,14 @@ except Exception as e:
     logging.error(f"Failed to import analytics/dashboard: {e}", exc_info=True)
 
 try:
-    from analytics_supabase import SupabaseAnalyticsDB
+    from analytics.analytics_supabase import SupabaseAnalyticsDB
     SUPABASE_ANALYTICS_AVAILABLE = True
 except ImportError:
     SUPABASE_ANALYTICS_AVAILABLE = False
 
 # Content Intelligence (optional)
 try:
-    from content_routes import content_bp
+    from analytics.content_routes import content_bp
     CONTENT_INTELLIGENCE_AVAILABLE = True
 except ImportError:
     CONTENT_INTELLIGENCE_AVAILABLE = False
@@ -728,7 +728,7 @@ def process_message_async(
                 combined_context = "\n\n---\n\n".join(context_parts)
 
             # === GET RESPONSE FROM CLAUDE ===
-            from llm_client import route_model
+            from core.llm_client import route_model
             selected_model = route_model(user_message, has_rag_context=bool(combined_context))
             ai_response, model_used = claude_client.get_response(
                 user_message=user_message,
@@ -1099,7 +1099,7 @@ def api_chat():
         chat_history = session.chat_history if session else []
 
         # Route to appropriate model based on question complexity
-        from llm_client import route_model
+        from core.llm_client import route_model
         selected_model = route_model(
             user_message,
             has_rag_context=bool(combined_context),
@@ -1134,7 +1134,7 @@ def api_chat():
                 output_tokens = len(ai_response) // 4
                 tokens_used = input_tokens + output_tokens
                 # Use rate_limiter's accurate per-model pricing
-                from rate_limiter import calculate_cost
+                from core.rate_limiter import calculate_cost
                 cost_usd = calculate_cost(model_used, input_tokens, output_tokens)
 
                 interaction = Interaction(
@@ -1293,8 +1293,8 @@ def api_ingest():
         if retriever is None or not RAG_AVAILABLE:
             return jsonify({"error": "RAG not configured (missing Pinecone/Voyage keys)"}), 503
 
-        from document_processor import DocumentProcessor, detect_document_type
-        from vector_store import VectorStore
+        from ingestion.document_processor import DocumentProcessor, detect_document_type
+        from core.vector_store import VectorStore
         import tempfile
         import os
 
@@ -1345,7 +1345,7 @@ def api_ingest():
                     document = processor.process_pdf(tmp_path, source_type=source_type)
                 else:
                     text = open(tmp_path, "r", encoding="utf-8").read()
-                    from ingest import extract_md_metadata
+                    from ingestion.ingest import extract_md_metadata
                     metadata = extract_md_metadata(text) if ext == ".md" else {}
                     metadata["file_path"] = filename
                     document = processor.process_text(
@@ -1454,7 +1454,7 @@ def api_ingest_email():
             # 1) Ingest into Pinecone (so Beacon learns about it)
             if retriever is not None and RAG_AVAILABLE and full_content:
                 try:
-                    from document_processor import DocumentProcessor
+                    from ingestion.document_processor import DocumentProcessor
                     processor = DocumentProcessor()
 
                     # Build markdown content with metadata header
@@ -1547,6 +1547,60 @@ def main() -> None:
         debug=settings.debug,
         threaded=True,
     )
+
+
+# ------------------------------------------------------------------
+# Knowledge Base file serving (for Ordino document seeding)
+# ------------------------------------------------------------------
+
+@app.route("/api/knowledge/list", methods=["GET"])
+def list_knowledge_files():
+    """List all knowledge base markdown files for Ordino seeding."""
+    import os
+
+    files = []
+    kb_root = os.path.join(os.path.dirname(__file__), "knowledge")
+    if not os.path.isdir(kb_root):
+        return jsonify({"files": [], "count": 0})
+
+    for root, _dirs, filenames in os.walk(kb_root):
+        for f in filenames:
+            if f.endswith(".md"):
+                rel_path = os.path.relpath(os.path.join(root, f), kb_root)
+                files.append(rel_path)
+
+    files.sort()
+    return jsonify({"files": files, "count": len(files)})
+
+
+@app.route("/api/knowledge/<path:filepath>", methods=["GET"])
+def serve_knowledge_file(filepath):
+    """Serve a single knowledge base file for Ordino document seeding."""
+    import os
+
+    safe_path = os.path.normpath(filepath)
+    if ".." in safe_path:
+        return jsonify({"error": "Invalid path"}), 400
+
+    # Add .md extension if not present
+    if not safe_path.endswith(".md"):
+        safe_path += ".md"
+
+    kb_root = os.path.join(os.path.dirname(__file__), "knowledge")
+    full_path = os.path.join(kb_root, safe_path)
+
+    if not os.path.exists(full_path):
+        return jsonify({"error": "File not found"}), 404
+
+    with open(full_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    return jsonify({
+        "filename": os.path.basename(full_path),
+        "folder": os.path.dirname(safe_path),
+        "content": content,
+        "size": len(content),
+    })
 
 
 # Initialize when imported by gunicorn (production)

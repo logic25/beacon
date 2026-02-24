@@ -11,8 +11,8 @@ from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 import uuid
 
-from llm_client import ClaudeClient
-from retriever import Retriever
+from core.llm_client import ClaudeClient
+from core.retriever import Retriever
 from .parser import DOBNewsletterParser
 
 
@@ -161,7 +161,7 @@ class ContentEngine:
 
         # Get angle with Claude
         if len(questions) > 0:
-            from llm_client import Message
+            from core.llm_client import Message
 
             angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
             angle_msg = Message(role="user", content=angle_prompt)
@@ -264,7 +264,7 @@ Respond JSON:
 }}"""
         
         # Import Message class and create a proper conversation history
-        from llm_client import Message
+        from core.llm_client import Message
         
         # Create a message object with the prompt as user message
         user_msg = Message(role="user", content=prompt)
@@ -387,7 +387,7 @@ Write 1200-1500 words:
 
 Format: Markdown with # headers"""
 
-        from llm_client import Message
+        from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
         result = self.claude.get_response(
@@ -437,7 +437,7 @@ Format: Markdown with # headers"""
 
 Tone: Direct, actionable"""
 
-        from llm_client import Message
+        from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
         
         result = self.claude.get_response(
