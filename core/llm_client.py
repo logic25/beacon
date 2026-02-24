@@ -301,8 +301,8 @@ class ClaudeClient:
                 # Web clients (Ordino widget) support full markdown
                 formatted_response = filtered_response
 
-            # Add source citations if available
-            if rag_sources:
+            # Add source citations for Google Chat only (widget has its own SourcesList component)
+            if rag_sources and format_for == "google_chat":
                 formatted_response += self._format_citations(rag_sources)
 
             usage = {
