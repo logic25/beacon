@@ -134,7 +134,8 @@ class ResponseFilter:
 
 
 # Model routing constants
-HAIKU_MODEL = "claude-3-5-haiku-latest"
+# Temporarily using Sonnet for both until Haiku API access is resolved
+HAIKU_MODEL = "claude-sonnet-4-5-20250929"
 SONNET_MODEL = "claude-sonnet-4-5-20250929"
 
 # Questions that need Sonnet's deeper reasoning
