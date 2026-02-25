@@ -22,6 +22,8 @@ import json
 from datetime import datetime
 from typing import Any
 
+import requests
+
 from flask import Flask, redirect, url_for, Response, jsonify, request
 from flask_cors import CORS
 
@@ -920,6 +922,52 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
         return jsonify({"error": str(e)}), 500
 
 
+def _persist_widget_messages(
+    user_email: str,
+    user_message: str,
+    ai_response: str,
+    metadata: dict | None = None,
+) -> None:
+    """Persist widget conversation messages to Supabase for chat unification.
+
+    Routes through the beacon-analytics edge function (same proxy pattern
+    as analytics logging) so we don't need the Supabase service_role key.
+    Non-blocking: failures are logged but don't affect the API response.
+    """
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+
+    if not supabase_url or not analytics_key:
+        return  # Not configured, skip silently
+
+    try:
+        resp = requests.post(
+            f"{supabase_url.rstrip('/')}/functions/v1/beacon-analytics",
+            json={
+                "action": "persist_widget_messages",
+                "data": {
+                    "user_email": user_email,
+                    "user_message": user_message,
+                    "ai_response": ai_response,
+                    "metadata": metadata or {},
+                },
+            },
+            headers={
+                "Content-Type": "application/json",
+                "x-beacon-key": analytics_key,
+            },
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            logger.info(f"[Widget Persist] Saved messages for {user_email}")
+        else:
+            logger.warning(
+                f"[Widget Persist] Edge function returned {resp.status_code}: {resp.text[:200]}"
+            )
+    except Exception as e:
+        logger.warning(f"[Widget Persist] Failed to save messages: {e}")
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """Web API chat endpoint for Ordino's Ask Beacon widget.
@@ -1161,6 +1209,20 @@ def api_chat():
                 logger.info(f"[API Chat] Logged to analytics (backend={'supabase' if SUPABASE_ANALYTICS else 'sqlite'})")
             except Exception as e:
                 logger.error(f"[API Chat] Analytics logging failed: {e}", exc_info=True)
+
+        # === PERSIST TO WIDGET_MESSAGES (for Chat Unification) ===
+        _persist_widget_messages(
+            user_email=data.get("user_email", user_id),
+            user_message=user_message,
+            ai_response=ai_response,
+            metadata={
+                "confidence": confidence,
+                "sources": rag_sources_list,
+                "flow_type": flow_type,
+                "response_time_ms": response_time_ms,
+                "model": model_used,
+            },
+        )
 
         return jsonify({
             "response": ai_response or "I wasn't able to generate a response. Please try again.",
