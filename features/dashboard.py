@@ -1071,7 +1071,7 @@ DASHBOARD_V2_HTML = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', '
             <option value="this_year">This Year</option>
             <option value="all">All Time</option>
         </select>
-        <button onclick="window.location.reload()" class="btn" style="background: var(--card); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-family: 'Inter', sans-serif;">
+        <button onclick="refreshWithPeriod()" class="btn" style="background: var(--card); color: var(--text); border: 1px solid var(--border); display: flex; align-items: center; gap: 6px; font-family: 'Inter', sans-serif;">
             <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
             Refresh
         </button>
@@ -1362,8 +1362,26 @@ function renderUsageChart(dailyUsage, conversations) {
 
 async function loadDashboardData() {
     try {
-        const days = document.getElementById('date-range')?.value || 7;
-        const response = await fetch(`/api/dashboard?days=${days}`);
+        const raw = document.getElementById('date-range')?.value || '7';
+        let qs = '';
+        if (raw === 'all') {
+            qs = 'days=9999';
+        } else if (raw === 'this_month') {
+            const now = new Date();
+            const start = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+            qs = `start=${start}`;
+        } else if (raw === 'last_month') {
+            const now = new Date();
+            const start = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString().split('T')[0];
+            const end = new Date(now.getFullYear(), now.getMonth(), 0).toISOString().split('T')[0];
+            qs = `start=${start}&end=${end}`;
+        } else if (raw === 'this_year') {
+            const start = new Date(new Date().getFullYear(), 0, 1).toISOString().split('T')[0];
+            qs = `start=${start}`;
+        } else {
+            qs = `days=${raw}`;
+        }
+        const response = await fetch(`/api/dashboard?${qs}`);
         const data = await response.json();
 
         // Generate AI Insights
@@ -1468,11 +1486,37 @@ async function loadDashboardData() {
     }
 }
 
+// Persist period selection in URL so it survives refresh
+function getSelectedPeriod() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('period') || '7';
+}
+
+function setSelectedPeriod(value) {
+    const url = new URL(window.location);
+    url.searchParams.set('period', value);
+    window.history.replaceState({}, '', url);
+}
+
+function refreshWithPeriod() {
+    const days = document.getElementById('date-range')?.value || '7';
+    const url = new URL(window.location);
+    url.searchParams.set('period', days);
+    window.location.href = url.toString();
+}
+
+// Restore period from URL on page load
+const dateRange = document.getElementById('date-range');
+if (dateRange) {
+    dateRange.value = getSelectedPeriod();
+    dateRange.addEventListener('change', function() {
+        setSelectedPeriod(this.value);
+        loadDashboardData();
+    });
+}
+
 loadDashboardData();
 setInterval(loadDashboardData, 30000);
-
-// Listen for date range changes
-document.getElementById('date-range')?.addEventListener('change', loadDashboardData);
 </script>
 {% endblock %}''')
 

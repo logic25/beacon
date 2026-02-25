@@ -620,6 +620,7 @@ def process_message_async(
     space_name: str,
     user_message: str,
     temp_message_name: str | None,
+    thread_name: str | None = None,
 ) -> None:
     """Process a message in a background thread."""
     request_start_time = time.time()
@@ -635,7 +636,7 @@ def process_message_async(
                 if temp_message_name:
                     chat_client.update_message(temp_message_name, f"⚠️ {limit_msg}")
                 else:
-                    chat_client.send_message(space_name, f"⚠️ {limit_msg}")
+                    chat_client.send_message(space_name, f"⚠️ {limit_msg}", thread_name=thread_name)
                 return
 
         # === OFF-TOPIC FILTER (FREE - no API call) ===
@@ -647,7 +648,7 @@ def process_message_async(
                 if temp_message_name:
                     chat_client.update_message(temp_message_name, response)
                 else:
-                    chat_client.send_message(space_name, response)
+                    chat_client.send_message(space_name, response, thread_name=thread_name)
                 return
 
         # === CHECK CACHE FIRST ===
@@ -659,7 +660,7 @@ def process_message_async(
                 if temp_message_name:
                     chat_client.update_message(temp_message_name, cached_response)
                 else:
-                    chat_client.send_message(space_name, cached_response)
+                    chat_client.send_message(space_name, cached_response, thread_name=thread_name)
                 return
 
         # === GET CONVERSATION HISTORY ===
@@ -822,9 +823,9 @@ def process_message_async(
             result = chat_client.update_message(temp_message_name, ai_response)
             if not result.success:
                 logger.warning(f"Failed to update message: {result.error}")
-                chat_client.send_message(space_name, ai_response)
+                chat_client.send_message(space_name, ai_response, thread_name=thread_name)
         else:
-            chat_client.send_message(space_name, ai_response)
+            chat_client.send_message(space_name, ai_response, thread_name=thread_name)
 
     except Exception as e:
         logger.exception(f"Error in background processing: {e}")
@@ -833,7 +834,7 @@ def process_message_async(
         if temp_message_name:
             chat_client.update_message(temp_message_name, error_msg)
         else:
-            chat_client.send_message(space_name, error_msg)
+            chat_client.send_message(space_name, error_msg, thread_name=thread_name)
 
 
 @app.route("/", methods=["POST"])
@@ -846,23 +847,41 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
         logger.debug(f"Received webhook: {str(data)[:500]}...")
 
         message_data = data.get("message", {})
-        user_message = message_data.get("text", "").strip()
+        space_data = data.get("space", {})
+        space_name = space_data.get("name", "")
+        space_type = space_data.get("type", "")  # DM, ROOM, SPACE
+
+        # For @mentions in spaces, use argumentText (mention-stripped);
+        # fall back to full text for DMs
+        raw_text = message_data.get("text", "").strip()
+        argument_text = message_data.get("argumentText", "").strip()
+
+        # In spaces/rooms, prefer argumentText (strips the @Beacon prefix);
+        # in DMs there's no mention so use raw text
+        is_space = space_type in ("ROOM", "SPACE")
+        user_message = argument_text if (is_space and argument_text) else raw_text
+
+        # Strip any leftover @Beacon mention from the message
+        import re
+        user_message = re.sub(r"@Beacon\s*", "", user_message, flags=re.IGNORECASE).strip()
 
         if not user_message:
-            logger.warning("Received empty message")
+            logger.warning("Received empty message (after stripping mention)")
             return "", 204
+
+        # Get thread info for replying in-thread in group spaces
+        thread_name = message_data.get("thread", {}).get("name") if is_space else None
 
         user_data = data.get("user", {})
         user_id = user_data.get("name") or user_data.get("email", "unknown")
         user_email = user_data.get("email", "")
         user_display_name = user_data.get("displayName", user_email or "Unknown User")
-        space_name = data.get("space", {}).get("name", "")
 
         if not space_name:
             logger.error("No space name in webhook data")
             return jsonify({"error": "Missing space name"}), 400
 
-        logger.info(f"Processing message from {user_id} in {space_name}")
+        logger.info(f"Processing message from {user_display_name} ({user_id}) in {space_name} (type={space_type}, thread={thread_name})")
 
         # Check for slash commands first
         if user_message.startswith("/"):
@@ -896,24 +915,24 @@ def webhook() -> tuple[Response, int] | tuple[str, int]:
                         analytics_db.log_interaction(interaction)
                     except Exception as e:
                         logger.error(f"Failed to log slash command to analytics: {e}")
-                
-                chat_client.send_message(space_name, response)
+
+                chat_client.send_message(space_name, response, thread_name=thread_name)
                 return "", 204
 
         # Add user message to session
         session_manager.add_user_message(user_id, space_name, user_message)
 
-        # Send temporary "processing" message
-        temp_result = chat_client.send_typing_indicator(space_name)
+        # Send temporary "processing" message (in-thread for spaces)
+        temp_result = chat_client.send_typing_indicator(space_name, thread_name=thread_name)
         temp_message_name = temp_result.message_name if temp_result.success else None
 
         # Process in background thread
-        thread = threading.Thread(
+        bg_thread = threading.Thread(
             target=process_message_async,
-            args=(user_id, user_display_name, space_name, user_message, temp_message_name),
+            args=(user_id, user_display_name, space_name, user_message, temp_message_name, thread_name),
             daemon=True,
         )
-        thread.start()
+        bg_thread.start()
 
         return "", 204
 

@@ -140,20 +140,29 @@ class GoogleChatClient:
 
         return response
 
-    def send_message(self, space_name: str, text: str) -> MessageResult:
+    def send_message(self, space_name: str, text: str, thread_name: str | None = None) -> MessageResult:
         """Send a message to a Google Chat space.
 
         Args:
             space_name: The space identifier (e.g., "spaces/ABC123")
             text: Message text to send
+            thread_name: Optional thread name to reply in-thread (for group spaces)
 
         Returns:
             MessageResult with success status and message name
         """
         url = f"{self.BASE_URL}/{space_name}/messages"
 
+        # If thread_name is provided, reply in that thread
+        if thread_name:
+            url += "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
+
+        payload: dict = {"text": text}
+        if thread_name:
+            payload["thread"] = {"name": thread_name}
+
         try:
-            response = self._make_request("POST", url, {"text": text})
+            response = self._make_request("POST", url, payload)
 
             if response.status_code == 200:
                 message_name = response.json().get("name")
@@ -208,13 +217,14 @@ class GoogleChatClient:
             logger.error(f"Request error updating message: {e}")
             return MessageResult(success=False, error=str(e))
 
-    def send_typing_indicator(self, space_name: str) -> MessageResult:
+    def send_typing_indicator(self, space_name: str, thread_name: str | None = None) -> MessageResult:
         """Send a temporary 'processing' message that will be updated.
 
         Args:
             space_name: The space identifier
+            thread_name: Optional thread name to reply in-thread
 
         Returns:
             MessageResult with the temporary message name
         """
-        return self.send_message(space_name, "Processing your request...")
+        return self.send_message(space_name, "🔍 Thinking...", thread_name=thread_name)
