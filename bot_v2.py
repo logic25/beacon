@@ -116,6 +116,20 @@ try:
 except ImportError:
     CONTENT_INTELLIGENCE_AVAILABLE = False
 
+# Passive Listener (optional — monitors chat for questions without @mention)
+try:
+    from features.passive_listener import PassiveListener
+    PASSIVE_LISTENER_AVAILABLE = True
+except ImportError:
+    PASSIVE_LISTENER_AVAILABLE = False
+
+# Email Poller (optional — auto-ingests newsletters from Beacon's Gmail)
+try:
+    from features.email_poller import EmailPoller
+    EMAIL_POLLER_AVAILABLE = True
+except ImportError:
+    EMAIL_POLLER_AVAILABLE = False
+
 
 def setup_logging(settings: Settings) -> None:
     """Configure application logging."""
@@ -151,6 +165,8 @@ usage_tracker: "UsageTracker | None" = None
 objections_kb: "ObjectionsKB | None" = None
 zoning_analyzer: "ZoningAnalyzer | None" = None
 analytics_db: "AnalyticsDB | None" = None
+passive_listener: "PassiveListener | None" = None
+email_poller: "EmailPoller | None" = None
 logger = logging.getLogger(__name__)
 
 
@@ -306,6 +322,36 @@ def initialize_app() -> None:
             logger.info("✅ Content Intelligence dashboard registered at /content-intelligence")
         except Exception as e:
             logger.warning(f"Content Intelligence registration failed: {e}")
+
+    # Initialize Passive Listener (monitors chat for questions without @mention)
+    global passive_listener
+    if PASSIVE_LISTENER_AVAILABLE:
+        try:
+            passive_listener = PassiveListener(
+                chat_client=chat_client,
+                retriever=retriever,
+                content_engine=None,  # lazy-loaded when needed
+                claude_client=claude_client,
+                analytics_db=analytics_db,
+            )
+            passive_listener.start()
+        except Exception as e:
+            logger.warning(f"Passive listener initialization failed: {e}")
+            passive_listener = None
+
+    # Initialize Email Poller (auto-ingests newsletters from Beacon's Gmail)
+    global email_poller
+    if EMAIL_POLLER_AVAILABLE:
+        try:
+            email_poller = EmailPoller(
+                retriever=retriever,
+                content_engine=None,  # lazy-loaded when needed
+                analytics_db=analytics_db,
+            )
+            email_poller.start()
+        except Exception as e:
+            logger.warning(f"Email poller initialization failed: {e}")
+            email_poller = None
 
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
@@ -1607,6 +1653,22 @@ def index() -> tuple[Response, int]:
         "model": settings.claude_model if settings else "not initialized",
         "commands": list(SLASH_COMMANDS.keys()),
     }), 200
+
+
+@app.route("/api/passive-listener/status", methods=["GET"])
+def passive_listener_status():
+    """Get the status of the passive chat listener."""
+    if passive_listener:
+        return jsonify(passive_listener.get_status()), 200
+    return jsonify({"running": False, "reason": "not configured"}), 200
+
+
+@app.route("/api/email-poller/status", methods=["GET"])
+def email_poller_status():
+    """Get the status of the email newsletter poller."""
+    if email_poller:
+        return jsonify(email_poller.get_status()), 200
+    return jsonify({"running": False, "reason": "not configured"}), 200
 
 
 def main() -> None:
