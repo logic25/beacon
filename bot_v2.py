@@ -1538,6 +1538,30 @@ def api_ingest():
         _manifest_folder = locals().get("folder_hint", "")
         _manifest_id = _sanitize_pinecone_id(f"__file__:{_manifest_folder}/{_manifest_file}" if _manifest_folder else f"__file__:{_manifest_file}")
 
+        # Content hash for deduplication across different filenames
+        import hashlib as _hashlib
+        _content_hash = _hashlib.md5(document.content.encode("utf-8")).hexdigest()
+
+        # Check for duplicate content under a different filename
+        _duplicate_of = ""
+        try:
+            for _dup_batch in vector_store.index.list(prefix="__file__:", limit=100):
+                if not _dup_batch:
+                    break
+                _dup_ids = list(_dup_batch)
+                _dup_fetched = vector_store.index.fetch(ids=_dup_ids)
+                for _dup_vid, _dup_vdata in _dup_fetched.vectors.items():
+                    _dup_meta = _dup_vdata.metadata or {}
+                    if (_dup_meta.get("content_hash") == _content_hash
+                            and _dup_meta.get("source_file") != _manifest_file):
+                        _duplicate_of = _dup_meta.get("source_file", "")
+                        logger.warning(f"[API Ingest] Duplicate content detected: '{_manifest_file}' has same content as '{_duplicate_of}'")
+                        break
+                if _duplicate_of:
+                    break
+        except Exception as e:
+            logger.warning(f"[API Ingest] Duplicate check skipped: {e}")
+
         try:
             old_manifest = vector_store.index.fetch(ids=[_manifest_id])
             if old_manifest.vectors and _manifest_id in old_manifest.vectors:
@@ -1629,6 +1653,8 @@ def api_ingest():
                     "is_current": _is_current,
                     "version": _version,
                     "supersedes": _supersedes,
+                    "content_hash": _content_hash,
+                    "duplicate_of": _duplicate_of,
                 },
             }])
         except Exception as e:
@@ -1636,13 +1662,22 @@ def api_ingest():
 
         logger.info(f"[API Ingest] Ingested {count} chunks from '{document.title}' (type={source_type})")
 
-        return jsonify({
+        response = {
             "success": True,
             "title": document.title,
             "source_type": source_type,
             "chunks_created": count,
             "total_characters": len(document.content),
-        })
+            "version": _version,
+            "content_hash": _content_hash,
+        }
+        if _duplicate_of:
+            response["warning"] = f"Duplicate content detected — same content exists as '{_duplicate_of}'"
+            response["duplicate_of"] = _duplicate_of
+        if _supersedes:
+            response["supersedes"] = _supersedes
+
+        return jsonify(response)
 
     except Exception as e:
         logger.exception(f"[API Ingest] Error: {e}")
@@ -2081,6 +2116,147 @@ def rebuild_knowledge_manifest():
     except Exception as e:
         logger.exception(f"[Rebuild Manifest] Error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/delete", methods=["POST"])
+def delete_knowledge_file():
+    """Delete a file and all its chunks from Pinecone.
+
+    JSON body: {"source_file": "filename_to_delete"}
+
+    Removes:
+      1. The manifest vector (__file__:filename)
+      2. All content chunks with matching source_file metadata
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+
+    data = request.get_json(silent=True) or {}
+    source_file = data.get("source_file", "").strip()
+    if not source_file:
+        return jsonify({"error": "source_file is required"}), 400
+
+    try:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+        dim = vector_store.settings.embedding_dimension
+
+        deleted_chunks = 0
+        deleted_manifest = False
+
+        # 1. Find and delete the manifest vector
+        for id_batch in index.list(prefix="__file__:", limit=100):
+            if not id_batch:
+                break
+            ids = list(id_batch)
+            fetched = index.fetch(ids=ids)
+            for vid, vdata in fetched.vectors.items():
+                meta = vdata.metadata or {}
+                if meta.get("source_file", "") == source_file:
+                    index.delete(ids=[vid])
+                    deleted_manifest = True
+                    break
+            if deleted_manifest:
+                break
+
+        # 2. Find and delete all content chunks for this file.
+        # Use a dummy query filtered by source_file metadata.
+        dummy_query = vector_store.embed_query(f"content from {source_file}")
+        while True:
+            results = index.query(
+                vector=dummy_query,
+                top_k=100,
+                include_metadata=True,
+                filter={"source_file": {"$eq": source_file}},
+            )
+            if not results.matches:
+                break
+            chunk_ids = [m.id for m in results.matches]
+            index.delete(ids=chunk_ids)
+            deleted_chunks += len(chunk_ids)
+            # Safety: break if we've deleted a lot (prevents infinite loop)
+            if deleted_chunks > 500:
+                break
+
+        logger.info(f"[Delete Knowledge] Removed '{source_file}': {deleted_chunks} chunks, manifest={'yes' if deleted_manifest else 'no'}")
+
+        return jsonify({
+            "success": True,
+            "source_file": source_file,
+            "chunks_deleted": deleted_chunks,
+            "manifest_deleted": deleted_manifest,
+        })
+    except Exception as e:
+        logger.exception(f"[Delete Knowledge] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/delete-batch", methods=["POST"])
+def delete_knowledge_batch():
+    """Delete multiple files from Pinecone in one call.
+
+    JSON body: {"source_files": ["file1", "file2", ...]}
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+
+    data = request.get_json(silent=True) or {}
+    source_files = data.get("source_files", [])
+    if not source_files or not isinstance(source_files, list):
+        return jsonify({"error": "source_files (list) is required"}), 400
+
+    results = []
+    for sf in source_files:
+        sf = sf.strip()
+        if not sf:
+            continue
+        # Reuse single-delete logic via internal call
+        try:
+            vector_store = retriever.vector_store
+            index = vector_store.index
+            dim = vector_store.settings.embedding_dimension
+
+            deleted_chunks = 0
+            deleted_manifest = False
+
+            # Delete manifest
+            for id_batch in index.list(prefix="__file__:", limit=100):
+                if not id_batch:
+                    break
+                ids = list(id_batch)
+                fetched = index.fetch(ids=ids)
+                for vid, vdata in fetched.vectors.items():
+                    meta = vdata.metadata or {}
+                    if meta.get("source_file", "") == sf:
+                        index.delete(ids=[vid])
+                        deleted_manifest = True
+                        break
+                if deleted_manifest:
+                    break
+
+            # Delete chunks
+            dummy_query = vector_store.embed_query(f"content from {sf}")
+            while True:
+                res = index.query(
+                    vector=dummy_query,
+                    top_k=100,
+                    include_metadata=True,
+                    filter={"source_file": {"$eq": sf}},
+                )
+                if not res.matches:
+                    break
+                chunk_ids = [m.id for m in res.matches]
+                index.delete(ids=chunk_ids)
+                deleted_chunks += len(chunk_ids)
+                if deleted_chunks > 500:
+                    break
+
+            results.append({"source_file": sf, "chunks_deleted": deleted_chunks, "manifest_deleted": deleted_manifest})
+            logger.info(f"[Delete Batch] Removed '{sf}': {deleted_chunks} chunks")
+        except Exception as e:
+            results.append({"source_file": sf, "error": str(e)})
+
+    return jsonify({"success": True, "results": results})
 
 
 @app.route("/api/knowledge/<path:filepath>", methods=["GET"])
