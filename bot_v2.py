@@ -2259,6 +2259,147 @@ def delete_knowledge_batch():
     return jsonify({"success": True, "results": results})
 
 
+@app.route("/api/knowledge/assign-folders", methods=["POST"])
+def assign_knowledge_folders():
+    """Auto-assign folders to manifest vectors based on filename and source_type.
+
+    Optionally accepts JSON body:
+      {"assignments": {"filename": "folder_name", ...}}
+    to override auto-detection for specific files.
+
+    If no body is provided, uses smart auto-detection based on filename patterns.
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+
+    try:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+        dim = vector_store.settings.embedding_dimension
+
+        data = request.get_json(silent=True) or {}
+        manual_assignments = data.get("assignments", {})
+
+        def _auto_folder(filename, source_type):
+            """Determine folder from filename patterns and source_type."""
+            fl = filename.lower()
+            st = (source_type or "").lower()
+
+            # DOB Notices & Bulletins
+            if "service notice" in fl or st == "service_notice":
+                return "dob_notices"
+            if fl.startswith("bb ") or fl.startswith("buildings bulletin") or "bulletin" in fl:
+                return "dob_notices"
+            if "policy memo" in fl or st == "policy_memo":
+                return "dob_notices"
+
+            # Building Code
+            if "building code" in fl or st == "building_code":
+                if "1968" in fl:
+                    return "building_code_1968"
+                if "2022" in fl:
+                    return "building_code_2022"
+                return "building_code"
+            if fl.startswith("1 rcny") or st == "rule":
+                return "rcny"
+
+            # MDL
+            if fl.startswith("mdl ") or "multiple dwelling" in fl:
+                return "mdl"
+
+            # Zoning
+            if "zoning" in fl or st == "zoning":
+                return "zoning"
+
+            # Housing Maintenance Code
+            if "housing maintenance" in fl or "hmc" in fl or st == "housing_maintenance_code":
+                return "hmc"
+
+            # Energy Code
+            if "energy code" in fl or "nycecc" in fl:
+                return "energy_code"
+
+            # Historical / Case Studies / Reconsiderations / DOB Acceptances
+            if fl.startswith("reconsideration") or fl.startswith("dob acceptance") or st == "historical_determination":
+                return "historical"
+            if "case" in fl or "381 broome" in fl or "97," in fl:
+                return "historical"
+
+            # Communication patterns
+            if "communication pattern" in fl or st == "communication" or st == "communication_pattern":
+                return "communication"
+
+            # Objections
+            if "objection" in fl or st == "reference":
+                return "objections"
+
+            # Processes / Guides (catch-all for procedure type)
+            if st == "procedure" or "guide" in fl or "filing" in fl or "permit" in fl:
+                return "processes"
+
+            # GLE internal
+            if "gle internal" in fl or "gle" in fl:
+                return "processes"
+
+            # Anything with "schedule" or "after hours"
+            if "schedule" in fl or "after hours" in fl:
+                return "dob_notices"
+
+            # Master index
+            if "master index" in fl or "supersession tracking" in fl:
+                return "dob_notices"
+
+            return "processes"  # Default fallback
+
+        # Collect all manifest vectors
+        updated = []
+        skipped = []
+
+        for id_batch in index.list(prefix="__file__:", limit=100):
+            if not id_batch:
+                break
+            ids = list(id_batch)
+            fetched = index.fetch(ids=ids)
+
+            for vid, vdata in fetched.vectors.items():
+                meta = vdata.metadata or {}
+                filename = meta.get("source_file", "")
+                source_type = meta.get("source_type", "")
+                current_folder = meta.get("folder", "")
+
+                # Determine new folder
+                if filename in manual_assignments:
+                    new_folder = manual_assignments[filename]
+                else:
+                    new_folder = _auto_folder(filename, source_type)
+
+                if new_folder and new_folder != current_folder:
+                    meta["folder"] = new_folder
+                    index.upsert(vectors=[{
+                        "id": vid,
+                        "values": [1e-7] * dim,
+                        "metadata": meta,
+                    }])
+                    updated.append({"file": filename, "folder": new_folder, "was": current_folder})
+                else:
+                    skipped.append({"file": filename, "folder": current_folder or new_folder, "reason": "already correct"})
+
+        # Also update folder metadata on content chunks so filtered queries work
+        # (This is optional but helps with folder-based retrieval)
+
+        logger.info(f"[Assign Folders] Updated {len(updated)} files, skipped {len(skipped)}")
+
+        return jsonify({
+            "success": True,
+            "updated": len(updated),
+            "skipped": len(skipped),
+            "details": updated,
+        })
+    except Exception as e:
+        logger.exception(f"[Assign Folders] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/knowledge/<path:filepath>", methods=["GET"])
 def serve_knowledge_file(filepath):
     """Serve a single knowledge base file for Ordino document seeding."""
