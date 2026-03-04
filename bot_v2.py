@@ -1571,7 +1571,7 @@ def api_ingest():
                             dim = vector_store.settings.embedding_dimension
                             vector_store.index.upsert(vectors=[{
                                 "id": vid,
-                                "values": [0.0] * dim,
+                                "values": [1e-7] * dim,
                                 "metadata": old_m,
                             }])
                             logger.info(f"[API Ingest] Marked '{old_m.get('source_file')}' as superseded by '{_manifest_file}'")
@@ -1594,7 +1594,7 @@ def api_ingest():
 
             vector_store.index.upsert(vectors=[{
                 "id": _manifest_id,
-                "values": [0.0] * dim,
+                "values": [1e-7] * dim,
                 "metadata": {
                     "source_file": _manifest_file,
                     "source_type": source_type,
@@ -2032,7 +2032,7 @@ def rebuild_knowledge_manifest():
             manifest_id = f"__file__:{folder}/{source_file}" if folder else f"__file__:{source_file}"
             manifests.append({
                 "id": manifest_id,
-                "values": [0.0] * dim,
+                "values": [1e-7] * dim,
                 "metadata": {
                     "source_file": source_file,
                     "source_type": info["source_type"],
