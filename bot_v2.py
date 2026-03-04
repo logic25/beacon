@@ -1507,6 +1507,110 @@ def api_ingest():
         # Upload chunks to Pinecone
         count = vector_store.upsert_chunks(document.chunks)
 
+        # Clean up stale chunks from previous version of this file.
+        # Chunk IDs are deterministic (md5 of file_path:chunk_index), so if the
+        # new version has fewer chunks than the old one, the extras linger.
+        # Check the old manifest for the previous chunk count and delete extras.
+        _manifest_file = locals().get("filename", document.title)
+        _manifest_folder = locals().get("folder_hint", "")
+        _manifest_id = f"__file__:{_manifest_folder}/{_manifest_file}" if _manifest_folder else f"__file__:{_manifest_file}"
+
+        try:
+            old_manifest = vector_store.index.fetch(ids=[_manifest_id])
+            if old_manifest.vectors and _manifest_id in old_manifest.vectors:
+                old_meta = old_manifest.vectors[_manifest_id].metadata or {}
+                old_count = int(old_meta.get("chunks_created", 0))
+                if old_count > count:
+                    # Delete orphaned chunks from the previous longer version
+                    stale_ids = [
+                        processor._generate_chunk_id(document.file_path, i)
+                        for i in range(count, old_count)
+                    ]
+                    if stale_ids:
+                        vector_store.index.delete(ids=stale_ids)
+                        logger.info(f"[API Ingest] Deleted {len(stale_ids)} stale chunks from previous version")
+        except Exception as e:
+            logger.warning(f"[API Ingest] Stale chunk cleanup skipped: {e}")
+
+        # Detect supersedes references in DOB notices/bulletins.
+        # DOB notices often say "This supersedes Service Notice X/YYYY" or
+        # "This bulletin replaces Technical Bulletin YYYY-XXX".
+        _supersedes = ""
+        _is_current = "true"
+        try:
+            import re as _re
+            content_lower = document.content.lower()
+            # Match patterns like "supersedes service notice 12/2019",
+            # "replaces technical bulletin 2019-004", "revokes SN 5/2015"
+            supersede_patterns = [
+                r"(?:supersede|replace|revoke|cancel|rescind)s?\s+(?:service\s+notice|sn|technical\s+bulletin|tb)\s*[\#]?\s*([\w\-\/]+)",
+                r"(?:supersede|replace|revoke|cancel|rescind)s?\s+(?:the\s+)?(?:previous\s+)?(?:version|edition|notice|bulletin)\s*(?:dated\s+)?([\w\s,]+\d{4})",
+            ]
+            for pattern in supersede_patterns:
+                match = _re.search(pattern, content_lower)
+                if match:
+                    _supersedes = match.group(1).strip()
+                    break
+
+            # If this document supersedes another, mark the old one as not current
+            if _supersedes and (_manifest_folder or _manifest_file):
+                # Try to find the superseded document's manifest and mark it
+                for old_id_batch in vector_store.index.list(prefix="__file__:", limit=100):
+                    if not old_id_batch:
+                        break
+                    old_ids = list(old_id_batch)
+                    # Look for manifests whose filename contains the superseded reference
+                    fetched = vector_store.index.fetch(ids=old_ids)
+                    for vid, vdata in fetched.vectors.items():
+                        old_m = vdata.metadata or {}
+                        old_name = old_m.get("source_file", "").lower()
+                        if _supersedes in old_name and vid != _manifest_id:
+                            # Mark old document as no longer current
+                            old_m["is_current"] = "false"
+                            old_m["superseded_by"] = _manifest_file
+                            dim = vector_store.settings.embedding_dimension
+                            vector_store.index.upsert(vectors=[{
+                                "id": vid,
+                                "values": [0.0] * dim,
+                                "metadata": old_m,
+                            }])
+                            logger.info(f"[API Ingest] Marked '{old_m.get('source_file')}' as superseded by '{_manifest_file}'")
+        except Exception as e:
+            logger.warning(f"[API Ingest] Supersedes detection skipped: {e}")
+
+        # Store manifest vector so /api/knowledge/list can find this file.
+        try:
+            dim = vector_store.settings.embedding_dimension
+
+            # Determine version number: check if previous manifest exists
+            _version = 1
+            try:
+                existing = vector_store.index.fetch(ids=[_manifest_id])
+                if existing.vectors and _manifest_id in existing.vectors:
+                    old_meta = existing.vectors[_manifest_id].metadata or {}
+                    _version = int(old_meta.get("version", 1)) + 1
+            except Exception:
+                pass
+
+            vector_store.index.upsert(vectors=[{
+                "id": _manifest_id,
+                "values": [0.0] * dim,
+                "metadata": {
+                    "source_file": _manifest_file,
+                    "source_type": source_type,
+                    "folder": _manifest_folder,
+                    "chunks_created": count,
+                    "ingested_at": datetime.now().isoformat(),
+                    "total_characters": len(document.content),
+                    "is_manifest": "true",
+                    "is_current": _is_current,
+                    "version": _version,
+                    "supersedes": _supersedes,
+                },
+            }])
+        except Exception as e:
+            logger.warning(f"[API Ingest] Failed to write manifest vector: {e}")
+
         logger.info(f"[API Ingest] Ingested {count} chunks from '{document.title}' (type={source_type})")
 
         return jsonify({
@@ -1700,13 +1804,86 @@ def main() -> None:
 
 @app.route("/api/knowledge/list", methods=["GET"])
 def list_knowledge_files():
-    """List all knowledge base markdown files for Ordino seeding."""
+    """List all ingested knowledge base files.
+
+    Reads manifest vectors (prefix __file__:) from Pinecone.
+    These are written by the /api/ingest endpoint on each upload.
+    Falls back to filesystem scan if RAG is unavailable.
+    """
     import os
 
+    # Strategy 1: Read manifest vectors from Pinecone (primary)
+    if retriever is not None and RAG_AVAILABLE:
+        try:
+            vector_store = retriever.vector_store
+            index = vector_store.index
+
+            # Collect all __file__: manifest vector IDs
+            manifest_ids = []
+            for id_batch in index.list(prefix="__file__:", limit=100):
+                if not id_batch:
+                    break
+                manifest_ids.extend(list(id_batch))
+
+            if not manifest_ids:
+                # No manifest vectors yet — might be pre-manifest data.
+                # Return empty but with stats so Ordino knows the index isn't empty.
+                stats = index.describe_index_stats()
+                return jsonify({
+                    "files": [],
+                    "count": 0,
+                    "total_chunks": stats.total_vector_count,
+                    "source": "pinecone",
+                    "note": "No manifest vectors found. Re-upload files to register them, or call /api/knowledge/rebuild-manifest to scan existing chunks.",
+                })
+
+            # Fetch metadata for all manifest vectors
+            files = []
+            file_details = []
+
+            # Fetch in batches of 100
+            for i in range(0, len(manifest_ids), 100):
+                batch = manifest_ids[i:i + 100]
+                fetched = index.fetch(ids=batch)
+                for vec_id, vec_data in fetched.vectors.items():
+                    meta = vec_data.metadata or {}
+                    source_file = meta.get("source_file", "")
+                    folder = meta.get("folder", "")
+
+                    if folder and source_file:
+                        files.append(f"{folder}/{source_file}")
+                    elif source_file:
+                        files.append(source_file)
+
+                    file_details.append({
+                        "filename": source_file,
+                        "folder": folder,
+                        "source_type": meta.get("source_type", "document"),
+                        "chunks_created": meta.get("chunks_created", 0),
+                        "ingested_at": meta.get("ingested_at", ""),
+                        "version": meta.get("version", 1),
+                        "is_current": meta.get("is_current", "true"),
+                        "supersedes": meta.get("supersedes", ""),
+                        "superseded_by": meta.get("superseded_by", ""),
+                    })
+
+            stats = index.describe_index_stats()
+
+            return jsonify({
+                "files": sorted(files),
+                "count": len(files),
+                "details": sorted(file_details, key=lambda d: d.get("filename", "")),
+                "total_chunks": stats.total_vector_count,
+                "source": "pinecone",
+            })
+        except Exception as e:
+            logger.warning(f"[Knowledge List] Pinecone query failed, falling back to filesystem: {e}")
+
+    # Strategy 2: Filesystem fallback (for local dev or if RAG unavailable)
     files = []
     kb_root = os.path.join(os.path.dirname(__file__), "knowledge")
     if not os.path.isdir(kb_root):
-        return jsonify({"files": [], "count": 0})
+        return jsonify({"files": [], "count": 0, "source": "filesystem"})
 
     for root, _dirs, filenames in os.walk(kb_root):
         for f in filenames:
@@ -1715,7 +1892,172 @@ def list_knowledge_files():
                 files.append(rel_path)
 
     files.sort()
-    return jsonify({"files": files, "count": len(files)})
+    return jsonify({"files": files, "count": len(files), "source": "filesystem"})
+
+
+@app.route("/api/knowledge/file-content", methods=["GET"])
+def get_file_content():
+    """Retrieve the full text content of an ingested file by reassembling its chunks.
+
+    Query params:
+      - source_file: filename to retrieve (e.g. "PW1_Filing_Process.md")
+
+    This lets Ordino show document content in a modal without needing the file
+    in Supabase storage — it reads directly from Pinecone chunks.
+    """
+    source_file = request.args.get("source_file", "").strip()
+    if not source_file:
+        return jsonify({"error": "source_file parameter required"}), 400
+
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+
+    try:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+
+        # Find all chunks belonging to this source file by scanning with list+fetch.
+        # Chunk IDs are md5(file_path:chunk_index), so we can't use prefix filtering.
+        # Instead, use a targeted search: embed a generic query and filter by source_file.
+        # This is more efficient than scanning all vectors.
+        dummy_query = vector_store.embed_query(f"content from {source_file}")
+        results = index.query(
+            vector=dummy_query,
+            top_k=200,  # Max chunks per file — most files have <100
+            include_metadata=True,
+            filter={"source_file": {"$eq": source_file}},
+        )
+
+        if not results.matches:
+            return jsonify({"error": "File not found in knowledge base"}), 404
+
+        # Sort by chunk_index and reassemble
+        chunks = []
+        for match in results.matches:
+            meta = match.metadata or {}
+            chunks.append({
+                "index": int(meta.get("chunk_index", 0)),
+                "text": meta.get("text", ""),
+            })
+
+        chunks.sort(key=lambda c: c["index"])
+        full_text = "\n\n".join(c["text"] for c in chunks)
+
+        # Get manifest info if available
+        manifest_meta = {}
+        manifest_id_1 = f"__file__:{source_file}"
+        try:
+            fetched = index.fetch(ids=[manifest_id_1])
+            if fetched.vectors and manifest_id_1 in fetched.vectors:
+                manifest_meta = fetched.vectors[manifest_id_1].metadata or {}
+            else:
+                # Try with folder prefix — scan manifest vectors for this filename
+                for id_batch in index.list(prefix="__file__:", limit=100):
+                    if not id_batch:
+                        break
+                    batch_fetched = index.fetch(ids=list(id_batch))
+                    for vid, vdata in batch_fetched.vectors.items():
+                        if (vdata.metadata or {}).get("source_file") == source_file:
+                            manifest_meta = vdata.metadata
+                            break
+                    if manifest_meta:
+                        break
+        except Exception:
+            pass
+
+        return jsonify({
+            "source_file": source_file,
+            "content": full_text,
+            "chunks_count": len(chunks),
+            "source_type": manifest_meta.get("source_type", "document"),
+            "folder": manifest_meta.get("folder", ""),
+            "version": manifest_meta.get("version", 1),
+            "is_current": manifest_meta.get("is_current", "true"),
+            "supersedes": manifest_meta.get("supersedes", ""),
+            "superseded_by": manifest_meta.get("superseded_by", ""),
+            "ingested_at": manifest_meta.get("ingested_at", ""),
+        })
+    except Exception as e:
+        logger.exception(f"[File Content] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/knowledge/rebuild-manifest", methods=["POST"])
+def rebuild_knowledge_manifest():
+    """Scan all existing Pinecone vectors and create manifest entries for files
+    that were ingested before the manifest system was added.
+
+    This is a one-time migration endpoint. Call it once after deploying the
+    manifest update to backfill manifests for your existing 44+ files.
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+
+    try:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+        dim = vector_store.settings.embedding_dimension
+
+        # Scan all vectors, collect unique source_file values
+        seen_files = {}  # source_file -> {source_type, folder, count}
+
+        for id_batch in index.list(limit=100):
+            if not id_batch:
+                break
+            ids = list(id_batch)
+            # Skip existing manifest vectors
+            real_ids = [i for i in ids if not i.startswith("__file__:")]
+            if not real_ids:
+                continue
+
+            fetched = index.fetch(ids=real_ids)
+            for vec_id, vec_data in fetched.vectors.items():
+                meta = vec_data.metadata or {}
+                src = meta.get("source_file", "")
+                if not src:
+                    continue
+                if src not in seen_files:
+                    seen_files[src] = {
+                        "source_type": meta.get("source_type", "document"),
+                        "folder": meta.get("folder", ""),
+                        "chunk_count": 1,
+                    }
+                else:
+                    seen_files[src]["chunk_count"] += 1
+
+        # Create manifest vectors for each discovered file
+        manifests = []
+        for source_file, info in seen_files.items():
+            folder = info["folder"]
+            manifest_id = f"__file__:{folder}/{source_file}" if folder else f"__file__:{source_file}"
+            manifests.append({
+                "id": manifest_id,
+                "values": [0.0] * dim,
+                "metadata": {
+                    "source_file": source_file,
+                    "source_type": info["source_type"],
+                    "folder": folder,
+                    "chunks_created": info["chunk_count"],
+                    "ingested_at": "pre-manifest",
+                    "is_manifest": "true",
+                },
+            })
+
+        # Upsert manifest vectors in batches
+        for i in range(0, len(manifests), 100):
+            batch = manifests[i:i + 100]
+            index.upsert(vectors=batch)
+
+        logger.info(f"[Rebuild Manifest] Created {len(manifests)} manifest vectors")
+
+        return jsonify({
+            "success": True,
+            "files_found": len(manifests),
+            "files": sorted(seen_files.keys()),
+        })
+    except Exception as e:
+        logger.exception(f"[Rebuild Manifest] Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/knowledge/<path:filepath>", methods=["GET"])
