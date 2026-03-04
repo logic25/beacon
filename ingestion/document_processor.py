@@ -121,10 +121,14 @@ class DocumentProcessor:
         content = f"{file_path}:{chunk_index}"
         return hashlib.md5(content.encode()).hexdigest()[:16]
 
-    def _clean_text(self, text: str) -> str:
+    def _clean_text(self, text: str, preserve_newlines: bool = True) -> str:
         """Clean extracted text."""
         # Remove excessive whitespace
-        text = re.sub(r"\s+", " ", text)
+        if preserve_newlines:
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            text = re.sub(r"[^\S\n]+", " ", text)
+        else:
+            text = re.sub(r"\s+", " ", text)
         # Remove special characters that might cause issues
         text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", text)
         return text.strip()
