@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import json
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -129,6 +130,28 @@ try:
     EMAIL_POLLER_AVAILABLE = True
 except ImportError:
     EMAIL_POLLER_AVAILABLE = False
+
+
+def _sanitize_pinecone_id(raw_id: str) -> str:
+    """Convert a string to ASCII-safe Pinecone vector ID.
+    Pinecone requires ASCII-only IDs. This transliterates Unicode characters
+    (e.g. § → S, é → e) and strips anything that can't be converted."""
+    # NFKD decomposes characters (e.g. § -> section-sign codepoint)
+    normalized = unicodedata.normalize("NFKD", raw_id)
+    # Encode to ASCII, replacing unknown chars with closest match or dropping them
+    ascii_bytes = normalized.encode("ascii", "ignore")
+    result = ascii_bytes.decode("ascii")
+    # Handle common legal symbols that NFKD doesn't decompose nicely
+    replacements = {"§": "S", "©": "C", "®": "R", "™": "TM", "°": "deg", "–": "-", "—": "-", "'": "'", "'": "'", """: '"', """: '"'}
+    for char, replacement in replacements.items():
+        raw_id = raw_id.replace(char, replacement)
+    # Re-encode after manual replacements
+    normalized = unicodedata.normalize("NFKD", raw_id)
+    result = normalized.encode("ascii", "ignore").decode("ascii")
+    # Collapse multiple spaces/dashes
+    while "  " in result:
+        result = result.replace("  ", " ")
+    return result.strip()
 
 
 def setup_logging(settings: Settings) -> None:
@@ -1513,7 +1536,7 @@ def api_ingest():
         # Check the old manifest for the previous chunk count and delete extras.
         _manifest_file = locals().get("filename", document.title)
         _manifest_folder = locals().get("folder_hint", "")
-        _manifest_id = f"__file__:{_manifest_folder}/{_manifest_file}" if _manifest_folder else f"__file__:{_manifest_file}"
+        _manifest_id = _sanitize_pinecone_id(f"__file__:{_manifest_folder}/{_manifest_file}" if _manifest_folder else f"__file__:{_manifest_file}")
 
         try:
             old_manifest = vector_store.index.fetch(ids=[_manifest_id])
@@ -1945,7 +1968,7 @@ def get_file_content():
 
         # Get manifest info if available
         manifest_meta = {}
-        manifest_id_1 = f"__file__:{source_file}"
+        manifest_id_1 = _sanitize_pinecone_id(f"__file__:{source_file}")
         try:
             fetched = index.fetch(ids=[manifest_id_1])
             if fetched.vectors and manifest_id_1 in fetched.vectors:
@@ -2029,7 +2052,7 @@ def rebuild_knowledge_manifest():
         manifests = []
         for source_file, info in seen_files.items():
             folder = info["folder"]
-            manifest_id = f"__file__:{folder}/{source_file}" if folder else f"__file__:{source_file}"
+            manifest_id = _sanitize_pinecone_id(f"__file__:{folder}/{source_file}" if folder else f"__file__:{source_file}")
             manifests.append({
                 "id": manifest_id,
                 "values": [1e-7] * dim,
