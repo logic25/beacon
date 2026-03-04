@@ -2281,69 +2281,80 @@ def assign_knowledge_folders():
         manual_assignments = data.get("assignments", {})
 
         def _auto_folder(filename, source_type):
-            """Determine folder from filename patterns and source_type."""
+            """Determine folder from filename patterns and source_type.
+
+            Folder structure (9 folders):
+              filing_guides      - How-to guides for every filing type
+              service_notices    - DOB Service Notices, schedules
+              buildings_bulletins - Buildings Bulletins (BB), master index
+              policy_memos       - DOB policy memos, fact sheets, acceptance letters
+              codes              - Building Code, MDL, RCNY, Zoning, HMC, Energy Code
+              determinations     - Reconsiderations, DOB Acceptances, historical cases
+              company_sops       - Internal processes, communication patterns, GLE notes
+              objections         - Objection-related processes and guides
+            """
             fl = filename.lower()
             st = (source_type or "").lower()
 
-            # DOB Notices & Bulletins
+            # --- Service Notices ---
             if "service notice" in fl or st == "service_notice":
-                return "dob_notices"
+                return "service_notices"
+            if "schedule" in fl or "after hours 2026" in fl:
+                return "service_notices"
+
+            # --- Buildings Bulletins ---
             if fl.startswith("bb ") or fl.startswith("buildings bulletin") or "bulletin" in fl:
-                return "dob_notices"
+                return "buildings_bulletins"
+            if "master index" in fl or "supersession tracking" in fl:
+                return "buildings_bulletins"
+
+            # --- Policy Memos ---
             if "policy memo" in fl or st == "policy_memo":
-                return "dob_notices"
+                return "policy_memos"
+            if "dob fact sheet" in fl:
+                return "policy_memos"
+            if fl.startswith("dob notice") and "service" not in fl:
+                return "policy_memos"
+            if fl.startswith("dob acceptance"):
+                return "policy_memos"
 
-            # Building Code
+            # --- Code & Law ---
             if "building code" in fl or st == "building_code":
-                if "1968" in fl:
-                    return "building_code_1968"
-                if "2022" in fl:
-                    return "building_code_2022"
-                return "building_code"
+                return "codes"
             if fl.startswith("1 rcny") or st == "rule":
-                return "rcny"
-
-            # MDL
+                return "codes"
             if fl.startswith("mdl ") or "multiple dwelling" in fl:
-                return "mdl"
-
-            # Zoning
-            if "zoning" in fl or st == "zoning":
-                return "zoning"
-
-            # Housing Maintenance Code
-            if "housing maintenance" in fl or "hmc" in fl or st == "housing_maintenance_code":
-                return "hmc"
-
-            # Energy Code
+                return "codes"
+            if "zoning resolution" in fl:
+                return "codes"
+            if "housing maintenance" in fl or st == "housing_maintenance_code":
+                return "codes"
             if "energy code" in fl or "nycecc" in fl:
-                return "energy_code"
+                return "codes"
 
-            # Historical / Case Studies / Reconsiderations / DOB Acceptances
-            if fl.startswith("reconsideration") or fl.startswith("dob acceptance") or st == "historical_determination":
-                return "historical"
-            if "case" in fl or "381 broome" in fl or "97," in fl:
-                return "historical"
+            # --- Case Precedents ---
+            if fl.startswith("reconsideration") or st == "historical_determination":
+                return "determinations"
+            if "381 broome" in fl or "97," in fl:
+                return "determinations"
 
-            # Communication patterns
+            # --- Company SOPs ---
             if "communication pattern" in fl or st == "communication" or st == "communication_pattern":
-                return "communication"
+                return "company_sops"
+            if "gle internal" in fl:
+                return "company_sops"
+            if "fdny withdrawal" in fl and "timelines" in fl:
+                return "company_sops"
 
-            # Objections
-            if "objection" in fl or st == "reference":
+            # --- Objections ---
+            if "objection" in fl:
                 return "objections"
 
-            # Processes / Guides (catch-all for procedure type)
+            # --- Filing Guides (catch-all for procedures, reference, decision trees) ---
             if st == "procedure" or "guide" in fl or "filing" in fl or "permit" in fl:
-                return "processes"
+                return "filing_guides"
 
-            # GLE internal
-            if "gle internal" in fl or "gle" in fl:
-                return "processes"
-
-            # Anything with "schedule" or "after hours"
-            if "schedule" in fl or "after hours" in fl:
-                return "dob_notices"
+            return "filing_guides"  # Default fallback
 
             # Master index
             if "master index" in fl or "supersession tracking" in fl:
