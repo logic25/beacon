@@ -38,12 +38,80 @@ def _format_for_google_chat(text: str) -> str:
     
     return text.strip()
 
+# Team and company info loaded from database at startup
+_company_context = None
+
+
+def _load_company_context() -> str:
+    """Load company and team info from Ordino database."""
+    global _company_context
+    if _company_context is not None:
+        return _company_context
+
+    import os
+    import httpx
+
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    beacon_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+
+    if not supabase_url or not beacon_key:
+        _company_context = "Team info unavailable — Ordino connection not configured."
+        return _company_context
+
+    proxy_url = f"{supabase_url}/functions/v1/beacon-data-proxy"
+    headers = {"Content-Type": "application/json", "x-beacon-key": beacon_key}
+
+    team_info = ""
+    company_info = ""
+
+    try:
+        # Load team
+        resp = httpx.post(proxy_url, json={"action": "query_ordino", "params": {
+            "table": "profiles", "select": "display_name,first_name,last_name,role,email",
+            "filters": {"is_active": "eq.true"}, "limit": 20
+        }}, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data", resp.json())
+            if isinstance(data, list):
+                members = []
+                for p in data:
+                    name = p.get("display_name") or f"{p.get('first_name', '')} {p.get('last_name', '')}".strip()
+                    role = p.get("role", "team member")
+                    if name:
+                        members.append(f"{name} ({role})")
+                if members:
+                    team_info = f"Team members: {', '.join(members)}"
+    except Exception as e:
+        team_info = f"Could not load team: {e}"
+
+    try:
+        # Load company
+        resp = httpx.post(proxy_url, json={"action": "query_ordino", "params": {
+            "table": "companies", "select": "*", "limit": 1
+        }}, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("data", resp.json())
+            if isinstance(data, list) and data:
+                c = data[0]
+                parts = []
+                if c.get("name"): parts.append(f"Company: {c['name']}")
+                if c.get("address"): parts.append(f"Address: {c['address']}")
+                if c.get("phone"): parts.append(f"Phone: {c['phone']}")
+                if c.get("email"): parts.append(f"Email: {c['email']}")
+                if c.get("ein"): parts.append(f"EIN: {c['ein']}")
+                company_info = " | ".join(parts)
+    except Exception as e:
+        company_info = f"Could not load company: {e}"
+
+    _company_context = f"{company_info}\n{team_info}" if (company_info or team_info) else "Company context unavailable."
+    return _company_context
+
+
 # Expert system prompt — focused on GLE's actual work
 SYSTEM_PROMPT = """You are Beacon, the internal AI Chief of Staff for Green Light Expediting LLC (GLE), a NYC construction permit expediting and consulting firm with 22 years of experience.
 
 IMPORTANT — THIS IS AN INTERNAL TOOL:
-- Your users are GLE's team: Manny (owner), Chris (admin/PM), Sheri, Natalia, Don (PMs), and Sai (accounting)
-- These are experienced professionals who file DOB applications daily
+- Your users are GLE's team — experienced professionals who file DOB applications daily
 - NEVER say "consult with a licensed architect" or "hire a professional" — the people asking ARE the professionals
 - Instead say "check with your manager" or "verify with the applicant" or "confirm with the project team"
 - Be direct and practical — skip disclaimers about consulting professionals
@@ -271,8 +339,17 @@ class ClaudeClient:
         return False
 
     def _build_system_prompt(self, user_message: str) -> str:
-        """Build the system prompt, adding DHCR enhancement if relevant."""
+        """Build the system prompt, adding dynamic context."""
         prompt = SYSTEM_PROMPT
+
+        # Inject live company and team context from database
+        try:
+            company_ctx = _load_company_context()
+            if company_ctx and "unavailable" not in company_ctx.lower():
+                prompt += f"\n\nCOMPANY & TEAM CONTEXT (live from database):\n{company_ctx}\n"
+        except Exception:
+            pass
+
         if self._is_dhcr_related(user_message):
             prompt += "\n\n" + DHCR_ENHANCEMENT
 
