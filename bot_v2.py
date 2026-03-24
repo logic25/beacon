@@ -1195,10 +1195,14 @@ def api_chat():
                     break
 
         # RAG retrieval — skip if this is an operational query handled by tools
-        from core.ordino_tools import TOOL_DEFINITIONS
-        from core.llm_client import LLMClient
-        _temp_client = LLMClient()
-        skip_rag = _temp_client._should_use_tools(user_message)
+        _msg_lower = user_message.lower()
+        _tool_keywords = ["project", "property", "status", "readiness", "ready to file",
+            "filing", "pm ", "sheri", "chris", "sai", "workload", "how many",
+            "what's up with", "what's happening", "any news", "update on",
+            "proposal", "invoice", "billing", "overdue", "outstanding", "revenue",
+            "pipeline", "violation", "penalty", "compliance", "follow up",
+            "missing", "what do we need", "draft email", "client", "owe"]
+        skip_rag = any(kw in _msg_lower for kw in _tool_keywords)
         if skip_rag:
             logger.info("[API Chat] Skipping RAG — operational query will use Ordino tools")
 
