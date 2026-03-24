@@ -1201,7 +1201,9 @@ def api_chat():
             "what's up with", "what's happening", "any news", "update on",
             "proposal", "invoice", "billing", "overdue", "outstanding", "revenue",
             "pipeline", "violation", "penalty", "compliance", "follow up",
-            "missing", "what do we need", "draft email", "client", "owe"]
+            "missing", "what do we need", "draft email", "client", "owe",
+            "tax id", "ein", "company", "settings", "our address", "our phone",
+            "our email", "team", "employees", "staff"]
         skip_rag = any(kw in _msg_lower for kw in _tool_keywords)
         # Short follow-ups likely continue an operational topic
         if not skip_rag and len(_msg_lower.split()) < 8:

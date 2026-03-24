@@ -239,6 +239,9 @@ class ClaudeClient:
             "842 rockaway", "200 riverside", "7 e 14", "greene",
             # Address patterns
             "st ", "ave ", "blvd ", "street", "avenue", "boulevard", "place",
+            # Company info
+            "tax id", "ein", "company", "settings", "our address", "our phone",
+            "our email", "team", "employees", "staff",
         ]
 
         for kw in tool_keywords:
