@@ -201,6 +201,36 @@ TOOL_DEFINITIONS = [
             "required": ["project_id"],
         },
     },
+    {
+        "name": "query_ordino",
+        "description": "General-purpose query tool for ANY data in Ordino. Use this when the specific tools (query_projects, query_invoices, etc.) don't cover what you need. You can query any table: companies, profiles, properties, projects, proposals, invoices, services, activities, client_contacts, project_contacts, rfi_requests, calendar_events, billing_schedules, change_orders, documents, email threads, and more. Always filter by the user's company to avoid accessing other companies' data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "The database table to query (e.g., 'companies', 'profiles', 'services', 'activities', 'client_contacts', 'calendar_events', 'billing_schedules', 'change_orders')",
+                },
+                "select": {
+                    "type": "string",
+                    "description": "Columns to select, Supabase format (e.g., 'id,name,email' or '*' for all). Can include joins like 'id,name,properties(address)'",
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Filters as key-value pairs in Supabase format (e.g., {\"status\": \"eq.active\", \"name\": \"ilike.%green%\"})",
+                },
+                "order": {
+                    "type": "string",
+                    "description": "Order by column (e.g., 'created_at.desc')",
+                },
+                "limit": {
+                    "type": "number",
+                    "description": "Max rows to return (default 50, max 200)",
+                },
+            },
+            "required": ["table"],
+        },
+    },
 ]
 
 
@@ -220,6 +250,9 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
 
         if tool_name in proxy_actions:
             result = _proxy_call(tool_name, tool_input)
+            return json.dumps(result)
+        elif tool_name == "query_ordino":
+            result = _proxy_call("query_ordino", tool_input)
             return json.dumps(result)
         elif tool_name == "draft_follow_up_email":
             return _draft_follow_up_email(tool_input)
