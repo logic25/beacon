@@ -11,52 +11,41 @@ Actions require PM approval before execution.
 import os
 import json
 import logging
-from datetime import datetime, timedelta
 from typing import Optional
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
-# Supabase connection
+# Ordino connection via beacon-data-proxy edge function
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+BEACON_ANALYTICS_KEY = os.getenv("BEACON_ANALYTICS_KEY", "")
 
 
-def _supabase_query(table: str, select: str = "*", filters: dict = None,
-                     order: str = None, limit: int = 50) -> list:
-    """Execute a Supabase REST query."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        logger.warning("Supabase not configured for Ordino tools")
-        return []
+def _proxy_call(action: str, params: dict = None) -> dict:
+    """Call the beacon-data-proxy edge function on Ordino's Supabase."""
+    if not SUPABASE_URL or not BEACON_ANALYTICS_KEY:
+        logger.warning("Ordino proxy not configured (SUPABASE_URL or BEACON_ANALYTICS_KEY missing)")
+        return {"error": "Ordino connection not configured"}
 
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    params = {"select": select}
-
-    if limit:
-        params["limit"] = str(limit)
-    if order:
-        params["order"] = order
-
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
-
-    # Add filters as query params
-    if filters:
-        for key, value in filters.items():
-            params[key] = value
+    url = f"{SUPABASE_URL}/functions/v1/beacon-data-proxy"
 
     try:
-        resp = httpx.get(url, params=params, headers=headers, timeout=10)
+        resp = httpx.post(
+            url,
+            json={"action": action, "params": params or {}},
+            headers={
+                "Content-Type": "application/json",
+                "x-beacon-key": BEACON_ANALYTICS_KEY,
+            },
+            timeout=15,
+        )
         resp.raise_for_status()
-        return resp.json()
+        result = resp.json()
+        return result.get("data", result)
     except Exception as e:
-        logger.error(f"Supabase query error on {table}: {e}")
-        return []
+        logger.error(f"Ordino proxy error ({action}): {e}")
+        return {"error": str(e)}
 
 
 # ═══════════════════════════════════════════════════════
@@ -222,20 +211,16 @@ TOOL_DEFINITIONS = [
 def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Execute a tool and return the result as a string."""
     try:
-        if tool_name == "query_projects":
-            return _query_projects(tool_input)
-        elif tool_name == "query_project_detail":
-            return _query_project_detail(tool_input)
-        elif tool_name == "query_property_violations":
-            return _query_property_violations(tool_input)
-        elif tool_name == "query_pm_workload":
-            return _query_pm_workload(tool_input)
-        elif tool_name == "check_filing_readiness":
-            return _check_filing_readiness(tool_input)
-        elif tool_name == "query_proposals":
-            return _query_proposals(tool_input)
-        elif tool_name == "query_invoices":
-            return _query_invoices(tool_input)
+        # Most tools go directly through the proxy
+        proxy_actions = [
+            "query_projects", "query_project_detail", "query_property_violations",
+            "query_pm_workload", "check_filing_readiness", "query_proposals",
+            "query_invoices",
+        ]
+
+        if tool_name in proxy_actions:
+            result = _proxy_call(tool_name, tool_input)
+            return json.dumps(result)
         elif tool_name == "draft_follow_up_email":
             return _draft_follow_up_email(tool_input)
         else:
@@ -243,309 +228,6 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
     except Exception as e:
         logger.error(f"Tool execution error ({tool_name}): {e}")
         return json.dumps({"error": str(e)})
-
-
-def _query_projects(params: dict) -> str:
-    """Get projects with optional filtering."""
-    select = "id,name,project_number,status,filing_type,created_at"
-    select += ",properties(address,borough,bin)"
-    select += ",profiles!projects_assigned_pm_fkey(display_name,first_name,last_name)"
-
-    filters = {}
-    if params.get("status"):
-        filters["status"] = f"eq.{params['status']}"
-
-    projects = _supabase_query("projects", select=select, filters=filters,
-                                order="created_at.desc", limit=100)
-
-    if params.get("search"):
-        search = params["search"].lower()
-        projects = [p for p in projects if
-                   search in (p.get("name") or "").lower() or
-                   search in (p.get("properties", {}) or {}).get("address", "").lower()]
-
-    if params.get("assigned_to"):
-        pm_search = params["assigned_to"].lower()
-        projects = [p for p in projects if
-                   pm_search in (p.get("profiles", {}) or {}).get("display_name", "").lower() or
-                   pm_search in (p.get("profiles", {}) or {}).get("first_name", "").lower()]
-
-    # Summarize
-    summary = {
-        "total": len(projects),
-        "projects": []
-    }
-
-    for p in projects[:30]:  # Cap at 30 for context window
-        prop = p.get("properties") or {}
-        pm = p.get("profiles") or {}
-        summary["projects"].append({
-            "id": p.get("id"),
-            "name": p.get("name"),
-            "number": p.get("project_number"),
-            "address": prop.get("address", "—"),
-            "borough": prop.get("borough", "—"),
-            "status": p.get("status"),
-            "filing_type": p.get("filing_type"),
-            "assigned_pm": pm.get("display_name") or f"{pm.get('first_name', '')} {pm.get('last_name', '')}".strip() or "Unassigned",
-        })
-
-    return json.dumps(summary)
-
-
-def _query_project_detail(params: dict) -> str:
-    """Get full project detail."""
-    project_id = params.get("project_id")
-    address = params.get("address")
-
-    if not project_id and address:
-        # Look up by address
-        props = _supabase_query("properties", select="id",
-                                 filters={"address": f"ilike.%{address}%"}, limit=1)
-        if props:
-            prop_id = props[0]["id"]
-            projects = _supabase_query("projects", select="id",
-                                        filters={"property_id": f"eq.{prop_id}"}, limit=1)
-            if projects:
-                project_id = projects[0]["id"]
-
-    if not project_id:
-        return json.dumps({"error": "Project not found. Try query_projects first to find the ID."})
-
-    select = "*,properties(*),services(*),project_contacts(*,client_contacts(*))"
-    projects = _supabase_query("projects", select=select,
-                                filters={"id": f"eq.{project_id}"}, limit=1)
-
-    if not projects:
-        return json.dumps({"error": "Project not found"})
-
-    p = projects[0]
-    prop = p.get("properties") or {}
-    services = p.get("services") or []
-    contacts = p.get("project_contacts") or []
-
-    # Get PIS data
-    pis = _supabase_query("rfi_requests", select="responses",
-                           filters={"project_id": f"eq.{project_id}"},
-                           order="created_at.desc", limit=1)
-    pis_responses = pis[0].get("responses", {}) if pis else {}
-    pis_count = len([v for v in pis_responses.values() if v]) if pis_responses else 0
-
-    detail = {
-        "project": {
-            "id": p.get("id"),
-            "name": p.get("name"),
-            "number": p.get("project_number"),
-            "status": p.get("status"),
-            "filing_type": p.get("filing_type"),
-            "created": p.get("created_at", "")[:10],
-        },
-        "property": {
-            "address": prop.get("address"),
-            "borough": prop.get("borough"),
-            "bin": prop.get("bin"),
-            "block": prop.get("block"),
-            "lot": prop.get("lot"),
-        },
-        "services": [{
-            "name": s.get("name"),
-            "status": s.get("status"),
-            "work_types": s.get("sub_services"),
-        } for s in services],
-        "contacts": [{
-            "name": (c.get("client_contacts") or {}).get("name"),
-            "role": c.get("role"),
-            "email": (c.get("client_contacts") or {}).get("email"),
-        } for c in contacts if c.get("client_contacts")],
-        "pis_fields_completed": pis_count,
-        "pis_total_fields": 23,
-    }
-
-    return json.dumps(detail)
-
-
-def _query_property_violations(params: dict) -> str:
-    """Get violations for a property."""
-    address = params.get("address", "")
-    bin_num = params.get("bin", "")
-
-    # Find property
-    if bin_num:
-        props = _supabase_query("properties", select="id,address,bin",
-                                 filters={"bin": f"eq.{bin_num}"}, limit=1)
-    elif address:
-        props = _supabase_query("properties", select="id,address,bin",
-                                 filters={"address": f"ilike.%{address}%"}, limit=1)
-    else:
-        return json.dumps({"error": "Provide address or BIN"})
-
-    if not props:
-        return json.dumps({"error": "Property not found"})
-
-    prop = props[0]
-
-    # Get violations from signal_violations
-    filters = {"property_id": f"eq.{prop['id']}"}
-    if params.get("status") == "open":
-        filters["status"] = "in.(open,active,issued)"
-    elif params.get("status") == "resolved":
-        filters["status"] = "in.(resolved,closed,dismissed)"
-
-    violations = _supabase_query("signal_violations",
-                                   select="violation_number,agency,status,description,penalty_amount,issued_date",
-                                   filters=filters, order="issued_date.desc", limit=50)
-
-    total_penalties = sum(v.get("penalty_amount", 0) or 0 for v in violations)
-    open_count = len([v for v in violations if v.get("status") in ("open", "active", "issued")])
-
-    return json.dumps({
-        "property": prop.get("address"),
-        "bin": prop.get("bin"),
-        "total_violations": len(violations),
-        "open_violations": open_count,
-        "total_penalties": total_penalties,
-        "violations": violations[:20],
-    })
-
-
-def _query_pm_workload(params: dict) -> str:
-    """Get PM workload stats."""
-    # Get all PMs
-    profiles = _supabase_query("profiles", select="id,display_name,first_name,last_name",
-                                limit=20)
-
-    pm_name = (params.get("pm_name") or "").lower()
-
-    results = []
-    for profile in profiles:
-        name = profile.get("display_name") or f"{profile.get('first_name', '')} {profile.get('last_name', '')}".strip()
-        if pm_name and pm_name not in name.lower():
-            continue
-
-        # Count active projects
-        projects = _supabase_query("projects", select="id,status",
-                                    filters={"assigned_pm": f"eq.{profile['id']}",
-                                            "status": "eq.active"},
-                                    limit=100)
-
-        results.append({
-            "name": name,
-            "active_projects": len(projects),
-        })
-
-    return json.dumps({"pms": results})
-
-
-def _check_filing_readiness(params: dict) -> str:
-    """Check filing readiness across projects."""
-    project_id = params.get("project_id")
-    min_readiness = params.get("min_readiness", 0)
-
-    filters = {"status": "eq.active"}
-    if project_id:
-        filters = {"id": f"eq.{project_id}"}
-
-    projects = _supabase_query("projects",
-                                select="id,name,properties(address)",
-                                filters=filters, limit=50)
-
-    results = []
-    for p in projects:
-        pid = p["id"]
-        # Get PIS completion
-        pis = _supabase_query("rfi_requests", select="responses",
-                               filters={"project_id": f"eq.{pid}"},
-                               order="created_at.desc", limit=1)
-
-        responses = pis[0].get("responses", {}) if pis else {}
-        filled = len([v for v in responses.values() if v])
-        total = 23
-        pct = round(filled / total * 100) if total > 0 else 0
-
-        if pct >= min_readiness:
-            results.append({
-                "project_id": pid,
-                "name": p.get("name"),
-                "address": (p.get("properties") or {}).get("address", "—"),
-                "readiness_pct": pct,
-                "pis_fields": f"{filled}/{total}",
-                "ready_to_file": pct == 100,
-            })
-
-    results.sort(key=lambda x: x["readiness_pct"], reverse=True)
-
-    ready = len([r for r in results if r["ready_to_file"]])
-    return json.dumps({
-        "total_checked": len(results),
-        "ready_to_file": ready,
-        "not_ready": len(results) - ready,
-        "projects": results,
-    })
-
-
-def _query_proposals(params: dict) -> str:
-    """Get proposals."""
-    select = "id,proposal_number,status,total_amount,client_name,created_at,properties(address)"
-    filters = {}
-    if params.get("status"):
-        filters["status"] = f"eq.{params['status']}"
-
-    proposals = _supabase_query("proposals", select=select, filters=filters,
-                                 order="created_at.desc", limit=50)
-
-    if params.get("search"):
-        search = params["search"].lower()
-        proposals = [p for p in proposals if
-                    search in (p.get("client_name") or "").lower() or
-                    search in (p.get("properties", {}) or {}).get("address", "").lower() or
-                    search in (p.get("proposal_number") or "").lower()]
-
-    total_value = sum(p.get("total_amount", 0) or 0 for p in proposals)
-
-    return json.dumps({
-        "total": len(proposals),
-        "total_value": total_value,
-        "proposals": [{
-            "number": p.get("proposal_number"),
-            "client": p.get("client_name"),
-            "address": (p.get("properties") or {}).get("address", "—"),
-            "amount": p.get("total_amount"),
-            "status": p.get("status"),
-            "date": (p.get("created_at") or "")[:10],
-        } for p in proposals[:20]],
-    })
-
-
-def _query_invoices(params: dict) -> str:
-    """Get invoice data."""
-    select = "id,invoice_number,status,total_due,payment_amount,paid_at,created_at"
-    filters = {}
-    if params.get("status"):
-        if params["status"] == "overdue":
-            filters["status"] = "eq.sent"
-            # Would need date comparison for true overdue
-        else:
-            filters["status"] = f"eq.{params['status']}"
-
-    invoices = _supabase_query("invoices", select=select, filters=filters,
-                                order="created_at.desc", limit=50)
-
-    total_outstanding = sum(i.get("total_due", 0) or 0 for i in invoices
-                           if i.get("status") in ("sent", "ready_to_send"))
-    total_paid = sum(i.get("payment_amount", 0) or 0 for i in invoices
-                    if i.get("status") == "paid")
-
-    return json.dumps({
-        "total_invoices": len(invoices),
-        "total_outstanding": total_outstanding,
-        "total_paid": total_paid,
-        "invoices": [{
-            "number": i.get("invoice_number"),
-            "amount": i.get("total_due"),
-            "status": i.get("status"),
-            "date": (i.get("created_at") or "")[:10],
-        } for i in invoices[:20]],
-    })
 
 
 def _draft_follow_up_email(params: dict) -> str:
@@ -557,23 +239,25 @@ def _draft_follow_up_email(params: dict) -> str:
     if not project_id:
         return json.dumps({"error": "project_id is required"})
 
-    # Get project info for context
-    detail = json.loads(_query_project_detail({"project_id": project_id}))
+    # Get project detail from proxy
+    detail = _proxy_call("query_project_detail", {"project_id": project_id})
 
-    if "error" in detail:
+    if isinstance(detail, dict) and "error" in detail:
         return json.dumps(detail)
 
-    project = detail.get("project", {})
-    prop = detail.get("property", {})
+    project = detail if isinstance(detail, dict) else {}
+    prop = project.get("properties") or {}
+    address = prop.get("address", "the project")
+    filing_type = project.get("filing_type", "filing")
 
     draft = {
         "action": "draft_email",
         "requires_pm_approval": True,
         "to": recipient,
-        "subject": f"Follow Up: {prop.get('address', 'Project')} — {missing}",
+        "subject": f"Follow Up: {address} — {missing}",
         "body": f"""Hi,
 
-Following up on the {project.get('filing_type', 'filing')} for {prop.get('address', 'the project')}.
+Following up on the {filing_type} for {address}.
 
 We still need the following to proceed:
 - {missing}
@@ -586,3 +270,6 @@ Green Light Expediting""",
     }
 
     return json.dumps(draft)
+
+
+# Legacy implementations removed — all queries go through beacon-data-proxy
