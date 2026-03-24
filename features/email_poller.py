@@ -255,13 +255,103 @@ class EmailPoller:
             self._mark_processed(msg_id, headers, label_id)
             return
 
-        # Parse and ingest using the existing pipeline
+        # Parse and ingest the email body (text + linked PDFs)
         self._ingest_newsletter(subject, sender, html_content)
+
+        # Also ingest any PDF attachments directly on the email
+        self._ingest_attachments(message, subject, headers)
 
         # Mark as read and label
         self._mark_processed(msg_id, headers, label_id)
 
         logger.info(f"✅ Email ingested: '{subject}'")
+
+    def _ingest_attachments(self, message: dict, subject: str, headers: dict):
+        """Download and ingest PDF attachments from the email.
+
+        Some agency emails attach PDFs directly (e.g., bulletins, notices)
+        instead of linking to them. This catches those.
+        """
+        import requests as req
+        import tempfile
+        from pathlib import Path
+        from ingestion.document_processor import DocumentProcessor
+
+        if not self.retriever:
+            return
+
+        payload = message.get("payload", {})
+        msg_id = message.get("id", "")
+        parts = payload.get("parts", [])
+
+        for part in parts:
+            filename = part.get("filename", "")
+            mime_type = part.get("mimeType", "")
+
+            # Only process PDF attachments
+            if not filename.lower().endswith(".pdf") and "pdf" not in mime_type.lower():
+                continue
+
+            body = part.get("body", {})
+            attachment_id = body.get("attachmentId")
+
+            if not attachment_id:
+                continue
+
+            logger.info(f"  Downloading PDF attachment: {filename}")
+
+            try:
+                # Download attachment via Gmail API
+                att_url = (
+                    f"https://gmail.googleapis.com/gmail/v1/users/me"
+                    f"/messages/{msg_id}/attachments/{attachment_id}"
+                )
+                resp = req.get(att_url, headers=headers, timeout=30)
+                resp.raise_for_status()
+                att_data = resp.json().get("data", "")
+
+                if not att_data:
+                    continue
+
+                # Decode base64 attachment
+                pdf_bytes = base64.urlsafe_b64decode(att_data)
+
+                # Skip huge files
+                if len(pdf_bytes) > 20 * 1024 * 1024:
+                    logger.warning(f"  Attachment too large ({len(pdf_bytes)} bytes): {filename}")
+                    continue
+
+                # Save to temp file and process
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                    tmp.write(pdf_bytes)
+                    tmp_path = tmp.name
+
+                try:
+                    processor = DocumentProcessor()
+                    document = processor.process_pdf(
+                        file_path=tmp_path,
+                        source_type="service_notice",
+                        metadata={
+                            "title": f"{subject} - {filename}",
+                            "ingested_from": "email_attachment",
+                            "email_subject": subject,
+                            "attachment_filename": filename,
+                        },
+                    )
+                    document.title = f"{subject} - {filename}"
+
+                    count = self.retriever.vector_store.upsert_chunks(document.chunks)
+                    self._processed_count += 1
+                    logger.info(f"  ✅ Attachment ingested: '{filename}' → {count} chunks")
+
+                finally:
+                    try:
+                        Path(tmp_path).unlink()
+                    except OSError:
+                        pass
+
+            except Exception as e:
+                logger.error(f"  Failed to ingest attachment '{filename}': {e}")
 
     def _extract_html_body(self, payload: dict) -> str:
         """Extract HTML body from Gmail message payload.
@@ -304,7 +394,15 @@ class EmailPoller:
         return ""
 
     def _ingest_newsletter(self, subject: str, sender: str, html_content: str):
-        """Parse newsletter HTML and ingest into Pinecone KB."""
+        """Parse newsletter HTML and ingest into Pinecone KB.
+
+        Full pipeline:
+        1. Parse HTML → extract section updates with summaries
+        2. Follow links → scrape page text + discover PDF links
+        3. Download + ingest PDFs into Pinecone (the actual documents)
+        4. Ingest text summaries as context
+        5. Feed Content Intelligence engine
+        """
         from content_engine.parser import DOBNewsletterParser
         from ingestion.document_processor import DocumentProcessor
 
@@ -316,7 +414,6 @@ class EmailPoller:
 
         if not updates:
             logger.info(f"No structured updates found in '{subject}' — ingesting as raw document")
-            # Ingest the whole email as a single document
             self._ingest_raw_email(subject, sender, html_content, newsletter_date)
             return
 
@@ -328,6 +425,7 @@ class EmailPoller:
             full_content = update.get("full_content", summary)
             category = update.get("category", "General")
             source_url = update.get("source_url", "")
+            referenced_links = update.get("referenced_links", [])
 
             # Map category to source type
             category_to_type = {
@@ -341,7 +439,7 @@ class EmailPoller:
             }
             source_type = category_to_type.get(category, "service_notice")
 
-            # Ingest into Pinecone
+            # --- 1) Ingest the text summary into Pinecone ---
             if self.retriever and full_content:
                 try:
                     processor = DocumentProcessor()
@@ -369,12 +467,40 @@ Type: {source_type}
                         },
                     )
                     count = self.retriever.vector_store.upsert_chunks(document.chunks)
-                    logger.info(f"  Ingested '{title}' → {count} chunks")
+                    logger.info(f"  Ingested text '{title}' → {count} chunks")
 
                 except Exception as e:
-                    logger.error(f"  Failed to ingest '{title}': {e}")
+                    logger.error(f"  Failed to ingest text '{title}': {e}")
 
-            # Feed Content Intelligence engine
+            # --- 2) Download and ingest any referenced PDFs ---
+            pdf_links = [link for link in referenced_links if link.lower().endswith(".pdf")]
+            if pdf_links and self.retriever:
+                for pdf_url in pdf_links:
+                    try:
+                        self._download_and_ingest_pdf(
+                            pdf_url=pdf_url,
+                            parent_title=title,
+                            category=category,
+                            newsletter_date=newsletter_date,
+                            source_type=source_type,
+                        )
+                    except Exception as e:
+                        logger.error(f"  Failed to ingest PDF {pdf_url}: {e}")
+
+            # --- 3) Also check if the source_url itself is a PDF ---
+            if source_url and source_url.lower().endswith(".pdf") and self.retriever:
+                try:
+                    self._download_and_ingest_pdf(
+                        pdf_url=source_url,
+                        parent_title=title,
+                        category=category,
+                        newsletter_date=newsletter_date,
+                        source_type=source_type,
+                    )
+                except Exception as e:
+                    logger.error(f"  Failed to ingest source PDF {source_url}: {e}")
+
+            # --- 4) Feed Content Intelligence engine ---
             if self.content_engine:
                 try:
                     candidate = self.content_engine.analyze_update(
@@ -433,6 +559,88 @@ Type: service_notice
 
         except Exception as e:
             logger.error(f"  Failed to ingest raw email '{subject}': {e}")
+
+    def _download_and_ingest_pdf(self, pdf_url: str, parent_title: str,
+                                   category: str, newsletter_date: str,
+                                   source_type: str):
+        """Download a PDF from a URL and ingest it into Pinecone.
+
+        This is the key piece — DOB newsletters link to actual PDFs
+        (bulletins, service notices, code updates) that contain the
+        real content Beacon needs to answer questions about.
+        """
+        import requests as req
+        import tempfile
+        from pathlib import Path
+        from ingestion.document_processor import DocumentProcessor
+
+        if not self.retriever:
+            return
+
+        logger.info(f"  Downloading PDF: {pdf_url}")
+
+        try:
+            # Download the PDF
+            resp = req.get(pdf_url, timeout=30, stream=True)
+            resp.raise_for_status()
+
+            # Check it's actually a PDF
+            content_type = resp.headers.get("Content-Type", "")
+            if "pdf" not in content_type.lower() and not pdf_url.lower().endswith(".pdf"):
+                logger.warning(f"  Not a PDF (content-type: {content_type}): {pdf_url}")
+                return
+
+            # Check file size — skip huge files (> 20MB)
+            content_length = int(resp.headers.get("Content-Length", 0))
+            if content_length > 20 * 1024 * 1024:
+                logger.warning(f"  PDF too large ({content_length} bytes), skipping: {pdf_url}")
+                return
+
+            # Save to temp file
+            pdf_filename = pdf_url.split("/")[-1].split("?")[0] or "document.pdf"
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    tmp.write(chunk)
+                tmp_path = tmp.name
+
+            try:
+                # Process the PDF
+                processor = DocumentProcessor()
+                document = processor.process_pdf(
+                    file_path=tmp_path,
+                    source_type=source_type,
+                    metadata={
+                        "title": f"{parent_title} - {pdf_filename}",
+                        "category": category,
+                        "date_issued": newsletter_date,
+                        "source_url": pdf_url,
+                        "ingested_from": "email_poller_pdf",
+                        "parent_newsletter": parent_title,
+                    },
+                )
+
+                # Override the title (process_pdf uses filename by default)
+                document.title = f"{parent_title} - {pdf_filename}"
+
+                # Upsert chunks into Pinecone
+                count = self.retriever.vector_store.upsert_chunks(document.chunks)
+                self._processed_count += 1
+                logger.info(f"  ✅ PDF ingested: '{pdf_filename}' → {count} chunks "
+                            f"({document.metadata.get('page_count', '?')} pages)")
+
+            finally:
+                # Clean up temp file
+                try:
+                    Path(tmp_path).unlink()
+                except OSError:
+                    pass
+
+        except req.exceptions.Timeout:
+            logger.warning(f"  PDF download timed out: {pdf_url}")
+        except req.exceptions.HTTPError as e:
+            logger.warning(f"  PDF download HTTP error ({e.response.status_code}): {pdf_url}")
+        except Exception as e:
+            logger.error(f"  PDF ingestion failed for {pdf_url}: {e}", exc_info=True)
 
     def _mark_processed(self, msg_id: str, headers: dict, label_id: Optional[str]):
         """Mark an email as read and apply the ingested label."""

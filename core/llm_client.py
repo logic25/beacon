@@ -3,6 +3,7 @@ Claude LLM client for generating responses.
 Handles all interactions with the Anthropic API.
 """
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -217,11 +218,58 @@ class ClaudeClient:
         text_lower = text.lower()
         return any(keyword in text_lower for keyword in DHCR_KEYWORDS)
 
+    def _should_use_tools(self, user_message: str) -> bool:
+        """Determine if the message needs Ordino database tools.
+
+        Returns True for operational queries about projects, properties,
+        PMs, billing, readiness, etc. Returns False for pure knowledge
+        base questions about building code, zoning, regulations.
+        """
+        msg = user_message.lower()
+
+        # Operational keywords that need database tools
+        tool_keywords = [
+            "project", "property", "address", "status", "readiness", "ready to file",
+            "filing", "pm ", "sheri", "chris", "sai", "workload", "how many",
+            "what's up with", "what's happening", "any news", "update on",
+            "proposal", "invoice", "billing", "overdue", "outstanding", "revenue",
+            "pipeline", "violation", "penalty", "compliance", "follow up",
+            "follow-up", "missing", "what do we need", "draft email",
+            "client", "steam", "rudin", "stamford", "managed squares",
+            "842 rockaway", "200 riverside", "7 e 14", "greene",
+            # Address patterns
+            "st ", "ave ", "blvd ", "street", "avenue", "boulevard", "place",
+        ]
+
+        for kw in tool_keywords:
+            if kw in msg:
+                return True
+
+        return False
+
     def _build_system_prompt(self, user_message: str) -> str:
         """Build the system prompt, adding DHCR enhancement if relevant."""
         prompt = SYSTEM_PROMPT
         if self._is_dhcr_related(user_message):
             prompt += "\n\n" + DHCR_ENHANCEMENT
+
+        # Add Ordino context if tools are available
+        if self._should_use_tools(user_message):
+            prompt += """
+
+ORDINO INTEGRATION:
+You have access to tools that query Ordino's project management database.
+Use them to answer questions about:
+- Projects (status, readiness, what's missing)
+- Properties (violations, compliance, DOB data)
+- PMs (workload, performance)
+- Proposals and invoices (pipeline, revenue, AR)
+- Filing readiness (which projects are ready to file)
+
+IMPORTANT: When answering operational questions, ALWAYS use the tools
+to get current data. Do NOT guess or make up project information.
+When drafting emails, clearly note that the PM must review and send.
+"""
         return prompt
 
     def _convert_history(self, history: list[Message]) -> list[dict[str, str]]:
@@ -279,16 +327,58 @@ class ClaudeClient:
                 f"with {len(messages)} messages, RAG: {bool(rag_context)}"
             )
 
+            # Check if this is an operational query that needs tools
+            from core.ordino_tools import TOOL_DEFINITIONS, execute_tool
+            use_tools = self._should_use_tools(user_message)
+
             response = self.client.messages.create(
                 model=model,
                 max_tokens=self.settings.claude_max_tokens,
                 temperature=self.settings.claude_temperature,
                 system=system_prompt,
                 messages=messages,
+                **({"tools": TOOL_DEFINITIONS} if use_tools else {}),
             )
 
-            # Extract text from response
-            raw_response = response.content[0].text
+            # Agentic loop: handle tool calls
+            max_tool_rounds = 5
+            tool_round = 0
+            while response.stop_reason == "tool_use" and tool_round < max_tool_rounds:
+                tool_round += 1
+                # Collect all tool calls from response
+                assistant_content = response.content
+                tool_results = []
+
+                for block in assistant_content:
+                    if block.type == "tool_use":
+                        logger.info(f"Tool call: {block.name}({json.dumps(block.input)[:200]})")
+                        result = execute_tool(block.name, block.input)
+                        logger.info(f"Tool result: {result[:200]}...")
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        })
+
+                # Add assistant message and tool results to conversation
+                messages.append({"role": "assistant", "content": assistant_content})
+                messages.append({"role": "user", "content": tool_results})
+
+                # Call Claude again with tool results
+                response = self.client.messages.create(
+                    model=model,
+                    max_tokens=self.settings.claude_max_tokens,
+                    temperature=self.settings.claude_temperature,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=TOOL_DEFINITIONS,
+                )
+
+            # Extract text from final response
+            raw_response = ""
+            for block in response.content:
+                if hasattr(block, "text"):
+                    raw_response += block.text
 
             # Apply response filtering
             filtered_response = self.filter.filter_response(raw_response)

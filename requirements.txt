@@ -31,3 +31,4 @@ pytest-cov>=4.1.0
 mypy>=1.8.0
 types-requests>=2.31.0
 beautifulsoup4
+httpx>=0.24.0
