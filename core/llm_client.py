@@ -245,6 +245,16 @@ class ClaudeClient:
             if kw in msg:
                 return True
 
+        # Short follow-up messages (< 8 words) likely continue the previous topic
+        # Always use tools for these so Claude can decide based on conversation context
+        word_count = len(msg.split())
+        if word_count < 8 and any(w in msg for w in [
+            "this", "that", "those", "last", "next", "year", "month", "week",
+            "how about", "what about", "and ", "same", "compare", "vs",
+            "more", "detail", "which", "who", "when", "total", "all",
+        ]):
+            return True
+
         return False
 
     def _build_system_prompt(self, user_message: str) -> str:

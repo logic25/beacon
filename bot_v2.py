@@ -1203,6 +1203,12 @@ def api_chat():
             "pipeline", "violation", "penalty", "compliance", "follow up",
             "missing", "what do we need", "draft email", "client", "owe"]
         skip_rag = any(kw in _msg_lower for kw in _tool_keywords)
+        # Short follow-ups likely continue an operational topic
+        if not skip_rag and len(_msg_lower.split()) < 8:
+            _followup_words = ["this", "that", "those", "last", "next", "year", "month",
+                "week", "how about", "what about", "and ", "same", "compare", "vs",
+                "more", "detail", "which", "who", "when", "total", "all"]
+            skip_rag = any(w in _msg_lower for w in _followup_words)
         if skip_rag:
             logger.info("[API Chat] Skipping RAG — operational query will use Ordino tools")
 
