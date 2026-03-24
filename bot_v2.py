@@ -776,8 +776,12 @@ def process_message_async(
                             logger.warning(f"Objections lookup failed: {e}")
                         break
 
-            # RAG retrieval
-            if retriever is not None:
+            # RAG retrieval — skip if operational query handled by tools
+            skip_rag_webhook = llm_client._should_use_tools(user_message)
+            if skip_rag_webhook:
+                logger.info("Skipping RAG — operational query will use Ordino tools")
+
+            if retriever is not None and not skip_rag_webhook:
                 try:
                     retrieval_result = retriever.retrieve(
                         query=user_message,
@@ -1190,8 +1194,15 @@ def api_chat():
                         logger.warning(f"Objections lookup failed: {e}")
                     break
 
-        # RAG retrieval
-        if retriever is not None:
+        # RAG retrieval — skip if this is an operational query handled by tools
+        from core.ordino_tools import TOOL_DEFINITIONS
+        from core.llm_client import LLMClient
+        _temp_client = LLMClient()
+        skip_rag = _temp_client._should_use_tools(user_message)
+        if skip_rag:
+            logger.info("[API Chat] Skipping RAG — operational query will use Ordino tools")
+
+        if retriever is not None and not skip_rag:
             try:
                 retrieval_result = retriever.retrieve(
                     query=user_message,
