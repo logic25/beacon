@@ -367,22 +367,26 @@ class ClaudeClient:
         if self._is_dhcr_related(user_message):
             prompt += "\n\n" + DHCR_ENHANCEMENT
 
-        # Add Ordino context if tools are available
-        if self._should_use_tools(user_message):
-            prompt += """
+        # Always include Ordino tools context — let Claude decide when to use them
+        prompt += """
 
 ORDINO INTEGRATION:
 You have access to tools that query Ordino's project management database.
-Use them to answer questions about:
-- Projects (status, readiness, what's missing)
-- Properties (violations, compliance, DOB data)
-- PMs (workload, performance)
-- Proposals and invoices (pipeline, revenue, AR)
-- Filing readiness (which projects are ready to file)
+You can look up ANY data in the system — projects, properties, proposals,
+invoices, services, contacts, time entries, RFPs, documents, calendar events,
+billing, change orders, company settings, team members, and more.
 
-IMPORTANT: When answering operational questions, ALWAYS use the tools
-to get current data. Do NOT guess or make up project information.
-When drafting emails, clearly note that the PM must review and send.
+WHEN TO USE TOOLS:
+- Any question about GLE's business, projects, clients, money, team, or properties → USE TOOLS
+- Any question where the answer is in the database → USE TOOLS
+- Any follow-up question after a tool-based answer → USE TOOLS
+- Building code, zoning, or regulatory questions → use your RAG knowledge, NOT tools
+
+IMPORTANT:
+- ALWAYS use tools for operational questions. Do NOT guess or make up data.
+- When you're not sure if data exists, query it — don't say "I don't have access."
+- When drafting emails, clearly note that the PM must review and send.
+- If a tool returns empty/null, tell the user the data isn't in the system yet.
 """
         return prompt
 
@@ -441,9 +445,8 @@ When drafting emails, clearly note that the PM must review and send.
                 f"with {len(messages)} messages, RAG: {bool(rag_context)}"
             )
 
-            # Check if this is an operational query that needs tools
+            # Always provide tools — Claude decides when to use them
             from core.ordino_tools import TOOL_DEFINITIONS, execute_tool
-            use_tools = self._should_use_tools(user_message)
 
             response = self.client.messages.create(
                 model=model,
@@ -451,7 +454,7 @@ When drafting emails, clearly note that the PM must review and send.
                 temperature=self.settings.claude_temperature,
                 system=system_prompt,
                 messages=messages,
-                **({"tools": TOOL_DEFINITIONS} if use_tools else {}),
+                tools=TOOL_DEFINITIONS,
             )
 
             # Agentic loop: handle tool calls
