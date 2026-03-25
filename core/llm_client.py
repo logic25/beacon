@@ -256,6 +256,15 @@ def route_model(user_message: str, has_rag_context: bool = False, flow_type: str
     if flow_type == "property_lookup":
         return HAIKU_MODEL
 
+    # Tool-based operational queries: Haiku for simple, Sonnet for complex
+    if flow_type == "tool_use":
+        complex_tool_signals = ["draft", "follow up", "compare", "analyze",
+                                 "why", "recommend", "strategy", "which should",
+                                 "at risk", "behind schedule", "prioritize"]
+        if any(s in msg_lower for s in complex_tool_signals):
+            return SONNET_MODEL
+        return HAIKU_MODEL
+
     # Check for Sonnet signals first (complex reasoning needed)
     for signal in SONNET_SIGNALS:
         if signal in msg_lower:
@@ -320,6 +329,11 @@ class ClaudeClient:
             # Company info
             "tax id", "ein", "company", "settings", "our address", "our phone",
             "our email", "team", "employees", "staff",
+            # RFPs, leads, documents, time, calendar
+            "rfp", "rfi", "lead", "bid", "document", "upload", "plan",
+            "time", "hours", "clock", "calendar", "event", "meeting",
+            "schedule", "deadline", "change order", "co ", "email",
+            "contact", "architect", "engineer", "owner",
         ]
 
         for kw in tool_keywords:
