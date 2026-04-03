@@ -1249,15 +1249,26 @@ def api_chat():
             context_parts.append(f"RELEVANT DOCUMENTS:\n{rag_context}")
         combined_context = "\n\n---\n\n".join(context_parts) if context_parts else None
 
-        # Get session history for context
-        session = session_manager.get_or_create_session(user_id, space_id) if session_manager else None
+        # Get conversation history — prefer client-sent history over server session
+        # Client sends last 5 messages which is always fresh and accurate
+        client_history = data.get("conversation_history", [])
 
-        # Add user message to session BEFORE calling Claude
-        # (so it's included in conversation_history like the webhook flow)
-        if session_manager:
-            session_manager.add_user_message(user_id, space_id, user_message)
-
-        chat_history = session.chat_history if session else []
+        if client_history and len(client_history) > 0:
+            # Use client-sent history (converted to Message format)
+            from core.llm_client import Message
+            chat_history = [
+                Message(role=m.get("role", "user"), content=m.get("content", ""))
+                for m in client_history
+                if m.get("content")
+            ]
+            logger.info(f"[API Chat] Using client conversation history ({len(chat_history)} messages)")
+        else:
+            # Fall back to server-side session history
+            session = session_manager.get_or_create_session(user_id, space_id) if session_manager else None
+            if session_manager:
+                session_manager.add_user_message(user_id, space_id, user_message)
+            chat_history = session.chat_history if session else []
+            logger.info(f"[API Chat] Using server session history ({len(chat_history)} messages)")
 
         # Route to appropriate model based on question complexity
         from core.llm_client import route_model
