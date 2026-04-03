@@ -203,7 +203,7 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "query_ordino",
-        "description": "General-purpose query tool for ANY data in Ordino. Use this when the specific tools (query_projects, query_invoices, etc.) don't cover what you need. You can query any table: companies, profiles, properties, projects, proposals, invoices, services, activities, client_contacts, project_contacts, rfi_requests, calendar_events, billing_schedules, change_orders, documents, email threads, and more. Always filter by the user's company to avoid accessing other companies' data.",
+        "description": "General-purpose query tool for ANY data in Ordino. IMPORTANT: If you are not 100% certain of the exact column names for a table, call describe_table FIRST to discover the schema. Do NOT guess column names — wrong names cause errors. For example, the companies table uses 'ein' not 'tax_id', and profiles uses 'monthly_goal' not 'billing_goal'. You can query any table: companies, profiles, properties, projects, proposals, invoices, services, activities, client_contacts, project_contacts, rfi_requests, calendar_events, billing_schedules, change_orders, documents, email threads, and more.",
         "input_schema": {
             "type": "object",
             "properties": {
