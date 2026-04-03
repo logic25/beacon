@@ -231,6 +231,20 @@ TOOL_DEFINITIONS = [
             "required": ["table"],
         },
     },
+    {
+        "name": "describe_table",
+        "description": "Discover the columns and data types in any Ordino database table. Use this BEFORE query_ordino when you don't know what columns a table has. For example, to find PM goals: describe_table('profiles') → see 'monthly_goal' column → then query_ordino('profiles', 'display_name,monthly_goal').",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "Table name to describe (e.g., 'profiles', 'services', 'invoices')",
+                },
+            },
+            "required": ["table"],
+        },
+    },
 ]
 
 
@@ -250,6 +264,9 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
 
         if tool_name in proxy_actions:
             result = _proxy_call(tool_name, tool_input)
+            return json.dumps(result)
+        elif tool_name == "describe_table":
+            result = _proxy_call("describe_table", tool_input)
             return json.dumps(result)
         elif tool_name == "query_ordino":
             result = _proxy_call("query_ordino", tool_input)
