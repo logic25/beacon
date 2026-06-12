@@ -414,8 +414,16 @@ class EmailPoller:
         newsletter_date = result.get("newsletter_date", "unknown")
 
         if not updates:
-            logger.info(f"No structured updates found in '{subject}' — ingesting as raw document")
+            # The structured section-parser missed this email's format — common with
+            # FORWARDED copies (Fwd: mangles the HTML it keys on) and changed newsletter
+            # templates. Don't just ingest the summary text: the whole value of a DOB
+            # newsletter is the documents it LINKS to. Harvest those links and follow
+            # them to the actual bulletins/notices, then keep the summary as context.
+            logger.info(f"No structured updates found in '{subject}' — harvesting links + raw fallback")
+            harvested = self._harvest_and_ingest_links(html_content, subject, newsletter_date)
             self._ingest_raw_email(subject, sender, html_content, newsletter_date)
+            if harvested:
+                logger.info(f"  Followed {harvested} linked document(s) from '{subject}'")
             return
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
@@ -512,6 +520,92 @@ Type: {source_type}
                     logger.info(f"  Content candidate: '{candidate.title}' ({candidate.priority})")
                 except Exception as e:
                     logger.error(f"  Content engine failed for '{title}': {e}")
+
+    def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str) -> int:
+        """Fallback when structured parsing fails: scan the email for links to the
+        ACTUAL DOB documents (PDF bulletins/notices and buildings.nyc.gov pages) and
+        ingest those, not just the summary. This is what makes 'read the newsletter'
+        mean 'capture the documents it references'.
+        """
+        if not self.retriever:
+            return 0
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, "html.parser")
+        except Exception:
+            return 0
+
+        JUNK = ("unsubscribe", "twitter", "facebook", "linkedin", "instagram",
+                "youtube", "/preferences", "subscriber", "googleapis", "mailto:",
+                "list-manage", "campaign-archive")
+        seen, pdf_links, page_links = set(), [], []
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            low = href.lower()
+            if not low.startswith("http") or href in seen or any(j in low for j in JUNK):
+                continue
+            seen.add(href)
+            is_dob = ("buildings.nyc.gov" in low or "nyc.gov/site/buildings" in low
+                      or "/assets/buildings/" in low or "nyc.gov/assets/buildings" in low)
+            if low.split("?")[0].endswith(".pdf"):
+                pdf_links.append(href)
+            elif is_dob:
+                page_links.append(href)
+
+        count = 0
+        # Follow direct PDF links — usually the bulletins/notices themselves.
+        for url in pdf_links[:20]:
+            try:
+                self._download_and_ingest_pdf(
+                    pdf_url=url, parent_title=subject, category="Newsletter Link",
+                    newsletter_date=date, source_type="service_notice",
+                )
+                count += 1
+            except Exception as e:
+                logger.warning(f"  Link PDF ingest failed ({url}): {e}")
+
+        # Follow DOB HTML pages — scrape their text and any PDFs they link to.
+        if page_links:
+            try:
+                from content_engine.parser import DOBNewsletterParser
+                from ingestion.document_processor import DocumentProcessor
+                parser = DOBNewsletterParser()
+                processor = DocumentProcessor()
+            except Exception:
+                return count
+            for url in page_links[:15]:
+                try:
+                    content, links = parser._fetch_page_content(url)
+                    if content and len(content) > 200:
+                        document = processor.process_text(
+                            text=content,
+                            title=f"{subject} — {url.split('/')[-1] or 'linked page'}",
+                            source_type="service_notice",
+                            metadata={
+                                "date_issued": date,
+                                "source_url": url,
+                                "ingested_from": "email_poller_link",
+                                "parent_newsletter": subject,
+                                "jurisdiction": "NYC",
+                            },
+                        )
+                        self.retriever.vector_store.upsert_chunks(document.chunks)
+                        count += 1
+                    # PDFs discovered on the linked page
+                    for nested in (links or []):
+                        if nested.lower().split("?")[0].endswith(".pdf"):
+                            try:
+                                self._download_and_ingest_pdf(
+                                    pdf_url=nested, parent_title=subject,
+                                    category="Newsletter Link", newsletter_date=date,
+                                    source_type="service_notice",
+                                )
+                                count += 1
+                            except Exception:
+                                pass
+                except Exception as e:
+                    logger.warning(f"  Link page ingest failed ({url}): {e}")
+        return count
 
     def _ingest_raw_email(self, subject: str, sender: str, html_content: str, date: str):
         """Ingest a non-newsletter email as a raw document.
