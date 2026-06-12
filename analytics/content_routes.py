@@ -517,7 +517,26 @@ def generate_content():
         content_type = data.get('content_type', 'blog_post')
         if not candidate_id:
             return jsonify({"success": False, "error": "Missing candidate_id"}), 400
-        content = engine.generate_blog_post(candidate_id) if content_type == 'blog_post' else engine.generate_newsletter(candidate_id)
+
+        # Ordino is the source of truth for candidates. If it sends the candidate's
+        # fields, build the candidate from the request so we don't depend on Beacon's
+        # local SQLite store (which won't have Ordino/Supabase-created candidates).
+        candidate = None
+        if data.get('title'):
+            from content_engine.engine import ContentCandidate
+            candidate = ContentCandidate(
+                id=candidate_id,
+                title=data['title'],
+                content_type=content_type,
+                priority=data.get('priority', 'medium'),
+                relevance_score=int(data.get('relevance_score', 50) or 50),
+                key_topics=data.get('topics') or data.get('key_topics') or [],
+                reasoning=data.get('reasoning', '') or '',
+            )
+
+        content = (engine.generate_blog_post(candidate_id, candidate=candidate)
+                   if content_type == 'blog_post'
+                   else engine.generate_newsletter(candidate_id, candidate=candidate))
         return jsonify({"success": True, "content": content, "word_count": len(content.split())})
     except Exception as e:
         traceback.print_exc()
