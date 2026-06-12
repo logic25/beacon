@@ -255,7 +255,27 @@ class EmailPoller:
             self._mark_processed(msg_id, headers, label_id)
             return
 
-        # Parse and ingest the email body (text + linked PDFs)
+        # Classify + route automatically (no manual triage):
+        #   dob_regulatory → KB (Pinecone)   event / market_news → BD module
+        # A forwarded real-estate news email ("Columbus Circle…") is BD intel, not DOB
+        # knowledge — it should land in the BD module, not pollute the filing KB.
+        try:
+            from bs4 import BeautifulSoup
+            text_for_class = BeautifulSoup(html_content, "html.parser").get_text(" ", strip=True)
+        except Exception:
+            text_for_class = ""
+        category = self._classify_email(subject, sender, text_for_class)
+
+        if category in ("event", "market_news"):
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if self._route_to_bd(category, subject, sender, text_for_class, date_str):
+                self._mark_processed(msg_id, headers, label_id)
+                logger.info(f"✅ Email routed to BD ({category}): '{subject}'")
+                return
+            # Routing not configured / failed — fall through to KB so nothing is lost.
+            logger.info(f"  BD routing unavailable; keeping '{subject}' in KB as fallback")
+
+        # DOB regulatory (or fallback): parse and ingest the body (text + linked PDFs)
         self._ingest_newsletter(subject, sender, html_content)
 
         # Also ingest any PDF attachments directly on the email
@@ -520,6 +540,70 @@ Type: {source_type}
                     logger.info(f"  Content candidate: '{candidate.title}' ({candidate.priority})")
                 except Exception as e:
                     logger.error(f"  Content engine failed for '{title}': {e}")
+
+    def _classify_email(self, subject: str, sender: str, text: str) -> str:
+        """Classify an inbound email so it can be auto-routed. Returns one of:
+        dob_regulatory | event | market_news | other. Defaults to dob_regulatory on
+        any failure so we never silently drop regulatory content.
+        """
+        try:
+            import anthropic
+            from config import get_settings
+            client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
+            prompt = (
+                "Classify this email into ONE category for a NYC permit-expediting firm.\n"
+                "- dob_regulatory: official NYC DOB/FDNY/HPD/agency updates, bulletins, "
+                "service notices, code or rule changes, filing-process changes\n"
+                "- event: an industry event, conference, trade show, webinar, or meetup announcement\n"
+                "- market_news: real-estate or construction market news, deals, transactions, "
+                "leasing, or development announcements\n"
+                "- other: anything else (low-value newsletter, personal, spam)\n\n"
+                f"Sender: {sender}\nSubject: {subject}\nBody (first 1500 chars): {text[:1500]}\n\n"
+                "Respond with ONLY the category word."
+            )
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=10,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            cat = msg.content[0].text.strip().lower()
+            if cat in ("dob_regulatory", "event", "market_news", "other"):
+                logger.info(f"Classified '{subject[:50]}' → {cat}")
+                return cat
+        except Exception as e:
+            logger.warning(f"Email classify failed ('{subject[:40]}'), defaulting to dob_regulatory: {e}")
+        return "dob_regulatory"
+
+    def _route_to_bd(self, category: str, subject: str, sender: str, text: str, date: str) -> bool:
+        """POST a classified BD signal (event / market_news) to Ordino so it lands in
+        the BD module automatically — no manual triage. Uses the same shared-secret
+        path as ordino_tools. Returns False if not configured or the POST fails (caller
+        then falls back to KB so nothing is lost).
+        """
+        import requests
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        beacon_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+        if not supabase_url or not beacon_key:
+            return False
+        try:
+            resp = requests.post(
+                f"{supabase_url}/functions/v1/bd-email-ingest",
+                headers={"x-beacon-key": beacon_key, "Content-Type": "application/json"},
+                json={
+                    "signal_type": category,       # 'event' | 'market_news'
+                    "title": subject,
+                    "summary": text[:1000],
+                    "sender": sender,
+                    "date": date,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"  BD routing failed for '{subject}': {e}")
+            return False
 
     def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str) -> int:
         """Fallback when structured parsing fails: scan the email for links to the
