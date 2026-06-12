@@ -1220,6 +1220,12 @@ def api_chat():
                     query=user_message,
                     top_k=settings.rag_top_k if settings else 5,
                     min_score=settings.rag_min_score if settings else 0.3,
+                    # Multi-market KB scoping. The retriever already supports a
+                    # jurisdiction metadata filter; we just thread it through from
+                    # the Ordino widget. Optional + defaults to None => NO filter,
+                    # so behavior is unchanged until docs are tagged with a
+                    # jurisdiction and the caller starts sending one.
+                    jurisdiction=data.get("jurisdiction"),
                 )
                 if retrieval_result.num_results > 0:
                     rag_context = retrieval_result.context
