@@ -22,22 +22,34 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 BEACON_ANALYTICS_KEY = os.getenv("BEACON_ANALYTICS_KEY", "")
 
 
-def _proxy_call(action: str, params: dict = None) -> dict:
-    """Call the beacon-data-proxy edge function on Ordino's Supabase."""
+def _proxy_call(action: str, params: dict = None, user_jwt: str = None) -> dict:
+    """Call the beacon-data-proxy edge function on Ordino's Supabase.
+
+    When user_jwt (the forwarded end-user Supabase access token, as a full
+    "Bearer <token>" header value) is provided, it is sent as the Authorization
+    header so beacon-data-proxy can verify the user and derive their company_id
+    for per-tenant scoping. When absent, behavior is unchanged (shared-secret
+    only) — non-breaking, so this can deploy before the Ordino side forwards a
+    JWT and before the proxy's strict flag is flipped.
+    """
     if not SUPABASE_URL or not BEACON_ANALYTICS_KEY:
         logger.warning("Ordino proxy not configured (SUPABASE_URL or BEACON_ANALYTICS_KEY missing)")
         return {"error": "Ordino connection not configured"}
 
     url = f"{SUPABASE_URL}/functions/v1/beacon-data-proxy"
 
+    headers = {
+        "Content-Type": "application/json",
+        "x-beacon-key": BEACON_ANALYTICS_KEY,
+    }
+    if user_jwt:
+        headers["Authorization"] = user_jwt
+
     try:
         resp = httpx.post(
             url,
             json={"action": action, "params": params or {}},
-            headers={
-                "Content-Type": "application/json",
-                "x-beacon-key": BEACON_ANALYTICS_KEY,
-            },
+            headers=headers,
             timeout=15,
         )
         resp.raise_for_status()
@@ -252,8 +264,12 @@ TOOL_DEFINITIONS = [
 # TOOL IMPLEMENTATIONS
 # ═══════════════════════════════════════════════════════
 
-def execute_tool(tool_name: str, tool_input: dict) -> str:
-    """Execute a tool and return the result as a string."""
+def execute_tool(tool_name: str, tool_input: dict, user_jwt: str = None) -> str:
+    """Execute a tool and return the result as a string.
+
+    user_jwt (the forwarded end-user Supabase access token) is passed through to
+    the proxy so beacon-data-proxy can scope queries to the caller's company.
+    """
     try:
         # Most tools go directly through the proxy
         proxy_actions = [
@@ -263,16 +279,16 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         ]
 
         if tool_name in proxy_actions:
-            result = _proxy_call(tool_name, tool_input)
+            result = _proxy_call(tool_name, tool_input, user_jwt=user_jwt)
             return json.dumps(result)
         elif tool_name == "describe_table":
-            result = _proxy_call("describe_table", tool_input)
+            result = _proxy_call("describe_table", tool_input, user_jwt=user_jwt)
             return json.dumps(result)
         elif tool_name == "query_ordino":
-            result = _proxy_call("query_ordino", tool_input)
+            result = _proxy_call("query_ordino", tool_input, user_jwt=user_jwt)
             return json.dumps(result)
         elif tool_name == "draft_follow_up_email":
-            return _draft_follow_up_email(tool_input)
+            return _draft_follow_up_email(tool_input, user_jwt=user_jwt)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -280,7 +296,7 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
         return json.dumps({"error": str(e)})
 
 
-def _draft_follow_up_email(params: dict) -> str:
+def _draft_follow_up_email(params: dict, user_jwt: str = None) -> str:
     """Draft a follow-up email (does not send)."""
     project_id = params.get("project_id")
     recipient = params.get("recipient", "client")
@@ -290,7 +306,7 @@ def _draft_follow_up_email(params: dict) -> str:
         return json.dumps({"error": "project_id is required"})
 
     # Get project detail from proxy
-    detail = _proxy_call("query_project_detail", {"project_id": project_id})
+    detail = _proxy_call("query_project_detail", {"project_id": project_id}, user_jwt=user_jwt)
 
     if isinstance(detail, dict) and "error" in detail:
         return json.dumps(detail)
