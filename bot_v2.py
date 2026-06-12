@@ -1292,11 +1292,14 @@ def api_chat():
             rag_sources=rag_sources,
             format_for="web",
             model_override=selected_model,
-            # Forward the end-user's Supabase JWT (the Authorization header that
-            # beacon-proxy passes through) down to ordino_tools -> beacon-data-proxy
-            # so it can derive a verified company_id for per-tenant scoping. None
-            # when absent (pre-deploy) => proxy stays on shared-secret only.
-            user_jwt=request.headers.get("Authorization"),
+            # Forward the end-user's Supabase JWT down to ordino_tools ->
+            # beacon-data-proxy so it can derive a verified company_id for
+            # per-tenant scoping. beacon-proxy passes it in the custom header
+            # x-ordino-user-authorization (the standard Authorization header is
+            # consumed by the Supabase platform on the inbound hop). _proxy_call
+            # re-sends it as Authorization, which beacon-data-proxy reads. None
+            # when absent (legacy/pre-deploy) => proxy stays shared-secret only.
+            user_jwt=request.headers.get("x-ordino-user-authorization"),
         )
         logger.info(f"[API Chat] Model routing: {model_used} for '{user_message[:50]}...'")
 
