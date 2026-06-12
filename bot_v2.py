@@ -1989,9 +1989,41 @@ def list_knowledge_files():
 
             stats = index.describe_index_stats()
 
+            # Group files into folders so Ordino's KB viewer can display them.
+            # The bulk script-loaded corpus has an EMPTY `folder` metadata field, so
+            # grouping by `folder` dumps everything into one hidden bucket and the
+            # named subfolders show 0. `source_type` IS always set, so group by that.
+            # Keys are the folder slugs Ordino's KnowledgeBaseView already expects.
+            SOURCE_TYPE_TO_FOLDER = {
+                "procedure": "filing_guides",
+                "service_notice": "service_notices",
+                "newsletter_email": "service_notices",
+                "email_digest": "email_digests",
+                "technical_bulletin": "buildings_bulletins",
+                "policy_memo": "policy_memos",
+                "building_code": "codes",
+                "historical_determination": "determinations",
+                "case_study": "determinations",
+                "objection": "objections",
+                "reference": "objections",
+                "communication": "company_sops",
+                "communication_pattern": "company_sops",
+                "zoning": "zoning",
+                "mdl": "housing_law",
+                "hmc": "housing_law",
+                "rcny": "rules",
+            }
+            folders_map: "dict[str, list[str]]" = {}
+            for det in file_details:
+                slug = SOURCE_TYPE_TO_FOLDER.get(det.get("source_type", ""), "other")
+                folders_map.setdefault(slug, []).append(det["filename"])
+            for slug in folders_map:
+                folders_map[slug].sort()
+
             return jsonify({
                 "files": sorted(files),
                 "count": len(files),
+                "folders": folders_map,
                 "details": sorted(file_details, key=lambda d: d.get("filename", "")),
                 "total_chunks": stats.total_vector_count,
                 "source": "pinecone",
