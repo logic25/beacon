@@ -2020,8 +2020,11 @@ def list_knowledge_files():
                 "email_digest": "email_digests",
                 "technical_bulletin": "buildings_bulletins",
                 "policy_memo": "policy_memos",
+                "internal_memo": "policy_memos",
                 "building_code": "codes",
                 "historical_determination": "determinations",
+                "determination": "determinations",
+                "reconsideration": "determinations",
                 "case_study": "determinations",
                 "objection": "objections",
                 "reference": "objections",
@@ -2032,10 +2035,37 @@ def list_knowledge_files():
                 "hmc": "housing_law",
                 "rcny": "rules",
             }
+
+            def _folder_for(det: dict) -> str:
+                # Prefer source_type. But detect_document_type returns a generic
+                # "document" for a lot of the corpus (MDL/HMC/RCNY and anything it
+                # can't classify), so fall back to filename keywords — the bulk-loaded
+                # filenames carry strong signals.
+                slug = SOURCE_TYPE_TO_FOLDER.get(det.get("source_type", ""))
+                if slug:
+                    return slug
+                name = (det.get("filename") or "").lower()
+                if "rcny" in name:
+                    return "rules"
+                if "mdl" in name or "housing maintenance" in name or "multiple dwelling" in name:
+                    return "housing_law"
+                if "zoning" in name:
+                    return "zoning"
+                if "building code" in name:
+                    return "codes"
+                if name.startswith("bb ") or "bulletin" in name:
+                    return "buildings_bulletins"
+                if "service notice" in name or "notice" in name:
+                    return "service_notices"
+                if "reconsideration" in name or "determination" in name or "acceptance" in name:
+                    return "determinations"
+                if "guide" in name or "filing" in name or "requirements" in name:
+                    return "filing_guides"
+                return "other"
+
             folders_map: "dict[str, list[str]]" = {}
             for det in file_details:
-                slug = SOURCE_TYPE_TO_FOLDER.get(det.get("source_type", ""), "other")
-                folders_map.setdefault(slug, []).append(det["filename"])
+                folders_map.setdefault(_folder_for(det), []).append(det["filename"])
             for slug in folders_map:
                 folders_map[slug].sort()
 
