@@ -416,6 +416,7 @@ IMPORTANT:
         format_for: str = "google_chat",
         model_override: Optional[str] = None,
         user_jwt: Optional[str] = None,
+        max_tokens_override: Optional[int] = None,
     ) -> tuple[str, str, dict]:
         """Get a response from Claude, optionally with RAG context.
 
@@ -464,7 +465,7 @@ IMPORTANT:
 
             response = self.client.messages.create(
                 model=model,
-                max_tokens=self.settings.claude_max_tokens,
+                max_tokens=max_tokens_override or self.settings.claude_max_tokens,
                 temperature=self.settings.claude_temperature,
                 system=system_prompt,
                 messages=messages,
@@ -498,7 +499,7 @@ IMPORTANT:
                 # Call Claude again with tool results
                 response = self.client.messages.create(
                     model=model,
-                    max_tokens=self.settings.claude_max_tokens,
+                    max_tokens=max_tokens_override or self.settings.claude_max_tokens,
                     temperature=self.settings.claude_temperature,
                     system=system_prompt,
                     messages=messages,
