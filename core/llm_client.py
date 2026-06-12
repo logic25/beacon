@@ -163,6 +163,10 @@ FORMATTING:
 - Use line breaks between sections for readability
 - For multi-step processes, use numbered steps with bold step names
 - Avoid walls of text — break information into scannable chunks
+- For long lists (projects, invoices, violations, etc.): LEAD with a one-line
+  summary (counts/totals), then show only the top 5-8 most relevant rows and
+  offer to show more. Do NOT dump exhaustive multi-column tables the user has to
+  scroll through — a short summary + a compact list beats a wide table
 - End with a brief summary or next-step recommendation when appropriate"""
 
 # Supplemental prompt for specialized topics
