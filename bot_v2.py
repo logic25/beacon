@@ -2319,16 +2319,73 @@ def rebuild_knowledge_manifest():
         return jsonify({"error": str(e)}), 500
 
 
+def _kb_delete_authorized() -> bool:
+    """Destructive KB endpoints require the shared admin secret. Fail CLOSED: if the
+    secret isn't configured, deny — KB deletion must never be open to the internet."""
+    expected = os.getenv("BEACON_ANALYTICS_KEY", "")
+    return bool(expected) and request.headers.get("x-beacon-key", "") == expected
+
+
+def _reconstruct_kb_content(index, vector_store, source_file: str) -> str:
+    """Reassemble a KB doc's text from its Pinecone chunks (best-effort, ordered by
+    page/chunk index). Used to back content up before a delete so it's restorable."""
+    try:
+        dummy = vector_store.embed_query(f"content from {source_file}")
+        res = index.query(
+            vector=dummy, top_k=300, include_metadata=True,
+            filter={"source_file": {"$eq": source_file}},
+        )
+        parts = []
+        for m in (res.matches or []):
+            md = m.metadata or {}
+            idx = md.get("page_number")
+            if not isinstance(idx, (int, float)):
+                idx = md.get("chunk_index", 0)
+            parts.append((idx if isinstance(idx, (int, float)) else 0, md.get("text", "")))
+        parts.sort(key=lambda x: x[0])
+        return "\n".join(t for _, t in parts if t).strip()
+    except Exception as e:
+        logger.warning(f"[KB Delete] content reconstruct failed for '{source_file}': {e}")
+        return ""
+
+
+def _backup_deleted_kb_doc(source_file: str, content: str) -> None:
+    """Save a deleted doc's content to Ordino so a wrongful delete is restorable.
+    Non-fatal — a backup failure must not block (or undo) the delete."""
+    if not content:
+        return
+    import requests as _req
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("BEACON_ANALYTICS_KEY", "")
+    if not url or not key:
+        return
+    try:
+        _req.post(
+            f"{url}/functions/v1/kb-deleted-backup",
+            headers={"x-beacon-key": key, "Content-Type": "application/json"},
+            json={"source_file": source_file, "content": content},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.warning(f"[KB Delete] backup POST failed for '{source_file}': {e}")
+
+
 @app.route("/api/knowledge/delete", methods=["POST"])
 def delete_knowledge_file():
     """Delete a file and all its chunks from Pinecone.
 
     JSON body: {"source_file": "filename_to_delete"}
-
-    Removes:
+    Requires the x-beacon-key admin secret. Removes:
       1. The manifest vector (__file__:filename)
       2. All content chunks with matching source_file metadata
     """
+    if not _kb_delete_authorized():
+        logger.warning(
+            f"[KB Delete] BLOCKED unauthorized delete from {request.remote_addr} "
+            f"(source_file={(request.get_json(silent=True) or {}).get('source_file')!r})"
+        )
+        return jsonify({"error": "Unauthorized — KB deletion requires the admin key"}), 403
+
     if retriever is None or not RAG_AVAILABLE:
         return jsonify({"error": "RAG not available"}), 503
 
@@ -2344,6 +2401,9 @@ def delete_knowledge_file():
 
         deleted_chunks = 0
         deleted_manifest = False
+
+        # 0. Back up the content BEFORE deleting, so a wrongful delete is restorable.
+        _backup_deleted_kb_doc(source_file, _reconstruct_kb_content(index, vector_store, source_file))
 
         # 1. Find and delete the manifest vector
         for id_batch in index.list(prefix="__file__:", limit=100):
@@ -2379,7 +2439,7 @@ def delete_knowledge_file():
             if deleted_chunks > 500:
                 break
 
-        logger.info(f"[Delete Knowledge] Removed '{source_file}': {deleted_chunks} chunks, manifest={'yes' if deleted_manifest else 'no'}")
+        logger.warning(f"[KB Delete] AUDIT: '{source_file}' removed by key-holder from {request.remote_addr} — {deleted_chunks} chunks, manifest={'yes' if deleted_manifest else 'no'}")
 
         return jsonify({
             "success": True,
@@ -2397,7 +2457,12 @@ def delete_knowledge_batch():
     """Delete multiple files from Pinecone in one call.
 
     JSON body: {"source_files": ["file1", "file2", ...]}
+    Requires the x-beacon-key admin secret.
     """
+    if not _kb_delete_authorized():
+        logger.warning(f"[KB Delete] BLOCKED unauthorized BATCH delete from {request.remote_addr}")
+        return jsonify({"error": "Unauthorized — KB deletion requires the admin key"}), 403
+
     if retriever is None or not RAG_AVAILABLE:
         return jsonify({"error": "RAG not available"}), 503
 
@@ -2405,6 +2470,7 @@ def delete_knowledge_batch():
     source_files = data.get("source_files", [])
     if not source_files or not isinstance(source_files, list):
         return jsonify({"error": "source_files (list) is required"}), 400
+    logger.warning(f"[KB Delete] AUDIT: BATCH delete of {len(source_files)} files by key-holder from {request.remote_addr}: {source_files}")
 
     results = []
     for sf in source_files:
@@ -2419,6 +2485,9 @@ def delete_knowledge_batch():
 
             deleted_chunks = 0
             deleted_manifest = False
+
+            # Back up content before deleting (restorable).
+            _backup_deleted_kb_doc(sf, _reconstruct_kb_content(index, vector_store, sf))
 
             # Delete manifest
             for id_batch in index.list(prefix="__file__:", limit=100):
