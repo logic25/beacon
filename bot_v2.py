@@ -2326,6 +2326,50 @@ def _kb_delete_authorized() -> bool:
     return bool(expected) and request.headers.get("x-beacon-key", "") == expected
 
 
+def _reconstruct_kb_content(index, vector_store, source_file: str) -> str:
+    """Reassemble a KB doc's text from its Pinecone chunks (best-effort, ordered by
+    page/chunk index). Used to back content up before a delete so it's restorable."""
+    try:
+        dummy = vector_store.embed_query(f"content from {source_file}")
+        res = index.query(
+            vector=dummy, top_k=300, include_metadata=True,
+            filter={"source_file": {"$eq": source_file}},
+        )
+        parts = []
+        for m in (res.matches or []):
+            md = m.metadata or {}
+            idx = md.get("page_number")
+            if not isinstance(idx, (int, float)):
+                idx = md.get("chunk_index", 0)
+            parts.append((idx if isinstance(idx, (int, float)) else 0, md.get("text", "")))
+        parts.sort(key=lambda x: x[0])
+        return "\n".join(t for _, t in parts if t).strip()
+    except Exception as e:
+        logger.warning(f"[KB Delete] content reconstruct failed for '{source_file}': {e}")
+        return ""
+
+
+def _backup_deleted_kb_doc(source_file: str, content: str) -> None:
+    """Save a deleted doc's content to Ordino so a wrongful delete is restorable.
+    Non-fatal — a backup failure must not block (or undo) the delete."""
+    if not content:
+        return
+    import requests as _req
+    url = os.getenv("SUPABASE_URL", "").rstrip("/")
+    key = os.getenv("BEACON_ANALYTICS_KEY", "")
+    if not url or not key:
+        return
+    try:
+        _req.post(
+            f"{url}/functions/v1/kb-deleted-backup",
+            headers={"x-beacon-key": key, "Content-Type": "application/json"},
+            json={"source_file": source_file, "content": content},
+            timeout=15,
+        )
+    except Exception as e:
+        logger.warning(f"[KB Delete] backup POST failed for '{source_file}': {e}")
+
+
 @app.route("/api/knowledge/delete", methods=["POST"])
 def delete_knowledge_file():
     """Delete a file and all its chunks from Pinecone.
@@ -2357,6 +2401,9 @@ def delete_knowledge_file():
 
         deleted_chunks = 0
         deleted_manifest = False
+
+        # 0. Back up the content BEFORE deleting, so a wrongful delete is restorable.
+        _backup_deleted_kb_doc(source_file, _reconstruct_kb_content(index, vector_store, source_file))
 
         # 1. Find and delete the manifest vector
         for id_batch in index.list(prefix="__file__:", limit=100):
@@ -2438,6 +2485,9 @@ def delete_knowledge_batch():
 
             deleted_chunks = 0
             deleted_manifest = False
+
+            # Back up content before deleting (restorable).
+            _backup_deleted_kb_doc(sf, _reconstruct_kb_content(index, vector_store, sf))
 
             # Delete manifest
             for id_batch in index.list(prefix="__file__:", limit=100):
