@@ -362,16 +362,35 @@ def initialize_app() -> None:
             logger.warning(f"Passive listener initialization failed: {e}")
             passive_listener = None
 
-    # Initialize Email Poller (auto-ingests newsletters from Beacon's Gmail)
+    # Initialize Email Poller (auto-ingests newsletters from Beacon's Gmail).
+    # IMPORTANT: gunicorn runs multiple worker processes, and each imports this
+    # module — so without a guard, EVERY worker starts its own poller and each
+    # email gets ingested N times (observed: 2 workers → every newsletter ingested
+    # twice). Grab an exclusive file lock so only ONE worker actually runs the poller.
     global email_poller
     if EMAIL_POLLER_AVAILABLE:
         try:
-            email_poller = EmailPoller(
-                retriever=retriever,
-                content_engine=None,  # lazy-loaded when needed
-                analytics_db=analytics_db,
-            )
-            email_poller.start()
+            import fcntl
+            _poller_lock = open("/tmp/beacon_email_poller.lock", "w")
+            try:
+                fcntl.flock(_poller_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _have_poller_lock = True
+            except (IOError, OSError):
+                _have_poller_lock = False  # another worker already owns it
+
+            if _have_poller_lock:
+                email_poller = EmailPoller(
+                    retriever=retriever,
+                    content_engine=None,  # lazy-loaded when needed
+                    analytics_db=analytics_db,
+                )
+                email_poller.start()
+                # keep the fd open for the process lifetime so the lock is held
+                globals()["_email_poller_lock_fd"] = _poller_lock
+                logger.info("✅ Email poller started (this worker holds the poller lock)")
+            else:
+                _poller_lock.close()
+                logger.info("Email poller already running in another worker — skipping in this one")
         except Exception as e:
             logger.warning(f"Email poller initialization failed: {e}")
             email_poller = None

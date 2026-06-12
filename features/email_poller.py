@@ -336,6 +336,7 @@ class EmailPoller:
                             "ingested_from": "email_attachment",
                             "email_subject": subject,
                             "attachment_filename": filename,
+                            "jurisdiction": "NYC",
                         },
                     )
                     document.title = f"{subject} - {filename}"
@@ -464,6 +465,7 @@ Type: {source_type}
                             "source_url": source_url,
                             "ingested_from": "email_poller",
                             "email_subject": subject,
+                            "jurisdiction": "NYC",
                         },
                     )
                     count = self.retriever.vector_store.upsert_chunks(document.chunks)
@@ -538,20 +540,25 @@ Type: {source_type}
             md_content = f"""Title: {subject}
 Source: Email from {sender}
 Date: {date}
-Type: service_notice
+Type: email_digest
 
 # {subject}
 
 {text_content[:5000]}
 """
+            # A forwarded/raw email is NOT an official DOB service notice — tag it
+            # 'email_digest' so it can't masquerade as an authoritative notice in
+            # retrieval (a real-estate news forward was previously ingested as a
+            # 'service_notice' and polluted DOB answers).
             document = processor.process_text(
                 text=md_content,
                 title=subject,
-                source_type="service_notice",
+                source_type="email_digest",
                 metadata={
                     "date_issued": date,
                     "sender": sender,
                     "ingested_from": "email_poller",
+                    "jurisdiction": "NYC",
                 },
             )
             count = self.retriever.vector_store.upsert_chunks(document.chunks)
@@ -616,6 +623,7 @@ Type: service_notice
                         "source_url": pdf_url,
                         "ingested_from": "email_poller_pdf",
                         "parent_newsletter": parent_title,
+                        "jurisdiction": "NYC",
                     },
                 )
 
