@@ -319,6 +319,7 @@ MODEL_PRICING = {
     # Claude 4.5 series (current — per million tokens)
     "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00},
     "claude-sonnet-4-5-20250929": {"input": 3.00, "output": 15.00},
+    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00},
 
     # Claude 3.5 series (still active)
     "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00},
