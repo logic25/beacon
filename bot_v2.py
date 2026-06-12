@@ -1993,11 +1993,11 @@ def list_knowledge_files():
                             "supersedes": meta.get("supersedes", ""),
                             "superseded_by": meta.get("superseded_by", ""),
                         })
-            else:
-                # Fallback: manifest vectors are missing (wiped, or this serverless
-                # index isn't surfacing freshly-upserted manifests). Build the file
-                # list straight from chunk metadata so the KB never shows empty when
-                # content actually exists. Dedupe by source_file.
+            if not file_details:
+                # Fallback 1: manifests missing OR present-but-unfetchable (serverless
+                # list/fetch can be inconsistent). Build the list straight from chunk
+                # metadata so the KB never shows empty when content exists. Dedupe by
+                # source_file.
                 seen_files = set()
                 for id_batch in index.list(limit=100):
                     if not id_batch:
@@ -2025,6 +2025,39 @@ def list_knowledge_files():
                             "supersedes": "",
                             "superseded_by": "",
                         })
+
+            if not file_details:
+                # Fallback 2 (dead-reliable): Pinecone enumeration came up empty, so
+                # list the source corpus from the repo's knowledge/ directory. These
+                # files are the ground truth for the bulk corpus; source_type from the
+                # folder structure lets the grouping below place them correctly.
+                try:
+                    import os as _os
+                    from pathlib import Path as _Path
+                    from ingestion.ingest import detect_type_from_path as _detect_type
+                    kb_root = _os.path.join(_os.path.dirname(__file__), "knowledge")
+                    if _os.path.isdir(kb_root):
+                        for root, _dirs, filenames in _os.walk(kb_root):
+                            for fn in filenames:
+                                if not fn.lower().endswith((".md", ".txt", ".pdf")):
+                                    continue
+                                name = _os.path.splitext(fn)[0]
+                                if name in files:
+                                    continue
+                                files.append(name)
+                                file_details.append({
+                                    "filename": name,
+                                    "folder": "",
+                                    "source_type": _detect_type(_Path(_os.path.join(root, fn))),
+                                    "chunks_created": 0,
+                                    "ingested_at": "",
+                                    "version": 1,
+                                    "is_current": "true",
+                                    "supersedes": "",
+                                    "superseded_by": "",
+                                })
+                except Exception as _fe:
+                    logger.warning(f"[Knowledge List] Filesystem fallback failed: {_fe}")
 
             stats = index.describe_index_stats()
 
