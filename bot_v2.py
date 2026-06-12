@@ -1511,6 +1511,7 @@ def api_ingest():
             filename = file.filename or "unknown.md"
             source_type = request.form.get("source_type", "")
             folder_hint = request.form.get("folder", "")
+            jurisdiction = request.form.get("jurisdiction", "").strip()
 
             ext = os.path.splitext(filename)[1].lower()
             if ext not in {".pdf", ".md", ".txt"}:
@@ -1564,6 +1565,7 @@ def api_ingest():
             title = data.get("title", "Untitled")
             source_type = data.get("source_type", "document")
             metadata = data.get("metadata", {})
+            jurisdiction = (data.get("jurisdiction") or metadata.get("jurisdiction") or "").strip()
 
             if not text:
                 return jsonify({"error": "No text provided"}), 400
@@ -1574,6 +1576,16 @@ def api_ingest():
                 source_type=source_type,
                 metadata=metadata,
             )
+
+        # Tag every chunk with jurisdiction (city/market) so retrieval can scope
+        # results per-city. Ordino passes this on ingest; the email poller and CLI
+        # don't, so default to NYC — that keeps all existing/un-tagged content in the
+        # NYC corpus until multi-city expansion content starts arriving.
+        if not jurisdiction:
+            jurisdiction = document.metadata.get("jurisdiction", "") or "NYC"
+        document.metadata["jurisdiction"] = jurisdiction
+        for _chunk in document.chunks:
+            _chunk.metadata["jurisdiction"] = jurisdiction
 
         # Upload chunks to Pinecone
         count = vector_store.upsert_chunks(document.chunks)
@@ -1694,6 +1706,7 @@ def api_ingest():
                     "source_file": _manifest_file,
                     "source_type": source_type,
                     "folder": _manifest_folder,
+                    "jurisdiction": jurisdiction,
                     "chunks_created": count,
                     "ingested_at": datetime.now().isoformat(),
                     "total_characters": len(document.content),
@@ -1714,6 +1727,7 @@ def api_ingest():
             "success": True,
             "title": document.title,
             "source_type": source_type,
+            "jurisdiction": jurisdiction,
             "chunks_created": count,
             "total_characters": len(document.content),
             "version": _version,
