@@ -1964,47 +1964,67 @@ def list_knowledge_files():
                     break
                 manifest_ids.extend(list(id_batch))
 
-            if not manifest_ids:
-                # No manifest vectors yet — might be pre-manifest data.
-                # Return empty but with stats so Ordino knows the index isn't empty.
-                stats = index.describe_index_stats()
-                return jsonify({
-                    "files": [],
-                    "count": 0,
-                    "total_chunks": stats.total_vector_count,
-                    "source": "pinecone",
-                    "note": "No manifest vectors found. Re-upload files to register them, or call /api/knowledge/rebuild-manifest to scan existing chunks.",
-                })
-
-            # Fetch metadata for all manifest vectors
             files = []
             file_details = []
 
-            # Fetch in batches of 100
-            for i in range(0, len(manifest_ids), 100):
-                batch = manifest_ids[i:i + 100]
-                fetched = index.fetch(ids=batch)
-                for vec_id, vec_data in fetched.vectors.items():
-                    meta = vec_data.metadata or {}
-                    source_file = meta.get("source_file", "")
-                    folder = meta.get("folder", "")
+            if manifest_ids:
+                # Fast path: read the manifest vectors.
+                for i in range(0, len(manifest_ids), 100):
+                    batch = manifest_ids[i:i + 100]
+                    fetched = index.fetch(ids=batch)
+                    for vec_id, vec_data in fetched.vectors.items():
+                        meta = vec_data.metadata or {}
+                        source_file = meta.get("source_file", "")
+                        folder = meta.get("folder", "")
 
-                    if folder and source_file:
-                        files.append(f"{folder}/{source_file}")
-                    elif source_file:
+                        if folder and source_file:
+                            files.append(f"{folder}/{source_file}")
+                        elif source_file:
+                            files.append(source_file)
+
+                        file_details.append({
+                            "filename": source_file,
+                            "folder": folder,
+                            "source_type": meta.get("source_type", "document"),
+                            "chunks_created": meta.get("chunks_created", 0),
+                            "ingested_at": meta.get("ingested_at", ""),
+                            "version": meta.get("version", 1),
+                            "is_current": meta.get("is_current", "true"),
+                            "supersedes": meta.get("supersedes", ""),
+                            "superseded_by": meta.get("superseded_by", ""),
+                        })
+            else:
+                # Fallback: manifest vectors are missing (wiped, or this serverless
+                # index isn't surfacing freshly-upserted manifests). Build the file
+                # list straight from chunk metadata so the KB never shows empty when
+                # content actually exists. Dedupe by source_file.
+                seen_files = set()
+                for id_batch in index.list(limit=100):
+                    if not id_batch:
+                        break
+                    ids = [getattr(i, "id", i) for i in id_batch]
+                    real_ids = [i for i in ids if isinstance(i, str) and not i.startswith("__file__:")]
+                    if not real_ids:
+                        continue
+                    fetched = index.fetch(ids=real_ids)
+                    for vec_id, vec_data in fetched.vectors.items():
+                        meta = vec_data.metadata or {}
+                        source_file = meta.get("source_file", "")
+                        if not source_file or source_file in seen_files:
+                            continue
+                        seen_files.add(source_file)
                         files.append(source_file)
-
-                    file_details.append({
-                        "filename": source_file,
-                        "folder": folder,
-                        "source_type": meta.get("source_type", "document"),
-                        "chunks_created": meta.get("chunks_created", 0),
-                        "ingested_at": meta.get("ingested_at", ""),
-                        "version": meta.get("version", 1),
-                        "is_current": meta.get("is_current", "true"),
-                        "supersedes": meta.get("supersedes", ""),
-                        "superseded_by": meta.get("superseded_by", ""),
-                    })
+                        file_details.append({
+                            "filename": source_file,
+                            "folder": meta.get("folder", ""),
+                            "source_type": meta.get("source_type", "document"),
+                            "chunks_created": 0,
+                            "ingested_at": "",
+                            "version": 1,
+                            "is_current": "true",
+                            "supersedes": "",
+                            "superseded_by": "",
+                        })
 
             stats = index.describe_index_stats()
 
