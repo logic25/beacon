@@ -234,9 +234,13 @@ Summarize in 2-3 paragraphs:
     # Generate Content
     # ------------------------------------------------------------------
 
-    def generate_blog_post(self, candidate_id: str) -> str:
-        """Generate a blog post draft for a candidate."""
-        candidate = self._get_candidate(candidate_id)
+    def generate_blog_post(self, candidate_id: str, candidate: "ContentCandidate" = None) -> str:
+        """Generate a blog post draft for a candidate.
+
+        candidate may be passed directly (e.g. from Ordino, which is the source of
+        truth for candidates) so we don't depend on the local SQLite store.
+        """
+        candidate = candidate or self._get_candidate(candidate_id)
         if not candidate:
             raise ValueError(f"Candidate {candidate_id} not found")
 
@@ -285,9 +289,9 @@ Format: Markdown with # headers"""
 
         return content
 
-    def generate_newsletter(self, candidate_id: str) -> str:
+    def generate_newsletter(self, candidate_id: str, candidate: "ContentCandidate" = None) -> str:
         """Generate a newsletter section for a candidate."""
-        candidate = self._get_candidate(candidate_id)
+        candidate = candidate or self._get_candidate(candidate_id)
         if not candidate:
             raise ValueError(f"Candidate {candidate_id} not found")
 
