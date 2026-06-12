@@ -411,6 +411,7 @@ IMPORTANT:
         rag_sources: Optional[list[dict]] = None,
         format_for: str = "google_chat",
         model_override: Optional[str] = None,
+        user_jwt: Optional[str] = None,
     ) -> tuple[str, str, dict]:
         """Get a response from Claude, optionally with RAG context.
 
@@ -478,7 +479,7 @@ IMPORTANT:
                 for block in assistant_content:
                     if block.type == "tool_use":
                         logger.info(f"Tool call: {block.name}({json.dumps(block.input)[:200]})")
-                        result = execute_tool(block.name, block.input)
+                        result = execute_tool(block.name, block.input, user_jwt=user_jwt)
                         logger.info(f"Tool result: {result[:200]}...")
                         tool_results.append({
                             "type": "tool_result",
