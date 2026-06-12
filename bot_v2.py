@@ -2205,9 +2205,14 @@ def rebuild_knowledge_manifest():
         for id_batch in index.list(limit=100):
             if not id_batch:
                 break
-            ids = list(id_batch)
+            # Pinecone client versions differ: index.list() yields either plain
+            # string IDs or ListItem objects (which expose the id via `.id`).
+            # Normalize to strings before any string ops, or .startswith() blows up
+            # ("'ListItem' object has no attribute 'startswith'") and the whole
+            # rebuild aborts — which is why the manifest could never be restored.
+            ids = [getattr(i, "id", i) for i in id_batch]
             # Skip existing manifest vectors
-            real_ids = [i for i in ids if not i.startswith("__file__:")]
+            real_ids = [i for i in ids if isinstance(i, str) and not i.startswith("__file__:")]
             if not real_ids:
                 continue
 
