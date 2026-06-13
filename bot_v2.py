@@ -861,6 +861,14 @@ def process_message_async(
                     feature="chat"
                 )
 
+                # Mirror the per-provider cost to Supabase (beacon_api_usage) so
+                # Ordino's AI Usage dashboard can render the Anthropic cost card.
+                if analytics_db:
+                    try:
+                        analytics_db.log_api_usage("anthropic", "chat", input_tokens + output_tokens, cost)
+                    except Exception as e:
+                        logger.warning(f"log_api_usage (anthropic) failed: {e}")
+
         # === CACHE RESPONSE ===
         if response_cache and CACHE_AVAILABLE:
             response_cache.set(user_message, ai_response)
