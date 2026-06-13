@@ -271,7 +271,11 @@ Write 1200-1500 words:
 - Include FAQ section with their actual questions
 - SEO keyword: {candidate.key_topics[0] if candidate.key_topics else candidate.title}
 - Actionable, expert but approachable tone
-- End with a CTA mentioning GLE's services
+- REQUIRED final section — a clear call-to-action: getting the filing type wrong costs
+  weeks of rework and examiner scrutiny. State that Green Light Expediting handles NYC
+  DOB filings like this every day and can get it filed right the first time. Invite the
+  reader to reach out to Green Light Expediting (info@greenlightexpediting.com). Always
+  include this CTA as the closing section — never end on the technical content alone.
 
 Format: Markdown with # headers"""
 
@@ -280,7 +284,9 @@ Format: Markdown with # headers"""
 
         content, _, _ = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[prompt_msg]
+            conversation_history=[prompt_msg],
+            format_for="web",
+            max_tokens_override=4000,
         )
 
         # Save the generated draft
@@ -311,7 +317,9 @@ Tone: Direct, actionable, expert"""
 
         content, _, _ = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[prompt_msg]
+            conversation_history=[prompt_msg],
+            format_for="web",
+            max_tokens_override=4000,
         )
 
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
