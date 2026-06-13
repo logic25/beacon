@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from dataclasses import dataclass, asdict
 
-from core.llm_client import ClaudeClient
+from core.llm_client import ClaudeClient, SONNET_MODEL
 from core.retriever import Retriever
 from .parser import DOBNewsletterParser
 
@@ -287,6 +287,7 @@ Format: Markdown with # headers"""
             conversation_history=[prompt_msg],
             format_for="web",
             max_tokens_override=4000,
+            model_override=SONNET_MODEL,
         )
 
         # Save the generated draft
@@ -320,6 +321,7 @@ Tone: Direct, actionable, expert"""
             conversation_history=[prompt_msg],
             format_for="web",
             max_tokens_override=4000,
+            model_override=SONNET_MODEL,
         )
 
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
