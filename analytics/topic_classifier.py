@@ -32,6 +32,20 @@ class TopicClassifier:
         "SAPO",                  # Street Activity Permit Office: street activity/closure permits
         "DOH",                   # Dept of Health (DOHMH): food service, daycare, pools
         "HPD",                   # Housing Preservation & Development: registration, maintenance
+        "OER",                   # Office of Environmental Remediation: E-designation, brownfield, hazmat
+        "Asbestos",              # DEP Asbestos Control: ACP-5/ACP-7 (gates demo/alteration)
+        "OATH",                  # Office of Admin Trials & Hearings: violation hearings/cure/dismiss (ECB adjudication)
+        "Utilities",             # Con Edison / National Grid: gas/electric service + sign-offs (gates CO)
+        "Accessibility",         # MOPD / ADA / accessibility compliance
+        "SCA",                   # School Construction Authority: school/DOE capital work
+        "MTA",                   # MTA/NYCT: adjacent-to-transit "zone of influence" review
+        "DOF",                   # Dept of Finance: BBL/tax-lot, property tax status
+        "DSNY",                  # Sanitation: refuse/recycling rooms, C&D waste
+        "DCWP",                  # Consumer & Worker Protection: HIC license, sidewalk cafe
+        "DDC",                   # Dept of Design & Construction: city capital projects
+        "EDC",                   # Economic Development Corp: city-owned/leased/waterfront
+        "Loft Board",            # IMD units, loft-law legalization
+        "Port Authority",        # PANYNJ facilities (airports, terminals, WTC)
         "DOB System Status",     # BIS / DOB NOW Build being down/glitchy (availability, NOT a filing)
         "Property Lookup",       # Address/BIN lookups, property info
         "Plans/Drawings",        # Architectural plans, blueprints
@@ -57,6 +71,20 @@ Your job: Categorize questions into ONE topic from this list:
 - SAPO (Street Activity Permit Office: street activity/closure permits)
 - DOH (Dept of Health / DOHMH: food service, daycare, pool permits)
 - HPD (Housing Preservation & Development: registration, housing maintenance)
+- OER (Office of Environmental Remediation: E-designation, brownfield, hazmat, Notice of Satisfaction)
+- Asbestos (asbestos abatement / ACP-5 / ACP-7 — gates demo/alteration permits)
+- OATH (violation HEARINGS / cure / dismiss / certify-correction — where ECB & DOB violations are adjudicated)
+- Utilities (Con Edison / National Grid: gas & electric service, meter release, energization sign-off)
+- Accessibility (MOPD / ADA / accessibility compliance)
+- SCA (School Construction Authority: school / DOE capital work)
+- MTA (MTA / NYCT: work adjacent to transit, "zone of influence" review)
+- DOF (Dept of Finance: BBL / tax-lot, property tax status)
+- DSNY (Sanitation: refuse/recycling rooms, C&D waste)
+- DCWP (Consumer & Worker Protection: Home Improvement Contractor license, sidewalk cafe)
+- DDC (Dept of Design & Construction: city capital projects)
+- EDC (Economic Development Corp: city-owned/leased/waterfront sites)
+- Loft Board (Interim Multiple Dwelling / IMD, loft-law legalization)
+- Port Authority (PANYNJ facilities: airports, terminals, WTC)
 - DOB System Status (BIS or DOB NOW Build is down/glitchy/not loading — system availability)
 - Property Lookup (address lookups, BIN/BBL, property info)
 - Plans/Drawings (architectural plans, blueprints, drawings)
@@ -67,8 +95,12 @@ Rules:
 2. Be specific - "What time can you work until?" is Noise/Hours, not General
 3. Commands like "/feedback" or "/correct" are General
 4. If unclear, default to the most specific category that could apply
-5. AGENCY over service-area: if a question is about another agency's permit (DEP/DOT/Parks/SAPO/DOH/HPD), tag the AGENCY, not DOB Filings
+5. AGENCY over service-area: if a question is about another agency's permit (DEP/DOT/Parks/SAPO/DOH/HPD/OER/SCA/MTA/DOF/DSNY/DCWP/DDC/EDC/Utilities/Port Authority), tag the AGENCY, not DOB Filings
 6. DOB System Status is ONLY for "is the system working / is it down" — a question about HOW to file in BIS/DOB NOW is DOB Filings, not System Status
+7. BSA, CPC, DCP and "City Planning" route to Zoning (they are the bodies that grant variances / special permits / ULURP)
+8. The violation TICKET (including ECB) is Violations; the HEARING / cure / dismiss / certify-correction at OATH is OATH
+9. Asbestos / ACP-5 / ACP-7 is its own tag (Asbestos), not generic DEP
+10. Con Edison / National Grid gas & electric service is Utilities
 
 Examples:
 Q: "What time can you work until?"
@@ -108,7 +140,25 @@ Q: "Got a contact at Parks for a tree removal?"
 A: Parks
 
 Q: "What does HPD registration require?"
-A: HPD"""
+A: HPD
+
+Q: "Any update on the E-designation / OER Notice of Satisfaction?"
+A: OER
+
+Q: "Do we need an ACP-5 before we can pull the demo permit?"
+A: Asbestos
+
+Q: "What's the next hearing date to dismiss the ECB violation?"
+A: OATH
+
+Q: "Con Ed hasn't released the meter — who's following up?"
+A: Utilities
+
+Q: "Is this an SCA job or are we filing it with DOB?"
+A: SCA
+
+Q: "Do we need MTA zone-of-influence review next to the subway?"
+A: MTA"""
 
     def __init__(self, settings: Optional[Settings] = None):
         """Initialize classifier."""
@@ -194,6 +244,21 @@ A: HPD"""
             "SAPO": ["sapo", "street activity"],
             "DOH": ["doh", "dohmh", "health department", "food service", "daycare"],
             "HPD": ["hpd", "housing preservation", "housing maintenance"],
+            "Asbestos": ["asbestos", "acp-5", "acp5", "acp-7", "acp7"],
+            "OER": ["oer", "e-designation", "e designation", "environmental remediation",
+                    "notice of satisfaction", "brownfield", "vcp"],
+            "Utilities": ["con ed", "con edison", "coned", "national grid", "meter release"],
+            "Accessibility": ["mopd", "accessibility", "ada"],
+            "SCA": ["sca", "school construction"],
+            "MTA": ["mta", "nyct", "zone of influence", "transit authority"],
+            "OATH": ["oath", "ecb hearing", "certify correction", "certify-correction"],
+            "DOF": ["dof", "department of finance", "property tax", "tax lot", "tax-lot"],
+            "DSNY": ["dsny", "sanitation"],
+            "DCWP": ["dcwp", "dca", "consumer affairs", "home improvement contractor"],
+            "DDC": ["ddc", "design and construction"],
+            "EDC": ["edc", "economic development"],
+            "Loft Board": ["loft board", "loft law", "imd"],
+            "Port Authority": ["port authority", "panynj"],
             "Certificates": ["co", "certificate of occupancy", "tco", "temporary co", "sign-off"],
             "Violations": ["violation", "ecb", "dob violation", "penalty"],
             "DHCR": ["dhcr", "rent stabiliz", "rent-stabiliz", "rent regulat", "rent increase",
@@ -201,7 +266,8 @@ A: HPD"""
             "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "alt-1", "alt-2", "nb", "dm", "paa", "objection"],
             "Building Code": ["building code", "egress", "fire safety", "occupancy group", "means of egress"],
             "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
-            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "r6", "r7", "r8", "c4", "c6", "m1"],
+            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "r6", "r7", "r8", "c4", "c6", "m1",
+                       "bsa", "cpc", "dcp", "city planning", "ulurp"],
             "Landmarks": ["landmark", "lpc", "historic"],
             "Property Lookup": ["lookup", "address", "bin", "block", "lot", "bbl"],
             "Plans/Drawings": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
