@@ -26,6 +26,13 @@ class TopicClassifier:
         "MDL",                   # Multiple Dwelling Law, Class A/B
         "Noise/Hours",           # Construction hours, noise regulations
         "Landmarks",             # LPC, historic preservation
+        "DEP",                   # Dept of Environmental Protection: sewer/water connections, backflow
+        "DOT",                   # Dept of Transportation: sidewalk sheds, roadway/sidewalk permits, canopy
+        "Parks",                 # NYC Parks: work on/near parkland, tree removal/protection
+        "SAPO",                  # Street Activity Permit Office: street activity/closure permits
+        "DOH",                   # Dept of Health (DOHMH): food service, daycare, pools
+        "HPD",                   # Housing Preservation & Development: registration, maintenance
+        "DOB System Status",     # BIS / DOB NOW Build being down/glitchy (availability, NOT a filing)
         "Property Lookup",       # Address/BIN lookups, property info
         "Plans/Drawings",        # Architectural plans, blueprints
         "General",               # Everything else
@@ -44,6 +51,13 @@ Your job: Categorize questions into ONE topic from this list:
 - MDL (Multiple Dwelling Law, Class A/B dwellings)
 - Noise/Hours (construction hours, noise regulations, work times)
 - Landmarks (LPC, historic preservation)
+- DEP (Dept of Environmental Protection: sewer/water/house connections, backflow, stormwater)
+- DOT (Dept of Transportation: sidewalk sheds, roadway/sidewalk permits, canopies)
+- Parks (NYC Parks Dept: work on/near parkland, tree removal/protection)
+- SAPO (Street Activity Permit Office: street activity/closure permits)
+- DOH (Dept of Health / DOHMH: food service, daycare, pool permits)
+- HPD (Housing Preservation & Development: registration, housing maintenance)
+- DOB System Status (BIS or DOB NOW Build is down/glitchy/not loading — system availability)
 - Property Lookup (address lookups, BIN/BBL, property info)
 - Plans/Drawings (architectural plans, blueprints, drawings)
 - General (anything else)
@@ -53,6 +67,8 @@ Rules:
 2. Be specific - "What time can you work until?" is Noise/Hours, not General
 3. Commands like "/feedback" or "/correct" are General
 4. If unclear, default to the most specific category that could apply
+5. AGENCY over service-area: if a question is about another agency's permit (DEP/DOT/Parks/SAPO/DOH/HPD), tag the AGENCY, not DOB Filings
+6. DOB System Status is ONLY for "is the system working / is it down" — a question about HOW to file in BIS/DOB NOW is DOB Filings, not System Status
 
 Examples:
 Q: "What time can you work until?"
@@ -71,7 +87,28 @@ Q: "What are the DHCR requirements for rent stabilization?"
 A: DHCR
 
 Q: "How long does FDNY withdrawal take?"
-A: FDNY"""
+A: FDNY
+
+Q: "Is BIS working for anyone?"
+A: DOB System Status
+
+Q: "Is DOB NOW Build down again?"
+A: DOB System Status
+
+Q: "Did anyone file the DEP house/sewer connection?"
+A: DEP
+
+Q: "Sidewalk shed DOT permit renewal — who handles it?"
+A: DOT
+
+Q: "Do we need a SAPO permit for the street closure?"
+A: SAPO
+
+Q: "Got a contact at Parks for a tree removal?"
+A: Parks
+
+Q: "What does HPD registration require?"
+A: HPD"""
 
     def __init__(self, settings: Optional[Settings] = None):
         """Initialize classifier."""
@@ -141,11 +178,24 @@ A: FDNY"""
         import re
 
         combined = (question + " " + response).lower()
+        # NOTE: order matters — first match wins. System-status + agency tags are
+        # checked BEFORE the generic "DOB Filings" (dob/permit/filing) so e.g.
+        # "is BIS down" and "DEP permit" route correctly instead of being grabbed
+        # by DOB Filings.
         topics = {
             "Noise/Hours": ["what time", "work until", "noise", "after hours", "construction hours"],
             "FDNY": ["fdny", "fire alarm", "sprinkler", "standpipe", "suppression", "ansul"],
+            "DOB System Status": ["bis down", "bis working", "is bis", "bis a bust", "bis broken",
+                                  "dob now down", "build down", "system down", "system is down",
+                                  "dob glitch", "glitch", "glitches", "dob emails", "not loading"],
+            "DEP": ["dep", "sewer connection", "house connection", "water connection", "backflow", "stormwater"],
+            "DOT": ["dot", "sidewalk shed", "roadway", "sidewalk permit", "canopy"],
+            "Parks": ["parks", "parkland", "tree removal", "parks dept"],
+            "SAPO": ["sapo", "street activity"],
+            "DOH": ["doh", "dohmh", "health department", "food service", "daycare"],
+            "HPD": ["hpd", "housing preservation", "housing maintenance"],
             "Certificates": ["co", "certificate of occupancy", "tco", "temporary co", "sign-off"],
-            "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation", "penalty"],
+            "Violations": ["violation", "ecb", "dob violation", "penalty"],
             "DHCR": ["dhcr", "rent stabiliz", "rent-stabiliz", "rent regulat", "rent increase",
                      "rent control", "mci", "iai", "421-a", "j-51"],
             "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "alt-1", "alt-2", "nb", "dm", "paa", "objection"],
