@@ -15,11 +15,21 @@ from config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-# Google Chat API scopes
+# Google Chat API scopes.
+# App auth (service account, no subject) — used for SENDING/updating messages.
 SCOPES = [
     "https://www.googleapis.com/auth/chat.bot",
     "https://www.googleapis.com/auth/chat.messages",
     "https://www.googleapis.com/auth/chat.messages.create",
+]
+
+# User-auth read scope — used with domain-wide delegation (impersonating
+# BEACON_EMAIL) to LIST/READ messages in a space. spaces.messages.list is NOT
+# available to pure app auth (returns 403 "insufficient authentication
+# scopes"); reading requires acting as a member of the space. The impersonated
+# user (BEACON_EMAIL) must therefore be a MEMBER of any space we read.
+READ_SCOPES = [
+    "https://www.googleapis.com/auth/chat.messages.readonly",
 ]
 
 
@@ -54,8 +64,14 @@ class GoogleChatClient:
         self.settings = settings or get_settings()
         self._credentials: Optional[service_account.Credentials] = None
 
-    def _get_credentials(self) -> Optional[service_account.Credentials]:
-        """Get and refresh Google credentials.
+    def _load_sa_credentials(
+        self, scopes: list, subject: Optional[str] = None
+    ) -> Optional[service_account.Credentials]:
+        """Build and refresh service-account credentials for the given scopes.
+
+        Args:
+            scopes: OAuth scopes to request.
+            subject: If set, impersonate this user via domain-wide delegation.
 
         Returns:
             Valid credentials or None if unavailable.
@@ -70,7 +86,7 @@ class GoogleChatClient:
                 try:
                     sa_info = json.loads(sa_json)
                     credentials = service_account.Credentials.from_service_account_info(
-                        sa_info, scopes=SCOPES
+                        sa_info, scopes=scopes
                     )
                     logger.debug("Loaded credentials from GOOGLE_SERVICE_ACCOUNT_JSON env var")
                 except json.JSONDecodeError as e:
@@ -85,8 +101,12 @@ class GoogleChatClient:
                     return None
 
                 credentials = service_account.Credentials.from_service_account_file(
-                    str(service_account_path), scopes=SCOPES
+                    str(service_account_path), scopes=scopes
                 )
+
+            # Impersonate a user (domain-wide delegation) when a subject is given
+            if subject:
+                credentials = credentials.with_subject(subject)
 
             # Refresh to ensure valid token
             credentials.refresh(Request())
@@ -101,6 +121,24 @@ class GoogleChatClient:
         except Exception as e:
             logger.error(f"Error getting Google credentials: {e}")
             return None
+
+    def _get_credentials(self) -> Optional[service_account.Credentials]:
+        """App-auth credentials (chat.bot) — used for sending/updating messages."""
+        return self._load_sa_credentials(SCOPES)
+
+    def _get_read_credentials(self) -> Optional[service_account.Credentials]:
+        """Impersonated user-auth credentials for reading/listing messages.
+
+        Requires BEACON_EMAIL set + domain-wide delegation of
+        chat.messages.readonly to the service account. Returns None when
+        BEACON_EMAIL is unset so callers can fall back to app auth.
+        """
+        import os
+
+        beacon_email = os.environ.get("BEACON_EMAIL", "")
+        if not beacon_email:
+            return None
+        return self._load_sa_credentials(READ_SCOPES, subject=beacon_email)
 
     def _make_request(
         self,
@@ -121,7 +159,14 @@ class GoogleChatClient:
         Raises:
             GoogleChatError: If authentication fails or request errors
         """
-        credentials = self._get_credentials()
+        # Reading messages (GET, e.g. spaces.messages.list) needs impersonated
+        # user auth (chat.messages.readonly via DWD); sending/updating uses app
+        # auth (chat.bot). Fall back to app auth if read creds are unavailable.
+        credentials = None
+        if method.upper() == "GET":
+            credentials = self._get_read_credentials()
+        if credentials is None:
+            credentials = self._get_credentials()
         if not credentials:
             raise GoogleChatError("Failed to get Google credentials")
 
