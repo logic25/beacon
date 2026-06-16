@@ -541,10 +541,11 @@ class PassiveListener:
                 "answered yet. The team are expert expeditors and PMs — be direct and substantive, "
                 "not basic. Answer ONLY from the knowledge base context provided; do not guess or "
                 "invent code/filing specifics. If the context doesn't clearly answer it, say so "
-                "plainly and suggest checking with Chris — never make something up. For anything "
-                "actionable (filings, deadlines, code or zoning specifics), add a brief reminder to "
-                "confirm it's current against DOB, since rules change. Open with 'Saw this — here's "
-                "what I found:' and keep it tight (2-5 sentences)."
+                "plainly and suggest checking with their manager (Chris or Manny) — never make "
+                "something up. For anything actionable (filings, deadlines, code or zoning "
+                "specifics), add a brief reminder to confirm it's current against DOB, since rules "
+                "change. Write plain, conversational chat text — NO bold headers or bullet lists. "
+                "Open with 'Saw this — here's what I found:' and keep it tight (2-5 sentences)."
             )
 
             rag_context = retrieval_result.context
