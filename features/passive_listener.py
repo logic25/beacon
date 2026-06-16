@@ -512,19 +512,39 @@ class PassiveListener:
             )
 
             if retrieval_result.num_results == 0:
-                logger.info(f"No relevant KB content for: {pq.text[:60]}")
-                return  # Don't respond if we have nothing useful
+                # No KB coverage — stay silent in chat, but CAPTURE it: a question we
+                # can't answer is both a KB gap and a content opportunity (the flywheel).
+                logger.info(f"No KB coverage for: {pq.text[:60]} — logging as gap/content opportunity")
+                self._log_content_opportunity(pq)
+                if self.analytics_db:
+                    try:
+                        from analytics.analytics import Interaction
+                        from analytics.topic_classifier import get_classifier
+                        self.analytics_db.log_interaction(Interaction(
+                            timestamp=datetime.now().isoformat(),
+                            user_id=pq.sender_id, user_name=pq.sender_name, space_name=pq.space_name,
+                            question=pq.text, response=None, command="passive_gap",
+                            answered=False, response_length=0, had_sources=False, sources_used=[],
+                            tokens_used=0, cost_usd=0.0, response_time_ms=0, confidence=0.0,
+                            topic=get_classifier().classify(pq.text),
+                        ))
+                    except Exception as e:
+                        logger.error(f"Failed to log gap interaction: {e}")
+                return  # Don't post a guess when the KB has nothing
 
             # Generate response with Claude (using Haiku for cost efficiency)
             from core.llm_client import Message
 
             system_prompt = (
-                "You are Beacon, an AI assistant for Green Light Expediting (GLE), "
-                "a NYC expediting firm. You noticed a question in the team chat that "
-                "nobody has answered yet. Offer a helpful, concise answer based on the "
-                "knowledge base context provided. Keep it friendly and brief — start with "
-                "something like 'Hey! I noticed this question — here's what I found:' "
-                "and keep the answer to 2-4 sentences max. If you're not confident, say so."
+                "You are Beacon, the AI assistant for Green Light Expediting (GLE), a NYC "
+                "expediting firm. You spotted a work question in the team chat that nobody has "
+                "answered yet. The team are expert expeditors and PMs — be direct and substantive, "
+                "not basic. Answer ONLY from the knowledge base context provided; do not guess or "
+                "invent code/filing specifics. If the context doesn't clearly answer it, say so "
+                "plainly and suggest checking with Chris — never make something up. For anything "
+                "actionable (filings, deadlines, code or zoning specifics), add a brief reminder to "
+                "confirm it's current against DOB, since rules change. Open with 'Saw this — here's "
+                "what I found:' and keep it tight (2-5 sentences)."
             )
 
             rag_context = retrieval_result.context
@@ -538,6 +558,10 @@ class PassiveListener:
             )
 
             if response_text:
+                # Cite sources so the team can verify (already retrieved).
+                source_titles = [s.title for s in retrieval_result.sources[:2] if getattr(s, "title", None)]
+                if source_titles:
+                    response_text = f"{response_text}\n\n📚 Source: {', '.join(source_titles)}"
                 # Send in the same thread
                 result = self.chat_client.send_message(
                     self._space_name,
@@ -551,6 +575,7 @@ class PassiveListener:
                     if self.analytics_db:
                         try:
                             from analytics.analytics import Interaction
+                            from analytics.topic_classifier import get_classifier
                             interaction = Interaction(
                                 timestamp=datetime.now().isoformat(),
                                 user_id=pq.sender_id,
@@ -567,7 +592,7 @@ class PassiveListener:
                                 cost_usd=0.0,
                                 response_time_ms=0,
                                 confidence=retrieval_result.avg_score,
-                                topic="PASSIVE",
+                                topic=get_classifier().classify(pq.text, response_text),
                             )
                             self.analytics_db.log_interaction(interaction)
                         except Exception as e:
