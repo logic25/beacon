@@ -20,6 +20,12 @@ SCOPES = [
     "https://www.googleapis.com/auth/chat.bot",
     "https://www.googleapis.com/auth/chat.messages",
     "https://www.googleapis.com/auth/chat.messages.create",
+    # App-auth read scope required to LIST/READ messages in a space (passive
+    # listener + history backfill). chat.bot alone is rejected with
+    # "insufficient authentication scopes" on spaces.messages.list. The
+    # chat.app.* scopes require a ONE-TIME Workspace-admin approval of the
+    # Beacon app (Admin console -> Security -> API controls -> app access).
+    "https://www.googleapis.com/auth/chat.app.messages.readonly",
 ]
 
 
