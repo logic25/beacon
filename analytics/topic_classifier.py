@@ -127,26 +127,37 @@ A: FDNY"""
             return self._keyword_fallback(question, response)
 
     def _keyword_fallback(self, question: str, response: str = "") -> str:
-        """Keyword-based classification when LLM is unavailable."""
+        """Keyword-based classification when the LLM is unavailable.
+
+        Matches WHOLE WORDS (not substrings) so common words can't trip a topic
+        — e.g. "current"/"different"/"please" must NOT match the DHCR keywords.
+        DHCR keywords are also kept specific (rent *regulation* terms, not a bare
+        "rent"/"lease") since rent-stabilization is rarely discussed here. This
+        is the path that over-tagged DHCR while the LLM model was 404'ing.
+        """
+        import re
+
         combined = (question + " " + response).lower()
         topics = {
             "Noise/Hours": ["what time", "work until", "noise", "after hours", "construction hours"],
             "FDNY": ["fdny", "fire alarm", "sprinkler", "standpipe", "suppression", "ansul"],
-            "Certificates": ["co ", "certificate of occupancy", "tco", "temporary co", "sign-off"],
+            "Certificates": ["co", "certificate of occupancy", "tco", "temporary co", "sign-off"],
             "Violations": ["violation", "ecb", "bis", "hpd violation", "dob violation", "penalty"],
-            "DHCR": ["dhcr", "rent", "stabiliz", "mci", "iai", "lease", "rent increase"],
+            "DHCR": ["dhcr", "rent stabiliz", "rent-stabiliz", "rent regulat", "rent increase",
+                     "rent control", "mci", "iai", "421-a", "j-51"],
             "DOB Filings": ["dob", "permit", "filing", "alt1", "alt2", "alt-1", "alt-2", "nb", "dm", "paa", "objection"],
             "Building Code": ["building code", "egress", "fire safety", "occupancy group", "means of egress"],
             "MDL": ["mdl", "multiple dwelling", "class a", "class b"],
-            "Zoning": ["zoning", "use group", "far ", "setback", "variance", "zr ", "r6", "r7", "r8", "c4", "c6", "m1"],
+            "Zoning": ["zoning", "use group", "far", "setback", "variance", "zr", "r6", "r7", "r8", "c4", "c6", "m1"],
             "Landmarks": ["landmark", "lpc", "historic"],
-            "Property Lookup": ["lookup", "address", "bin ", "block", "lot ", "bbl"],
+            "Property Lookup": ["lookup", "address", "bin", "block", "lot", "bbl"],
             "Plans/Drawings": ["plan", "drawing", "elevation", "floor plan", "blueprint"],
         }
         for topic, keywords in topics.items():
-            if any(kw in combined for kw in keywords):
-                logger.info(f"Keyword fallback classified '{question[:50]}...' as {topic}")
-                return topic
+            for kw in keywords:
+                if re.search(r"\b" + re.escape(kw) + r"\b", combined):
+                    logger.info(f"Keyword fallback classified '{question[:50]}...' as {topic}")
+                    return topic
         return "General"
 
 
