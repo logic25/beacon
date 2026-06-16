@@ -77,10 +77,13 @@ A: FDNY"""
         """Initialize classifier."""
         self.settings = settings or get_settings()
         self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
-        # Cheapest currently-active model for this trivial classification task.
-        # (claude-3-haiku-20240307 was retired and now 404s — broke topic tagging,
-        # forcing the keyword fallback on every call.)
-        self.model = "claude-3-5-haiku-20241022"
+        # Current Haiku for this trivial classification task. Must match a model
+        # this API key can actually serve — claude-3-haiku-20240307 AND
+        # claude-3-5-haiku-20241022 both 404 here, which silently forced the
+        # keyword fallback on EVERY call (the real cause of the DHCR over-tagging).
+        # Use the same Haiku 4.5 the rest of Beacon uses (passive listener, plan
+        # reader, email poller, config default).
+        self.model = "claude-haiku-4-5-20251001"
     
     def classify(self, question: str, response: str = "") -> str:
         """Classify a question into a topic category.
