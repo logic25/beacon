@@ -346,18 +346,38 @@ def initialize_app() -> None:
         except Exception as e:
             logger.warning(f"Content Intelligence registration failed: {e}")
 
-    # Initialize Passive Listener (monitors chat for questions without @mention)
+    # Initialize Passive Listener (monitors chat for questions without @mention).
+    # IMPORTANT: gunicorn runs multiple worker processes, and each imports this
+    # module — so without a guard, EVERY worker starts its own listener and each
+    # unanswered question gets answered N times (observed: 2 workers → Beacon
+    # replied twice in the same thread). Grab an exclusive file lock so only ONE
+    # worker actually runs the listener (same pattern as the email poller below).
     global passive_listener
     if PASSIVE_LISTENER_AVAILABLE:
         try:
-            passive_listener = PassiveListener(
-                chat_client=chat_client,
-                retriever=retriever,
-                content_engine=None,  # lazy-loaded when needed
-                claude_client=claude_client,
-                analytics_db=analytics_db,
-            )
-            passive_listener.start()
+            import fcntl
+            _listener_lock = open("/tmp/beacon_passive_listener.lock", "w")
+            try:
+                fcntl.flock(_listener_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _have_listener_lock = True
+            except (IOError, OSError):
+                _have_listener_lock = False  # another worker already owns it
+
+            if _have_listener_lock:
+                passive_listener = PassiveListener(
+                    chat_client=chat_client,
+                    retriever=retriever,
+                    content_engine=None,  # lazy-loaded when needed
+                    claude_client=claude_client,
+                    analytics_db=analytics_db,
+                )
+                passive_listener.start()
+                # keep the fd open for the process lifetime so the lock is held
+                globals()["_passive_listener_lock_fd"] = _listener_lock
+                logger.info("✅ Passive listener started (this worker holds the listener lock)")
+            else:
+                _listener_lock.close()
+                logger.info("Passive listener already running in another worker — skipping in this one")
         except Exception as e:
             logger.warning(f"Passive listener initialization failed: {e}")
             passive_listener = None
