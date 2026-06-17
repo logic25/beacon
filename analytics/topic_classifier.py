@@ -49,12 +49,28 @@ class TopicClassifier:
         "DOB System Status",     # BIS / DOB NOW Build being down/glitchy (availability, NOT a filing)
         "Property Lookup",       # Address/BIN lookups, property info
         "Plans/Drawings",        # Architectural plans, blueprints
-        "General",               # Everything else
+        "General",               # Genuine knowledge question that fits no specific topic
+        # --- Non-knowledge intents (kept OUT of the knowledge heatmap) ---
+        "Command",               # Slash commands: /help, /stats, /correct, /suggest, /feedback
+        "App/Data Query",        # Questions about THIS firm's own live data/records (counts, status, tax id)
+        "Bug/Feedback",          # Bug report or feature request about the Ordino app itself
+        "Test/Chitchat",         # Tests, greetings, jokes, off-topic
     ]
     
     SYSTEM_PROMPT = """You are a topic classifier for a NYC permit expediting firm.
 
-Your job: Categorize questions into ONE topic from this list:
+FIRST decide the message's INTENT. Only a GENUINE NYC permitting / expediting
+KNOWLEDGE question gets a domain topic. Everything else gets a non-knowledge tag
+so it stays OUT of the knowledge heatmap:
+- Command — a slash command (/help, /stats, /correct, /suggest, /feedback)
+- App/Data Query — a question about THIS firm's own live data/records, e.g. "how
+  many active projects", "who owes us money", "what's our tax id", "how is Manny
+  doing this month", "what page am I on"
+- Bug/Feedback — a bug report or feature request about the Ordino app itself, e.g.
+  "this text is too small", "add a bulk-delete", "this page won't load"
+- Test/Chitchat — a test, greeting, joke, or off-topic message ("2+2", "hello")
+
+ONLY if it is a real knowledge question, categorize it into ONE topic from this list:
 - DOB Filings (permits, ALT1/2/3, NB, PAA, objections)
 - Zoning (use groups, FAR, setbacks, variances, ZR)
 - DHCR (rent stabilization, MCI, IAI, rent increases)
@@ -88,12 +104,16 @@ Your job: Categorize questions into ONE topic from this list:
 - DOB System Status (BIS or DOB NOW Build is down/glitchy/not loading — system availability)
 - Property Lookup (address lookups, BIN/BBL, property info)
 - Plans/Drawings (architectural plans, blueprints, drawings)
-- General (anything else)
+- General (a genuine knowledge question that fits no specific topic)
+- Command / App/Data Query / Bug/Feedback / Test/Chitchat (non-knowledge — use the INTENT step above)
 
 Rules:
+0. Apply the INTENT step FIRST. A live-data question, an app bug/feature request, a
+   slash command, or a test is NOT a knowledge topic even if it mentions DOB,
+   projects, or filings — tag it Command / App/Data Query / Bug/Feedback / Test/Chitchat.
 1. Respond with ONLY the topic name, nothing else
 2. Be specific - "What time can you work until?" is Noise/Hours, not General
-3. Commands like "/feedback" or "/correct" are General
+3. Slash commands like "/feedback" or "/correct" are Command (not General)
 4. If unclear, default to the most specific category that could apply
 5. AGENCY over service-area: if a question is about another agency's permit (DEP/DOT/Parks/SAPO/DOH/HPD/OER/SCA/MTA/DOF/DSNY/DCWP/DDC/EDC/Utilities/Port Authority), tag the AGENCY, not DOB Filings
 6. DOB System Status is ONLY for "is the system working / is it down" — a question about HOW to file in BIS/DOB NOW is DOB Filings, not System Status
@@ -114,6 +134,18 @@ A: Zoning
 
 Q: "Can I get an agent to help with filing forms?"
 A: General
+
+Q: "How many active projects do we have?"
+A: App/Data Query
+
+Q: "/correct IBM is not a permit type"
+A: Command
+
+Q: "This page isn't loading and quick stats show -213m"
+A: Bug/Feedback
+
+Q: "What is 2+2?"
+A: Test/Chitchat
 
 Q: "What are the DHCR requirements for rent stabilization?"
 A: DHCR
