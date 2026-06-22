@@ -40,6 +40,13 @@ CHUNK_SETTINGS = {
     "reference": {"chunk_size": 1500, "chunk_overlap": 250},
     # Out-of-NYC filings
     "out_of_nyc_filing": {"chunk_size": 1500, "chunk_overlap": 200},
+    # Verified Q&A pairs (mined office chat / FB group, SME-approved): one Q&A =
+    # one chunk, never split. Large size + 0 overlap keeps the question, answer,
+    # and any inline table together as a single atomic retrieval unit.
+    "qa": {"chunk_size": 4000, "chunk_overlap": 0},
+    # Playbooks (decision logic / scope-price / objection plays): one entry =
+    # one chunk so the full reasoning stays intact.
+    "playbook": {"chunk_size": 8000, "chunk_overlap": 0},
 }
 
 DEFAULT_CHUNK_SIZE = 1000
@@ -83,6 +90,11 @@ class DocumentChunk:
             "source_type": self.source_type,
             "page_number": self.page_number,
             "chunk_index": self.chunk_index,
+            # Provenance: every chunk carries a verification status so retrieval
+            # (and a future buyer's diligence) can tell vetted content from an
+            # unverified bulk/AI import. Defaults False; SME-approved ingests set
+            # verified=True (+ verified_by / verified_at) in metadata.
+            "verified": self.metadata.get("verified", False),
             **self.metadata,
         }
 
