@@ -1,0 +1,6 @@
+# Beacon needs libstdc++.so.6 at runtime for `voyageai` (Voyage embeddings).
+# The default Nixpacks runtime image doesn't put it on LD_LIBRARY_PATH, which makes
+# `import voyageai` fail -> the RAG retriever can't embed -> the chat passive listener
+# silently answers nothing. Expose the C++ standard library at runtime.
+[phases.setup]
+nixLibs = ["stdenv.cc.cc.lib"]
