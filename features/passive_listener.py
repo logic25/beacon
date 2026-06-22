@@ -497,6 +497,32 @@ class PassiveListener:
     # Response & logging
     # ------------------------------------------------------------------
 
+    def _get_recent_context(self, pq: "PendingQuestion", limit: int = 6) -> str:
+        """Fetch the few chat messages just BEFORE the question so references like
+        'this'/'that' resolve (e.g. 'how do we pay this?' right after an
+        'ENERGY CODE COMPLIANCE REVIEW FEE' message). Returns a short transcript."""
+        try:
+            from urllib.parse import urlencode
+            params = {"pageSize": 25, "orderBy": "createTime desc"}
+            url = f"{self.chat_client.BASE_URL}/{self._space_name}/messages?{urlencode(params)}"
+            resp = self.chat_client._make_request("GET", url)
+            if resp.status_code != 200:
+                return ""
+            msgs = resp.json().get("messages", [])  # newest-first
+            qi = next((i for i, m in enumerate(msgs) if m.get("name") == pq.message_id), None)
+            preceding = msgs[qi + 1: qi + 1 + limit] if qi is not None else msgs[:limit]
+            lines = []
+            for m in reversed(preceding):  # chronological order
+                txt = (m.get("text") or "").strip()
+                if not txt:
+                    continue
+                sender = (m.get("sender") or {}).get("displayName") or "Someone"
+                lines.append(f"{sender}: {txt[:300]}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"Could not fetch recent context: {e}")
+            return ""
+
     def _offer_help(self, pq: PendingQuestion):
         """Send a helpful Beacon response in the thread."""
         if not self.retriever or not self.claude:
@@ -504,9 +530,14 @@ class PassiveListener:
             return
 
         try:
+            # Pull the few preceding chat messages so the question's references resolve,
+            # AND so retrieval sees the real topic (not just a bare "how do we pay this?").
+            recent_context = self._get_recent_context(pq)
+            retrieval_query = f"{recent_context}\n{pq.text}".strip() if recent_context else pq.text
+
             # Get RAG context
             retrieval_result = self.retriever.retrieve(
-                query=pq.text,
+                query=retrieval_query,
                 top_k=5,
                 min_score=0.55,
             )
@@ -538,7 +569,9 @@ class PassiveListener:
             system_prompt = (
                 "You are Beacon, the AI assistant for Green Light Expediting (GLE), a NYC "
                 "expediting firm. You spotted a work question in the team chat that nobody has "
-                "answered yet. The team are expert expeditors and PMs — be direct and substantive, "
+                "answered yet. Use the recent chat conversation provided to understand what the "
+                "question refers to (resolve 'this'/'that' from the messages before it). The team "
+                "are expert expeditors and PMs — be direct and substantive, "
                 "not basic. Answer ONLY from the knowledge base context provided; do not guess or "
                 "invent code/filing specifics. If the context doesn't clearly answer it, say so "
                 "plainly and suggest checking with their manager (Chris or Manny) — never make "
@@ -549,7 +582,14 @@ class PassiveListener:
             )
 
             rag_context = retrieval_result.context
-            user_prompt = f"Question from {pq.sender_name}: {pq.text}\n\nKnowledge base context:\n{rag_context}"
+            context_block = (
+                f"Recent chat conversation (for context — resolve references like 'this'/'that' "
+                f"from it):\n{recent_context}\n\n" if recent_context else ""
+            )
+            user_prompt = (
+                f"{context_block}Question to answer (from {pq.sender_name}): {pq.text}\n\n"
+                f"Knowledge base context:\n{rag_context}"
+            )
 
             msg = Message(role="user", content=f"{system_prompt}\n\n{user_prompt}")
             response_text, model_used, usage = self.claude.get_response(
