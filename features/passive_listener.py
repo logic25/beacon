@@ -190,6 +190,7 @@ class PassiveListener:
         self._last_poll_time: Optional[str] = None  # RFC 3339 timestamp
         self._pending_questions: dict[str, PendingQuestion] = {}
         self._processed_message_ids: set[str] = set()  # avoid re-processing
+        self._seen_reactions: set[str] = set()  # reactions already logged as feedback
         self._max_processed_cache = 5000  # rotate after this many
 
     @property
@@ -232,6 +233,7 @@ class PassiveListener:
             try:
                 self._poll_new_messages()
                 self._check_pending_questions()
+                self._poll_reactions()
             except Exception as e:
                 logger.error(f"Passive listener error: {e}", exc_info=True)
 
@@ -240,6 +242,59 @@ class PassiveListener:
                 if not self._running:
                     break
                 time.sleep(1)
+
+    def _poll_reactions(self):
+        """Log 👍/👎 reactions as feedback — but ONLY on Beacon's OWN messages
+        (sender.type == 'BOT'). A reaction on a teammate's message is ignored, so
+        thumbs-upping Sheri never touches the Beacon feedback log."""
+        try:
+            from urllib.parse import urlencode
+            url = (f"{self.chat_client.BASE_URL}/{self._space_name}/messages?"
+                   f"{urlencode({'pageSize': 25, 'orderBy': 'createTime desc'})}")
+            resp = self.chat_client._make_request("GET", url)
+            if resp.status_code != 200:
+                return
+            for m in resp.json().get("messages", []):
+                if (m.get("sender") or {}).get("type") != "BOT":
+                    continue  # ONLY Beacon's own messages count as feedback
+                name = m.get("name")
+                if not name:
+                    continue
+                rr = self.chat_client._make_request(
+                    "GET", f"{self.chat_client.BASE_URL}/{name}/reactions")
+                if rr.status_code != 200:
+                    continue
+                for rx in rr.json().get("reactions", []):
+                    emoji = (rx.get("emoji") or {}).get("unicode") or ""
+                    if emoji not in ("👍", "👎"):
+                        continue
+                    user = rx.get("user") or {}
+                    key = f"{name}|{user.get('name', '')}|{emoji}"
+                    if key in self._seen_reactions:
+                        continue
+                    self._seen_reactions.add(key)
+                    self._log_reaction_feedback(m, emoji, user)
+            if len(self._seen_reactions) > self._max_processed_cache:
+                self._seen_reactions.clear()
+        except Exception as e:
+            logger.warning(f"Reaction poll failed: {e}")
+
+    def _log_reaction_feedback(self, beacon_msg: dict, emoji: str, user: dict):
+        """Record a 👍/👎 on a Beacon answer to beacon_feedback (positive/negative)."""
+        if not self.analytics_db:
+            return
+        answer = (beacon_msg.get("text") or "")[:300]
+        ftype = "positive" if emoji == "👍" else "negative"
+        try:
+            self.analytics_db._call("log_feedback", {
+                "user_id": user.get("name", ""),
+                "user_name": user.get("displayName", "") or "chat user",
+                "feedback_text": f"{emoji} reaction on Beacon answer: {answer}",
+                "feedback_type": ftype,
+            })
+            logger.info(f"Logged {emoji} reaction feedback on a Beacon answer")
+        except Exception as e:
+            logger.error(f"Failed to log reaction feedback: {e}")
 
     def _poll_new_messages(self):
         """Fetch new messages from the space and classify them."""
