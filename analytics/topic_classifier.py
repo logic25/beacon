@@ -53,7 +53,8 @@ class TopicClassifier:
         # --- Non-knowledge intents (kept OUT of the knowledge heatmap) ---
         "Command",               # Slash commands: /help, /stats, /correct, /suggest, /feedback
         "App/Data Query",        # Questions about THIS firm's own live data/records (counts, status, tax id)
-        "Bug/Feedback",          # Bug report or feature request about the Ordino app itself
+        "Bug Report",            # Something in the Ordino app is broken/erroring (lets us COUNT bugs via Beacon)
+        "Feature/Feedback",      # Feature request or product feedback about the Ordino app
         "Test/Chitchat",         # Tests, greetings, jokes, off-topic
     ]
     
@@ -66,8 +67,10 @@ so it stays OUT of the knowledge heatmap:
 - App/Data Query — a question about THIS firm's own live data/records, e.g. "how
   many active projects", "who owes us money", "what's our tax id", "how is Manny
   doing this month", "what page am I on"
-- Bug/Feedback — a bug report or feature request about the Ordino app itself, e.g.
-  "this text is too small", "add a bulk-delete", "this page won't load"
+- Bug Report — something in the Ordino app is broken/erroring, e.g. "cannot save an
+  application", "can't attach a photo", "this page won't load", "stats show -213m"
+- Feature/Feedback — a feature request or product feedback about the app, e.g. "add a
+  bulk-delete", "this text is too small", "can we sort by date"
 - Test/Chitchat — a test, greeting, joke, or off-topic message ("2+2", "hello")
 
 ONLY if it is a real knowledge question, categorize it into ONE topic from this list:
@@ -105,12 +108,12 @@ ONLY if it is a real knowledge question, categorize it into ONE topic from this 
 - Property Lookup (address lookups, BIN/BBL, property info)
 - Plans/Drawings (architectural plans, blueprints, drawings)
 - General (a genuine knowledge question that fits no specific topic)
-- Command / App/Data Query / Bug/Feedback / Test/Chitchat (non-knowledge — use the INTENT step above)
+- Command / App/Data Query / Bug Report / Feature/Feedback / Test/Chitchat (non-knowledge — use the INTENT step above)
 
 Rules:
 0. Apply the INTENT step FIRST. A live-data question, an app bug/feature request, a
    slash command, or a test is NOT a knowledge topic even if it mentions DOB,
-   projects, or filings — tag it Command / App/Data Query / Bug/Feedback / Test/Chitchat.
+   projects, or filings — tag it Command / App/Data Query / Bug Report / Feature/Feedback / Test/Chitchat.
 1. Respond with ONLY the topic name, nothing else
 2. Be specific - "What time can you work until?" is Noise/Hours, not General
 3. Slash commands like "/feedback" or "/correct" are Command (not General)
@@ -141,8 +144,11 @@ A: App/Data Query
 Q: "/correct IBM is not a permit type"
 A: Command
 
-Q: "This page isn't loading and quick stats show -213m"
-A: Bug/Feedback
+Q: "Cannot save an application" / "can't attach a photo"
+A: Bug Report
+
+Q: "Can we add a bulk-delete button?"
+A: Feature/Feedback
 
 Q: "What is 2+2?"
 A: Test/Chitchat
