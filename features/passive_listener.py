@@ -190,6 +190,8 @@ class PassiveListener:
         self._last_poll_time: Optional[str] = None  # RFC 3339 timestamp
         self._pending_questions: dict[str, PendingQuestion] = {}
         self._processed_message_ids: set[str] = set()  # avoid re-processing
+        self._seen_reactions: set[str] = set()  # reactions already logged as feedback
+        self._prompted_messages: set[str] = set()  # Beacon msgs we've asked to /correct
         self._max_processed_cache = 5000  # rotate after this many
 
     @property
@@ -232,6 +234,7 @@ class PassiveListener:
             try:
                 self._poll_new_messages()
                 self._check_pending_questions()
+                self._poll_reactions()
             except Exception as e:
                 logger.error(f"Passive listener error: {e}", exc_info=True)
 
@@ -240,6 +243,73 @@ class PassiveListener:
                 if not self._running:
                     break
                 time.sleep(1)
+
+    def _poll_reactions(self):
+        """Log 👍/👎 reactions as feedback — but ONLY on Beacon's OWN messages
+        (sender.type == 'BOT'). A reaction on a teammate's message is ignored, so
+        thumbs-upping Sheri never touches the Beacon feedback log."""
+        try:
+            from urllib.parse import urlencode
+            url = (f"{self.chat_client.BASE_URL}/{self._space_name}/messages?"
+                   f"{urlencode({'pageSize': 25, 'orderBy': 'createTime desc'})}")
+            resp = self.chat_client._make_request("GET", url)
+            if resp.status_code != 200:
+                return
+            for m in resp.json().get("messages", []):
+                if (m.get("sender") or {}).get("type") != "BOT":
+                    continue  # ONLY Beacon's own messages count as feedback
+                name = m.get("name")
+                if not name:
+                    continue
+                rr = self.chat_client._make_request(
+                    "GET", f"{self.chat_client.BASE_URL}/{name}/reactions")
+                if rr.status_code != 200:
+                    continue
+                for rx in rr.json().get("reactions", []):
+                    emoji = (rx.get("emoji") or {}).get("unicode") or ""
+                    if emoji not in ("👍", "👎"):
+                        continue
+                    user = rx.get("user") or {}
+                    key = f"{name}|{user.get('name', '')}|{emoji}"
+                    if key in self._seen_reactions:
+                        continue
+                    self._seen_reactions.add(key)
+                    self._log_reaction_feedback(m, emoji, user)
+            if len(self._seen_reactions) > self._max_processed_cache:
+                self._seen_reactions.clear()
+        except Exception as e:
+            logger.warning(f"Reaction poll failed: {e}")
+
+    def _log_reaction_feedback(self, beacon_msg: dict, emoji: str, user: dict):
+        """Record a 👍/👎 on a Beacon answer, and on a 👎 invite the correction
+        (Google Chat has no pop-up, so Beacon asks for the fix in-thread)."""
+        answer = (beacon_msg.get("text") or "")[:300]
+        ftype = "positive" if emoji == "👍" else "negative"
+        if self.analytics_db:
+            try:
+                self.analytics_db._call("log_feedback", {
+                    "user_id": user.get("name", ""),
+                    "user_name": user.get("displayName", "") or "chat user",
+                    "feedback_text": f"{emoji} reaction on Beacon answer: {answer}",
+                    "feedback_type": ftype,
+                })
+                logger.info(f"Logged {emoji} reaction feedback on a Beacon answer")
+            except Exception as e:
+                logger.error(f"Failed to log reaction feedback: {e}")
+        # On a 👎, ask for the right answer once per message (Chat has no pop-up).
+        if emoji == "👎":
+            name = beacon_msg.get("name")
+            if name and name not in self._prompted_messages:
+                self._prompted_messages.add(name)
+                try:
+                    self.chat_client.send_message(
+                        self._space_name,
+                        "Thanks for the 👎 — I've flagged that answer as off. If you know the "
+                        "right answer, reply `/correct <the correct answer>` and I'll learn it.",
+                        thread_name=(beacon_msg.get("thread") or {}).get("name"),
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to post correction prompt: {e}")
 
     def _poll_new_messages(self):
         """Fetch new messages from the space and classify them."""
@@ -497,6 +567,64 @@ class PassiveListener:
     # Response & logging
     # ------------------------------------------------------------------
 
+    def _get_recent_context(self, pq: "PendingQuestion", limit: int = 40, hours: int = 12) -> str:
+        """Pull the recent back-and-forth BEFORE the question so Beacon can find its
+        footing the way a human would — scan today's relevant chat, not a fixed 6.
+        Takes up to `limit` messages from the last `hours` hours preceding the
+        question (whichever bound hits first). Returns a chronological transcript."""
+        try:
+            from urllib.parse import urlencode
+            params = {"pageSize": 100, "orderBy": "createTime desc"}
+            url = f"{self.chat_client.BASE_URL}/{self._space_name}/messages?{urlencode(params)}"
+            resp = self.chat_client._make_request("GET", url)
+            if resp.status_code != 200:
+                return ""
+            msgs = resp.json().get("messages", [])  # newest-first
+            qi = next((i for i, m in enumerate(msgs) if m.get("name") == pq.message_id), None)
+            preceding = msgs[qi + 1:] if qi is not None else msgs
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+            lines = []
+            for m in preceding:  # newest-first
+                ct = (m.get("createTime") or "")[:19]
+                if ct and ct < cutoff:
+                    break  # older than the window — a human wouldn't scroll back further
+                txt = (m.get("text") or "").strip()
+                if not txt:
+                    continue
+                sender = (m.get("sender") or {}).get("displayName") or "Someone"
+                lines.append(f"{sender}: {txt[:300]}")
+                if len(lines) >= limit:
+                    break
+            return "\n".join(reversed(lines))  # chronological
+        except Exception as e:
+            logger.warning(f"Could not fetch recent context: {e}")
+            return ""
+
+    def _resolve_question(self, question: str, context: str) -> str:
+        """Use the recent conversation to restate the question as a self-contained one
+        (resolve 'this'/'that'), so retrieval searches the real topic. Falls back to
+        the raw question on any failure or empty context."""
+        if not context or not self.claude:
+            return question
+        try:
+            from core.llm_client import Message
+            prompt = (
+                "From this NYC permit-expediting team chat, restate the LAST question as "
+                "ONE clear, self-contained question — resolve references like 'this'/'that' "
+                "using the conversation. Reply with ONLY the rewritten question.\n\n"
+                f"Conversation:\n{context}\n\nLast question: {question}"
+            )
+            out, _, _ = self.claude.get_response(
+                user_message=prompt,
+                conversation_history=[Message(role="user", content=prompt)],
+                model_override="claude-haiku-4-5-20251001",
+            )
+            resolved = (out or "").strip()
+            return resolved if 8 <= len(resolved) <= 400 else question
+        except Exception as e:
+            logger.warning(f"Question resolve failed: {e}")
+            return question
+
     def _offer_help(self, pq: PendingQuestion):
         """Send a helpful Beacon response in the thread."""
         if not self.retriever or not self.claude:
@@ -504,9 +632,15 @@ class PassiveListener:
             return
 
         try:
+            # Find footing like a human: scan today's recent back-and-forth, then
+            # "resolve" the self-contained question and search on THAT (focused),
+            # instead of stuffing a noisy transcript into the retrieval query.
+            recent_context = self._get_recent_context(pq)
+            resolved_q = self._resolve_question(pq.text, recent_context)
+
             # Get RAG context
             retrieval_result = self.retriever.retrieve(
-                query=pq.text,
+                query=resolved_q,
                 top_k=5,
                 min_score=0.55,
             )
@@ -538,7 +672,9 @@ class PassiveListener:
             system_prompt = (
                 "You are Beacon, the AI assistant for Green Light Expediting (GLE), a NYC "
                 "expediting firm. You spotted a work question in the team chat that nobody has "
-                "answered yet. The team are expert expeditors and PMs — be direct and substantive, "
+                "answered yet. Use the recent chat conversation provided to understand what the "
+                "question refers to (resolve 'this'/'that' from the messages before it). The team "
+                "are expert expeditors and PMs — be direct and substantive, "
                 "not basic. Answer ONLY from the knowledge base context provided; do not guess or "
                 "invent code/filing specifics. If the context doesn't clearly answer it, say so "
                 "plainly and suggest checking with their manager (Chris or Manny) — never make "
@@ -549,7 +685,14 @@ class PassiveListener:
             )
 
             rag_context = retrieval_result.context
-            user_prompt = f"Question from {pq.sender_name}: {pq.text}\n\nKnowledge base context:\n{rag_context}"
+            context_block = (
+                f"Recent chat conversation (for context — resolve references like 'this'/'that' "
+                f"from it):\n{recent_context}\n\n" if recent_context else ""
+            )
+            user_prompt = (
+                f"{context_block}Question to answer (from {pq.sender_name}): {pq.text}\n\n"
+                f"Knowledge base context:\n{rag_context}"
+            )
 
             msg = Message(role="user", content=f"{system_prompt}\n\n{user_prompt}")
             response_text, model_used, usage = self.claude.get_response(
