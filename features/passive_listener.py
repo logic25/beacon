@@ -702,10 +702,19 @@ class PassiveListener:
             )
 
             if response_text:
-                # Cite sources so the team can verify (already retrieved).
-                source_titles = [s.title for s in retrieval_result.sources[:2] if getattr(s, "title", None)]
-                if source_titles:
-                    response_text = f"{response_text}\n\n📚 Source: {', '.join(source_titles)}"
+                # Cite sources so the team can verify. NOTE: retrieval sources are
+                # DICTS (keys: file/type/score…), not objects — the old `s.title` was
+                # attribute access on a dict, so GChat never cited anything. Use the
+                # source FILE, cleaned up, as the citation label.
+                import os
+                source_labels = []
+                for s in retrieval_result.sources[:2]:
+                    f = s.get("file") or s.get("source_file") or ""
+                    lbl = os.path.splitext(os.path.basename(f))[0].replace("_", " ").strip()
+                    if lbl and lbl not in source_labels:
+                        source_labels.append(lbl)
+                if source_labels:
+                    response_text = f"{response_text}\n\n📚 Source: {', '.join(source_labels)}"
                 # Send in the same thread
                 result = self.chat_client.send_message(
                     self._space_name,
@@ -731,7 +740,7 @@ class PassiveListener:
                                 answered=True,
                                 response_length=len(response_text),
                                 had_sources=retrieval_result.num_results > 0,
-                                sources_used=[s.title for s in retrieval_result.sources[:3]],
+                                sources_used=[s.get("file") for s in retrieval_result.sources[:3]],
                                 tokens_used=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
                                 cost_usd=0.0,
                                 response_time_ms=0,
