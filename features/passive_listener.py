@@ -230,6 +230,9 @@ class PassiveListener:
 
     def _poll_loop(self):
         """Main polling loop — runs in a background thread."""
+        # Mark reactions that ALREADY exist as handled, so a redeploy/restart doesn't
+        # re-log feedback or re-ask for /correct on 👎s the team left earlier.
+        self._seed_seen_reactions()
         while self._running:
             try:
                 self._poll_new_messages()
@@ -243,6 +246,70 @@ class PassiveListener:
                 if not self._running:
                     break
                 time.sleep(1)
+
+    def _seed_seen_reactions(self):
+        """One-time, on startup: record every reaction that already exists so a
+        restart doesn't re-process old 👍/👎 (the reactions API always returns the
+        CURRENT reactions regardless of message age). Without this, each redeploy
+        re-logged feedback and re-asked '/correct' for the same old downvote."""
+        try:
+            from urllib.parse import urlencode
+            url = (f"{self.chat_client.BASE_URL}/{self._space_name}/messages?"
+                   f"{urlencode({'pageSize': 25, 'orderBy': 'createTime desc'})}")
+            resp = self.chat_client._make_request("GET", url)
+            if resp.status_code != 200:
+                return
+            n = 0
+            for m in resp.json().get("messages", []):
+                if (m.get("sender") or {}).get("type") != "BOT":
+                    continue
+                name = m.get("name")
+                if not name:
+                    continue
+                rr = self.chat_client._make_request(
+                    "GET", f"{self.chat_client.BASE_URL}/{name}/reactions")
+                if rr.status_code != 200:
+                    continue
+                for rx in rr.json().get("reactions", []):
+                    emoji = (rx.get("emoji") or {}).get("unicode") or ""
+                    if emoji not in ("👍", "👎"):
+                        continue
+                    user = rx.get("user") or {}
+                    self._seen_reactions.add(f"{name}|{user.get('name', '')}|{emoji}")
+                    if emoji == "👎":
+                        self._prompted_messages.add(name)  # don't re-ask for this one
+                    n += 1
+            logger.info(f"Seeded {n} existing reactions on startup (no re-prompt)")
+        except Exception as e:
+            logger.warning(f"Reaction seed failed: {e}")
+
+    def _handle_chat_correction(self, msg: dict, text: str):
+        """A teammate replied '/correct <the right answer>' to teach Beacon. Chat only
+        delivers @mentions to the webhook, so a plain reply would otherwise reach nobody
+        — the listener handles it here: log the correction and confirm in-thread. Also
+        accepts the legacy 'wrong | right' form (keeps the right side)."""
+        correction = text[len("/correct"):].lstrip(" :").strip()
+        if "|" in correction:
+            correction = correction.split("|", 1)[1].strip()
+        if not correction or not self.analytics_db:
+            return
+        sender = msg.get("sender", {}) or {}
+        try:
+            self.analytics_db._call("log_correction", {
+                "user_id": sender.get("name", ""),
+                "user_name": sender.get("displayName", "") or "chat user",
+                "wrong_answer": "(submitted via chat /correct)",
+                "correct_answer": correction[:1500],
+                "topics": [],
+            })
+            self.chat_client.send_message(
+                self._space_name,
+                "Got it — I've learned that. Thanks 🙏",
+                thread_name=(msg.get("thread") or {}).get("name"),
+            )
+            logger.info("Applied a /correct from chat")
+        except Exception as e:
+            logger.error(f"Failed to handle chat /correct: {e}")
 
     def _poll_reactions(self):
         """Log 👍/👎 reactions as feedback — but ONLY on Beacon's OWN messages
@@ -357,6 +424,12 @@ class PassiveListener:
 
                 text = msg.get("text", "").strip()
                 if not text:
+                    continue
+
+                # Handle a plain "/correct …" reply here — Chat only delivers @mentions
+                # to the webhook, so without this the nudge's /correct would reach nobody.
+                if text.lower().startswith("/correct"):
+                    self._handle_chat_correction(msg, text)
                     continue
 
                 # Classify
