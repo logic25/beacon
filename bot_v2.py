@@ -2480,6 +2480,51 @@ def delete_knowledge_file():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/knowledge/update-metadata", methods=["POST"])
+def update_knowledge_metadata():
+    """Update a KB doc's title / folder / jurisdiction IN PLACE — no re-embed, no
+    duplicate, chunk IDs preserved. Use this for Ordino's doc Properties editor so a
+    rename/move/jurisdiction change doesn't re-ingest the file (which leaves the old
+    copy behind). JSON: {"source_file": "...", "title"?, "folder"?, "jurisdiction"?}
+    (any subset). Requires the x-beacon-key admin secret."""
+    if not _kb_delete_authorized():
+        return jsonify({"error": "Unauthorized — KB edits require the admin key"}), 403
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+    data = request.get_json(silent=True) or {}
+    source_file = (data.get("source_file") or "").strip()
+    if not source_file:
+        return jsonify({"error": "source_file is required"}), 400
+    set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction") if data.get(k) is not None}
+    if not set_meta:
+        return jsonify({"error": "nothing to update (title/folder/jurisdiction)"}), 400
+    try:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+        updated = 0
+        # Manifest vector(s) — what /api/knowledge/list reads for title/folder.
+        for id_batch in index.list(prefix="__file__:", limit=100):
+            if not id_batch:
+                break
+            fetched = index.fetch(ids=list(id_batch))
+            for vid, vdata in fetched.vectors.items():
+                if (vdata.metadata or {}).get("source_file", "") == source_file:
+                    index.update(id=vid, set_metadata=set_meta)
+                    updated += 1
+        # Content chunks (top_k high enough for any single doc).
+        dummy = vector_store.embed_query(f"content from {source_file}")
+        res = index.query(vector=dummy, top_k=300, include_metadata=True,
+                          filter={"source_file": {"$eq": source_file}})
+        for m in res.matches:
+            index.update(id=m.id, set_metadata=set_meta)
+            updated += 1
+        logger.info(f"[KB Update] '{source_file}' metadata updated ({updated} vectors): {set_meta}")
+        return jsonify({"success": True, "source_file": source_file, "updated": updated, "set": set_meta})
+    except Exception as e:
+        logger.exception(f"[Update Knowledge Metadata] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/knowledge/delete-batch", methods=["POST"])
 def delete_knowledge_batch():
     """Delete multiple files from Pinecone in one call.
