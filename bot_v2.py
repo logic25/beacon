@@ -1244,7 +1244,7 @@ def api_chat():
         # RAG retrieval — skip if this is an operational query handled by tools
         _msg_lower = user_message.lower()
         _tool_keywords = ["project", "property", "status", "readiness", "ready to file",
-            "filing", "pm ", "sheri", "chris", "sai", "workload", "how many",
+            "pm ", "sheri", "chris", "sai", "workload", "how many",
             "what's up with", "what's happening", "any news", "update on",
             "proposal", "invoice", "billing", "overdue", "outstanding", "revenue",
             "pipeline", "violation", "penalty", "compliance", "follow up",
@@ -1258,6 +1258,16 @@ def api_chat():
                 "week", "how about", "what about", "and ", "same", "compare", "vs",
                 "more", "detail", "which", "who", "when", "total", "all"]
             skip_rag = any(w in _msg_lower for w in _followup_words)
+        # Informational questions (fees, costs, requirements, how-to, forms) are ALWAYS
+        # knowledge-base queries even when they mention an operational word like
+        # "violation", "compliance", or "project" — never skip RAG for these.
+        _info_intent = any(p in _msg_lower for p in [
+            "how much", "how to", "how do i file", "how long", "cost of", "fee for",
+            "fees for", "filing fee", "what's the fee", "what is the fee", "requirement",
+            "do i need", "which form", "what form", "difference between", "when do you",
+            "when is", "explain"])
+        if _info_intent:
+            skip_rag = False
         if skip_rag:
             logger.info("[API Chat] Skipping RAG — operational query will use Ordino tools")
 
