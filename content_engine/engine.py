@@ -75,8 +75,12 @@ class ContentEngine:
         """Lazy-load the Supabase analytics backend."""
         if self._analytics_db is None:
             try:
-                from analytics.analytics_supabase import SupabaseAnalytics
-                self._analytics_db = SupabaseAnalytics()
+                from analytics.analytics_supabase import SupabaseAnalyticsDB
+                from config import Settings as _Settings
+                _s = _Settings()
+                self._analytics_db = SupabaseAnalyticsDB(
+                    _s.supabase_url, os.getenv("BEACON_ANALYTICS_KEY", "")
+                )
                 logger.info("Content engine using Supabase backend")
             except Exception as e:
                 logger.warning(f"Supabase not available, using SQLite: {e}")
@@ -281,6 +285,11 @@ Write 1200-1500 words:
   qualitatively (e.g. "fees vary by estimated construction cost") WITHOUT inventing a
   number. Accuracy is more important than completeness — a wrong fee or code citation
   destroys credibility.
+- NEVER build a fee table, fee schedule, or list of specific amounts by filling in
+  estimated/typical numbers. If the documents contain only some fees or only a formula,
+  present ONLY the amounts that appear in the documents (and the formula), then say other
+  fees "vary by construction cost and work type — confirm the current amount in DOB NOW."
+  An incomplete-but-correct answer beats a complete-looking table of invented figures.
 - REQUIRED final section — a clear call-to-action: getting the filing type wrong costs
   weeks of rework and examiner scrutiny. State that Green Light Expediting handles NYC
   DOB filings like this every day and can get it filed right the first time. Invite the
