@@ -421,6 +421,7 @@ IMPORTANT:
         model_override: Optional[str] = None,
         user_jwt: Optional[str] = None,
         max_tokens_override: Optional[int] = None,
+        temperature_override: Optional[float] = None,
     ) -> tuple[str, str, dict]:
         """Get a response from Claude, optionally with RAG context.
 
@@ -470,7 +471,8 @@ IMPORTANT:
             response = self.client.messages.create(
                 model=model,
                 max_tokens=max_tokens_override or self.settings.claude_max_tokens,
-                temperature=self.settings.claude_temperature,
+                temperature=(temperature_override if temperature_override is not None
+                             else self.settings.claude_temperature),
                 system=system_prompt,
                 messages=messages,
                 tools=TOOL_DEFINITIONS,

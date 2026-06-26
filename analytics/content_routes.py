@@ -537,7 +537,11 @@ def generate_content():
         content = (engine.generate_blog_post(candidate_id, candidate=candidate)
                    if content_type == 'blog_post'
                    else engine.generate_newsletter(candidate_id, candidate=candidate))
-        return jsonify({"success": True, "content": content, "word_count": len(content.split())})
+        # Surface the grounding gate so Ordino can flag drafts with unsourced facts
+        # (fees/dollar amounts/code citations) before publish.
+        grounding = getattr(engine, "_last_grounding", None)
+        return jsonify({"success": True, "content": content,
+                        "word_count": len(content.split()), "grounding": grounding})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
