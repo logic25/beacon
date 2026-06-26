@@ -244,16 +244,20 @@ Summarize in 2-3 paragraphs:
         if not candidate:
             raise ValueError(f"Candidate {candidate_id} not found")
 
-        # Get context from Beacon's knowledge base
-        retrieval_result = self.retriever.retrieve(candidate.title, top_k=3)
+        # Get context from Beacon's knowledge base.
+        # Richer query (title + topics + real questions) and a wider top_k so the
+        # specific facts (fees, timelines, code sections) actually surface — the old
+        # title-only top_k=3 missed facts that existed in the KB.
+        query_parts = [candidate.title]
+        query_parts += (candidate.key_topics or [])
+        query_parts += (candidate.team_questions or [])[:3]
+        retrieval_query = " ".join(p for p in query_parts if p)
+        retrieval_result = self.retriever.retrieve(retrieval_query, top_k=8)
         context = retrieval_result.context
 
         prompt = f"""Write a blog post for Green Light Expediting.
 
 Title: {candidate.title}
-
-Context from our knowledge base:
-{context}
 
 Team has been asking about this {candidate.team_questions_count} times.
 {f"Most common concern: {candidate.most_common_angle}" if candidate.most_common_angle else ""}
@@ -271,6 +275,12 @@ Write 1200-1500 words:
 - Include FAQ section with their actual questions
 - SEO keyword: {candidate.key_topics[0] if candidate.key_topics else candidate.title}
 - Actionable, expert but approachable tone
+- GROUNDING — do NOT invent specifics. Only state a fee, dollar amount, timeline,
+  day-count, percentage, or code/section number if it appears verbatim in the retrieved
+  knowledge-base documents. If a specific figure is not in the documents, describe it
+  qualitatively (e.g. "fees vary by estimated construction cost") WITHOUT inventing a
+  number. Accuracy is more important than completeness — a wrong fee or code citation
+  destroys credibility.
 - REQUIRED final section — a clear call-to-action: getting the filing type wrong costs
   weeks of rework and examiner scrutiny. State that Green Light Expediting handles NYC
   DOB filings like this every day and can get it filed right the first time. Invite the
@@ -282,18 +292,60 @@ Format: Markdown with # headers"""
         from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
 
+        # Pass the retrieved context as rag_context so the anti-fabrication grounding
+        # rules (_build_rag_instructions) actually fire — they were skipped before
+        # because context was only baked into the prompt string. Low temperature for
+        # factual generation.
         content, _, _ = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg],
+            rag_context=context,
             format_for="web",
             max_tokens_override=4000,
+            temperature_override=0.2,
         )
+
+        # Post-generation grounding gate: flag specific claims (fees, dollar amounts,
+        # code/section numbers) not backed by the retrieved documents, so they can be
+        # reviewed before publish.
+        self._last_grounding = self._grounding_check(content, retrieval_result.sources)
+        if self._last_grounding["grounding_score"] < 0.7:
+            logger.warning(
+                "Low grounding on blog '%s': score=%.2f ungrounded=%s",
+                candidate.title, self._last_grounding["grounding_score"],
+                self._last_grounding["ungrounded_claims"],
+            )
 
         # Save the generated draft
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
         self._save_generated(gen_id, candidate_id, "blog_post", candidate.title, content)
 
         return content
+
+    def _grounding_check(self, content: str, sources: list) -> dict:
+        """Flag high-signal factual claims (fees, dollar amounts, code/section numbers)
+        in generated content that do not appear in the retrieved source documents.
+
+        Returns a dict with grounding_score (1.0 = all grounded), total_claims, and the
+        list of ungrounded_claims. Deterministic string-match — no extra LLM cost.
+        """
+        import re as _re
+        blob = _re.sub(r"[\s,]", "", "".join(
+            (s.get("text", "") if isinstance(s, dict) else "") for s in (sources or [])
+        ).lower())
+        patterns = [
+            r"\$[\d,]+(?:\.\d+)?",                          # dollar amounts
+            r"(?:§|[Ss]ection\s+)\s?\d+(?:[.\-]\d+)+",      # § / Section numbers
+            r"\b(?:ZR|BC|MDL|RCNY|NYCECC)\s?\d+(?:[.\-]\d+)*",  # code citations
+        ]
+        claims = []
+        for p in patterns:
+            claims += _re.findall(p, content or "", _re.I)
+        claims = list(dict.fromkeys(c.strip() for c in claims))  # dedupe, keep order
+        ungrounded = [c for c in claims if _re.sub(r"[\s,]", "", c.lower()) not in blob]
+        total = len(claims)
+        score = 1.0 if total == 0 else round(1 - len(ungrounded) / total, 2)
+        return {"grounding_score": score, "total_claims": total, "ungrounded_claims": ungrounded}
 
     def generate_newsletter(self, candidate_id: str, candidate: "ContentCandidate" = None) -> str:
         """Generate a newsletter section for a candidate."""
