@@ -48,8 +48,17 @@ POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL", "3600"))  # 1 hour default
 BEACON_EMAIL = os.getenv("BEACON_EMAIL", "")
 
 # Sender patterns to look for (comma-separated)
-# Default: DOB Buildings News
-DEFAULT_SENDERS = "noreply@buildings.nyc.gov,no-reply@buildings.nyc.gov,buildings@nyc.gov"
+# Default: DOB Buildings News.
+# NOTE: NYC.gov subscription newsletters (the "My NYC.gov News" digest, incl. the
+# DOB "Buildings News Update") are actually sent from newsletters.nyc.gov — NOT
+# buildings.nyc.gov — so that subdomain must be included or those emails are skipped.
+DEFAULT_SENDERS = (
+    "noreply@newsletters.nyc.gov,"
+    "no-reply@newsletters.nyc.gov,"
+    "noreply@buildings.nyc.gov,"
+    "no-reply@buildings.nyc.gov,"
+    "buildings@nyc.gov"
+)
 SENDER_FILTERS = os.getenv("EMAIL_SENDER_FILTERS", DEFAULT_SENDERS).split(",")
 
 # Gmail API scopes needed for reading + labeling
