@@ -457,6 +457,20 @@ class EmailPoller:
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
 
+        # Preload existing pending candidate titles once, for dedup — so a
+        # re-processed newsletter (e.g. after a redeploy) doesn't create duplicate
+        # candidates. Mirrors the dedup already in /api/ingest-email (PR #41); the
+        # poller creates candidates through its own path, which that fix did not cover.
+        existing_titles = set()
+        if self.content_engine:
+            try:
+                existing_titles = {
+                    (c.title or "").strip().lower()
+                    for c in self.content_engine.get_pending_candidates()
+                }
+            except Exception as e:
+                logger.warning(f"  Candidate dedup preload failed: {e}")
+
         for update in updates:
             title = update.get("title", "Untitled Update")
             summary = update.get("summary", "")
@@ -539,16 +553,21 @@ Type: {source_type}
                 except Exception as e:
                     logger.error(f"  Failed to ingest source PDF {source_url}: {e}")
 
-            # --- 4) Feed Content Intelligence engine ---
+            # --- 4) Feed Content Intelligence engine (dedup by title) ---
             if self.content_engine:
-                try:
-                    candidate = self.content_engine.analyze_update(
-                        title, summary or full_content[:500], source_url,
-                        source_type="newsletter_email"
-                    )
-                    logger.info(f"  Content candidate: '{candidate.title}' ({candidate.priority})")
-                except Exception as e:
-                    logger.error(f"  Content engine failed for '{title}': {e}")
+                norm_title = (title or "").strip().lower()
+                if norm_title and norm_title in existing_titles:
+                    logger.info(f"  Skipping duplicate candidate: '{title}'")
+                else:
+                    try:
+                        candidate = self.content_engine.analyze_update(
+                            title, summary or full_content[:500], source_url,
+                            source_type="newsletter_email"
+                        )
+                        existing_titles.add(norm_title)
+                        logger.info(f"  Content candidate: '{candidate.title}' ({candidate.priority})")
+                    except Exception as e:
+                        logger.error(f"  Content engine failed for '{title}': {e}")
 
     def _classify_email(self, subject: str, sender: str, text: str) -> str:
         """Classify an inbound email so it can be auto-routed. Returns one of:
