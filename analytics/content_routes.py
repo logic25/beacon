@@ -553,16 +553,25 @@ def decide():
         data = request.json
         candidate_id = data.get('candidate_id')
         decision = data.get('decision')
-        import sqlite3
-        conn = sqlite3.connect(engine.db_path)
-        c = conn.cursor()
-        if decision == 'skip':
-            c.execute("UPDATE content_candidates SET status = 'skipped' WHERE id = ?", (candidate_id,))
-        elif decision == 'publish':
-            c.execute("UPDATE content_candidates SET status = 'published' WHERE id = ?", (candidate_id,))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True})
+        status_map = {'skip': 'skipped', 'publish': 'published',
+                      'approve': 'approved', 'draft': 'drafted'}
+        new_status = status_map.get(decision)
+        if not new_status:
+            return jsonify({"success": False, "error": f"unknown decision '{decision}'"}), 400
+
+        # Supabase-first (the store Ordino reads), SQLite fallback — mirrors how
+        # candidates are saved, so a skip/publish actually sticks instead of
+        # updating a SQLite row Ordino never sees.
+        if engine.use_supabase:
+            engine.analytics_db.update_content_candidate(candidate_id, status=new_status)
+        else:
+            import sqlite3
+            conn = sqlite3.connect(engine.db_path)
+            c = conn.cursor()
+            c.execute("UPDATE content_candidates SET status = ? WHERE id = ?", (new_status, candidate_id))
+            conn.commit()
+            conn.close()
+        return jsonify({"success": True, "status": new_status})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
