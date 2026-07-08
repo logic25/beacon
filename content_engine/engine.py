@@ -512,17 +512,47 @@ Tone: Direct, actionable, expert"""
         }
 
     def _query_team_questions_supabase(self, keywords: List[str], days: int) -> Optional[List]:
-        """Query team questions via Supabase edge function."""
+        """Query team questions via Supabase edge function.
+
+        Returns recent Beacon chat interactions matching the topic keywords, with:
+          - a REAL time window: the edge function only supports a count limit (no
+            date param), so we fetch a generous batch and filter by ``days`` here.
+            Previously it took only the last 50 by count and the ``days`` intent was
+            never applied.
+          - contamination filtering: a logged "question" containing prompt
+            scaffolding is a leaked assistant prompt / injected project context, not
+            a real user question — skip it so it never becomes a content idea (it can
+            also carry client data).
+        """
         import requests as req
+        from datetime import datetime, timedelta, timezone
         supabase_url = os.getenv("SUPABASE_URL", "")
         analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
         if not supabase_url or not analytics_key:
             return None
 
+        contamination = ("[instructions", "[context:", "[system instruction",
+                         "<!--bug_report", "respond conversationally like")
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        def _recent(conv) -> bool:
+            ts = conv.get("timestamp") or conv.get("created_at")
+            if not ts:
+                return True  # keep if timestamp missing — better than dropping silently
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt >= cutoff
+            except Exception:
+                return True
+
         try:
             resp = req.post(
                 f"{supabase_url.rstrip('/')}/functions/v1/beacon-analytics",
-                json={"action": "get_recent_conversations", "data": {"limit": 50}},
+                # Fetch a generous batch (edge function is count-limited, no date
+                # param) and apply the real `days` window below.
+                json={"action": "get_recent_conversations", "data": {"limit": 200}},
                 headers={
                     "Content-Type": "application/json",
                     "x-beacon-key": analytics_key,
@@ -535,9 +565,14 @@ Tone: Direct, actionable, expert"""
 
             results = []
             for conv in conversations:
-                q = conv.get("question", "").lower()
-                if any(kw in q for kw in keywords):
-                    results.append((conv.get("question", ""), conv.get("user_name", "")))
+                question = conv.get("question", "")
+                ql = question.lower()
+                if any(m in ql for m in contamination):
+                    continue
+                if not _recent(conv):
+                    continue
+                if any(kw in ql for kw in keywords):
+                    results.append((question, conv.get("user_name", "")))
 
             return results[:10] if results else None
         except Exception:
