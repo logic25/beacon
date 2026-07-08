@@ -217,15 +217,19 @@ class Retriever:
         # Check for relevant corrections FIRST
         relevant_corrections = self._find_relevant_corrections(query)
 
-        # Search vector store
+        # Search vector store. Retrieve a WIDER candidate pool than we'll use, then
+        # re-rank so a recent, authoritative doc (e.g. a new DOB service notice) can
+        # surface above an older general guide it supersedes. Raw vector score alone
+        # let stale guides out-rank fresh notices on the same topic.
         results = self.vector_store.search(
             query=query,
-            top_k=top_k,
+            top_k=max(top_k * 3, 15),
             source_type_filter=source_type,
             jurisdiction_filter=jurisdiction,
         )
+        results = self._rerank(results)[:top_k]
 
-        # Filter by minimum score
+        # Filter by minimum score (on the raw vector score)
         filtered_results = [r for r in results if r["score"] >= min_score]
 
         # Build context with corrections at the top
@@ -288,6 +292,37 @@ class Retriever:
                 parts.append(f"Context: {correction['context']}")
 
         return "\n".join(parts)
+
+    def _rerank(self, results: list[dict]) -> list[dict]:
+        """Re-rank candidates by raw score + small recency & authority boosts.
+
+        The boosts are deliberately small (recency ≤ 0.08, authority ≤ 0.05) so they
+        only change the order when relevance is CLOSE — a freshness/authority
+        tiebreaker, NOT an override of genuine relevance. This lets a recent DOB
+        service notice beat an older general guide on the same topic, without
+        surfacing off-topic recent docs (a large relevance gap still wins).
+        """
+        from datetime import datetime
+        now = datetime.now()
+        for r in results:
+            score = r.get("score", 0.0)
+            auth = DOC_AUTHORITY.get(r.get("source_type", "document"), 2)
+            auth_boost = min(auth, 10) / 200.0  # up to +0.05
+            recency_boost = 0.0
+            di = (r.get("metadata") or {}).get("date_issued", "") or r.get("date_issued", "")
+            try:
+                d = datetime.fromisoformat(str(di)[:10])
+                days = (now - d).days
+                if 0 <= days < 365:
+                    recency_boost = 0.08 * (1 - days / 365.0)  # up to +0.08, very recent
+            except Exception:
+                pass
+            r["_rerank_score"] = score + auth_boost + recency_boost
+        return sorted(
+            results,
+            key=lambda r: r.get("_rerank_score", r.get("score", 0.0)),
+            reverse=True,
+        )
 
     def _format_context(self, results: list[dict]) -> str:
         """Format retrieved documents as context for the LLM.
