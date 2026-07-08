@@ -595,15 +595,27 @@ Respond JSON:
         from core.llm_client import Message
         user_msg = Message(role="user", content=prompt)
 
+        # format_for="web" so the JSON reply is NOT run through the google_chat
+        # text formatter (the default), which rewrites markdown in string values.
         response, _, _ = self.claude.get_response(
             user_message=prompt,
-            conversation_history=[user_msg]
+            conversation_history=[user_msg],
+            format_for="web",
         )
 
         try:
-            response = response.replace("```json", "").replace("```", "").strip()
-            return json.loads(response)
-        except Exception:
+            # The model frequently wraps the JSON in prose ("Here's the analysis:
+            # {...}") or ``` fences. Stripping fences alone isn't enough — that made
+            # EVERY candidate fall back to "Failed to parse analysis". Extract the
+            # outermost {...} object before parsing.
+            import re as _re
+            raw = response.replace("```json", "").replace("```", "").strip()
+            match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+            if match:
+                raw = match.group(0)
+            return json.loads(raw)
+        except Exception as e:
+            logger.warning("analyze_update: could not parse analysis JSON: %s", e)
             return {
                 "title": title,
                 "content_type": "uncertain",
