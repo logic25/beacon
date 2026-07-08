@@ -316,6 +316,11 @@ class ClaudeClient:
         self.settings = settings or get_settings()
         self.client = anthropic.Anthropic(api_key=self.settings.anthropic_api_key)
         self.filter = ResponseFilter()
+        # When False, get_response does NOT attach Ordino tools. The content engine
+        # sets this on its own client so blog analysis/generation can't query — or
+        # embed — live client project data (and background calls have no user JWT,
+        # so beacon-data-proxy 401s anyway).
+        self.tools_enabled = True
 
     def _is_dhcr_related(self, text: str) -> bool:
         """Check if the text is related to DHCR topics."""
@@ -465,8 +470,11 @@ IMPORTANT:
                 f"with {len(messages)} messages, RAG: {bool(rag_context)}"
             )
 
-            # Always provide tools — Claude decides when to use them
+            # Provide Ordino tools for the chat flow; the content engine disables
+            # them (self.tools_enabled = False) so content generation can't touch
+            # client project data.
             from core.ordino_tools import TOOL_DEFINITIONS, execute_tool
+            _tool_kwargs = {"tools": TOOL_DEFINITIONS} if self.tools_enabled else {}
 
             response = self.client.messages.create(
                 model=model,
@@ -475,13 +483,13 @@ IMPORTANT:
                              else self.settings.claude_temperature),
                 system=system_prompt,
                 messages=messages,
-                tools=TOOL_DEFINITIONS,
+                **_tool_kwargs,
             )
 
             # Agentic loop: handle tool calls
             max_tool_rounds = 5
             tool_round = 0
-            while response.stop_reason == "tool_use" and tool_round < max_tool_rounds:
+            while self.tools_enabled and response.stop_reason == "tool_use" and tool_round < max_tool_rounds:
                 tool_round += 1
                 # Collect all tool calls from response
                 assistant_content = response.content
@@ -509,7 +517,7 @@ IMPORTANT:
                     temperature=self.settings.claude_temperature,
                     system=system_prompt,
                     messages=messages,
-                    tools=TOOL_DEFINITIONS,
+                    **_tool_kwargs,
                 )
 
             # Extract text from final response
