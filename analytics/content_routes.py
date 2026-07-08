@@ -509,6 +509,47 @@ def get_candidates():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@content_bp.route('/api/content/notifications', methods=['GET'])
+def content_notifications():
+    """Lightweight feed for a 'new content' notification bell/badge.
+
+    Query params:
+      since: optional ISO-8601 timestamp. Candidates with created_at greater
+             than this are counted as "new"; omit it to treat all pending
+             candidates as the badge count.
+
+    Returns: {pending_count, new_count, new:[...], pending:[...]}. A UI can show
+    new_count on the bell and list `new` in the dropdown; when the user opens it,
+    persist the newest created_at (per user) and pass it back as `since` next time.
+    """
+    try:
+        since = request.args.get('since')
+        candidates = engine.get_pending_candidates()
+        items = [{
+            "id": c.id,
+            "title": c.title,
+            "priority": c.priority,
+            "content_type": c.content_type,
+            "team_questions_count": c.team_questions_count,
+            "created_at": getattr(c, "created_at", "") or "",
+        } for c in candidates]
+        items.sort(key=lambda i: i["created_at"], reverse=True)
+
+        new_items = items
+        if since:
+            new_items = [i for i in items if i["created_at"] and i["created_at"] > since]
+
+        return jsonify({
+            "success": True,
+            "pending_count": len(items),
+            "new_count": len(new_items),
+            "new": new_items[:25],
+            "pending": items[:50],
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @content_bp.route('/api/content/generate', methods=['POST'])
 def generate_content():
     try:
@@ -683,28 +724,29 @@ def run_auto_generate(engine_obj=None):
             }
 
         # ----- Create content candidates -----
+        # Persist through the engine's Supabase-first save (SQLite fallback) so
+        # candidates land in the same store Ordino reads — NOT just Beacon's local
+        # SQLite, which Ordino never sees.
+        from content_engine.engine import ContentCandidate
+
         candidates_created = []
         created_ids = []
-        content_conn = sqlite3.connect(eng.db_path)
-        content_c = content_conn.cursor()
 
-        # Canonical schema — must match engine.py's _init_sqlite_fallback (24 cols).
-        # Keeping these identical prevents "N columns but M values supplied" errors
-        # regardless of which module creates the table first.
-        content_c.execute("""
-            CREATE TABLE IF NOT EXISTS content_candidates (
-                id TEXT PRIMARY KEY, title TEXT, content_type TEXT, priority TEXT,
-                relevance_score INTEGER, demand_score INTEGER, expertise_score INTEGER,
-                search_interest TEXT, affects_services TEXT, key_topics TEXT,
-                reasoning TEXT, review_question TEXT, content_angle TEXT,
-                team_questions_count INTEGER, team_questions TEXT, most_common_angle TEXT,
-                source_type TEXT DEFAULT 'question_cluster', source_url TEXT,
-                source_email_id TEXT, content_preview TEXT, recommended_format TEXT,
-                estimated_minutes INTEGER, status TEXT, created_at TEXT
-            )
-        """)
+        # Dedup: skip any topic that already has a pending candidate.
+        try:
+            existing_pending = eng.get_pending_candidates()
+        except Exception as e:
+            logger.warning(f"[Content Auto-Gen] dedup load failed: {e}")
+            existing_pending = []
+        existing_topics = set()
+        for c in existing_pending:
+            for kt in (getattr(c, "key_topics", None) or []):
+                existing_topics.add(str(kt).lower())
 
         for topic, count, questions in topic_groups:
+            if topic.lower() in existing_topics:
+                continue
+
             priority = "high" if count >= 5 else ("medium" if count >= 3 else "low")
             content_type = "blog_post" if count >= 3 else "newsletter"
 
@@ -725,45 +767,34 @@ def run_auto_generate(engine_obj=None):
             elif any('require' in q.lower() for q in questions):
                 angle = "Requirement clarification"
 
-            candidate_id = f"cand_{uuid.uuid4().hex[:12]}"
-
-            # Skip if already pending for this topic
-            content_c.execute(
-                "SELECT id FROM content_candidates WHERE key_topics LIKE ? AND status = 'pending'",
-                (f'%{topic}%',),
+            candidate = ContentCandidate(
+                id=f"cand_{uuid.uuid4().hex[:12]}",
+                title=f"Guide to {topic} in NYC",
+                content_type=content_type,
+                priority=priority,
+                relevance_score=min(count * 10, 100),
+                search_interest=f"{count} team questions",
+                affects_services=services,
+                key_topics=[topic],
+                reasoning=f"Team asked {count} questions about {topic}.",
+                review_question=f"Create comprehensive {topic} guide?",
+                team_questions_count=count,
+                team_questions=questions,
+                most_common_angle=angle,
+                source_type="internal_analysis",
+                content_preview=f"Based on {count} questions...",
+                status="pending",
+                created_at=datetime.now().isoformat(),
             )
-            if content_c.fetchone():
-                continue
-
-            # Explicit column list so this works whether the table was created
-            # with the 17-column (content_routes) or 24-column (engine.py) schema.
-            # The 17 named columns are a subset common to both; any extra columns
-            # default to NULL.
-            content_c.execute("""
-                INSERT INTO content_candidates
-                (id, title, content_type, priority, relevance_score, search_interest,
-                 affects_services, key_topics, reasoning, review_question,
-                 team_questions_count, team_questions, most_common_angle, source_type,
-                 content_preview, status, created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                candidate_id, f"Guide to {topic} in NYC", content_type, priority,
-                min(count * 10, 100), f"{count} team questions", json.dumps(services),
-                json.dumps([topic]), f"Team asked {count} questions about {topic}.",
-                f"Create comprehensive {topic} guide?", count, json.dumps(questions),
-                angle, "internal_analysis", f"Based on {count} questions...",
-                "pending", datetime.now().isoformat(),
-            ))
+            eng._save_candidate(candidate)
+            existing_topics.add(topic.lower())
 
             candidates_created.append({
-                "title": f"Guide to {topic} in NYC",
+                "title": candidate.title,
                 "priority": priority,
                 "questions": count,
             })
-            created_ids.append(candidate_id)
-
-        content_conn.commit()
-        content_conn.close()
+            created_ids.append(candidate.id)
 
         return {
             "success": True,

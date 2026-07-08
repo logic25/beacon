@@ -445,10 +445,7 @@ def initialize_app() -> None:
                 except Exception as _e:
                     _content_engine = None
                     logger.warning(f"Content scheduler: could not import content engine: {_e}")
-                content_scheduler = ContentScheduler(
-                    engine=_content_engine,
-                    chat_client=chat_client,
-                )
+                content_scheduler = ContentScheduler(engine=_content_engine)
                 content_scheduler.start()
                 globals()["_content_scheduler_lock_fd"] = _sched_lock
                 logger.info("✅ Content scheduler started (this worker holds the scheduler lock)")
