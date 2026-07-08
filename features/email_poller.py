@@ -462,6 +462,18 @@ class EmailPoller:
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
 
+        # Lazy-load the content engine. The poller is constructed with
+        # content_engine=None (to avoid heavy init at app startup), and the
+        # "lazy-load when needed" was never implemented — so newsletter stories were
+        # ingested to the KB but NEVER turned into content candidates. Build it here.
+        if self.content_engine is None:
+            try:
+                from content_engine.engine import ContentEngine
+                self.content_engine = ContentEngine()
+                logger.info("  Content engine lazy-loaded for candidate creation")
+            except Exception as e:
+                logger.warning(f"  Content engine unavailable, skipping candidates: {e}")
+
         # Preload existing pending candidate titles once, for dedup — so a
         # re-processed newsletter (e.g. after a redeploy) doesn't create duplicate
         # candidates. Mirrors the dedup already in /api/ingest-email (PR #41); the
