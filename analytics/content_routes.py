@@ -682,13 +682,19 @@ def auto_generate_candidates():
         content_conn = sqlite3.connect(engine.db_path)
         content_c = content_conn.cursor()
 
+        # Canonical schema — must match engine.py's _init_sqlite_fallback (24 cols).
+        # Keeping these identical prevents "N columns but M values supplied" errors
+        # regardless of which module creates the table first.
         content_c.execute("""
             CREATE TABLE IF NOT EXISTS content_candidates (
                 id TEXT PRIMARY KEY, title TEXT, content_type TEXT, priority TEXT,
-                relevance_score INTEGER, search_interest TEXT, affects_services TEXT,
-                key_topics TEXT, reasoning TEXT, review_question TEXT,
+                relevance_score INTEGER, demand_score INTEGER, expertise_score INTEGER,
+                search_interest TEXT, affects_services TEXT, key_topics TEXT,
+                reasoning TEXT, review_question TEXT, content_angle TEXT,
                 team_questions_count INTEGER, team_questions TEXT, most_common_angle TEXT,
-                source_url TEXT, content_preview TEXT, status TEXT, created_at TEXT
+                source_type TEXT DEFAULT 'question_cluster', source_url TEXT,
+                source_email_id TEXT, content_preview TEXT, recommended_format TEXT,
+                estimated_minutes INTEGER, status TEXT, created_at TEXT
             )
         """)
 
@@ -723,8 +729,17 @@ def auto_generate_candidates():
             if content_c.fetchone():
                 continue
 
+            # Explicit column list so this works whether the table was created
+            # with the 17-column (content_routes) or 24-column (engine.py) schema.
+            # The 17 named columns are a subset common to both; any extra columns
+            # default to NULL.
             content_c.execute("""
-                INSERT INTO content_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO content_candidates
+                (id, title, content_type, priority, relevance_score, search_interest,
+                 affects_services, key_topics, reasoning, review_question,
+                 team_questions_count, team_questions, most_common_angle, source_type,
+                 content_preview, status, created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 candidate_id, f"Guide to {topic} in NYC", content_type, priority,
                 min(count * 10, 100), f"{count} team questions", json.dumps(services),
