@@ -347,8 +347,27 @@ class DOBNewsletterParser:
         if not url or not url.startswith('http'):
             return "", []
         try:
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=15)
             response.raise_for_status()
+
+            # DOB service-notice links are GovDelivery trackers that redirect to a
+            # PDF. Parsing PDF bytes as HTML yields binary garbage, so detect a PDF
+            # response (by content-type or the post-redirect URL) and extract its
+            # text with PyMuPDF instead.
+            ctype = response.headers.get('content-type', '').lower()
+            final_url = str(getattr(response, 'url', '') or url).lower()
+            if 'pdf' in ctype or final_url.endswith('.pdf'):
+                try:
+                    import fitz  # PyMuPDF
+                    parts = []
+                    with fitz.open(stream=response.content, filetype='pdf') as doc:
+                        for page in doc:
+                            parts.append(page.get_text())
+                    return "\n".join(parts).strip()[:5000], []
+                except Exception as e:
+                    logger.warning(f"PDF extract failed for {url}: {e}")
+                    return "", []
+
             soup = BeautifulSoup(response.content, 'html.parser')
             for script in soup(['script', 'style']):
                 script.decompose()
