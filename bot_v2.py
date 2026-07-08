@@ -1883,6 +1883,20 @@ def api_ingest_email():
         ingested = []
         content_candidates = []
 
+        # Preload existing pending candidate titles once, for dedup — so
+        # re-ingesting the same newsletter doesn't create duplicate candidates.
+        try:
+            from content_engine.engine import ContentEngine
+            content_intel_engine = ContentEngine()
+            existing_titles = {
+                (c.title or "").strip().lower()
+                for c in content_intel_engine.get_pending_candidates()
+            }
+        except Exception as e:
+            logger.warning(f"[Email Ingest] dedup preload failed: {e}")
+            content_intel_engine = None
+            existing_titles = set()
+
         for update in updates:
             title = update.get("title", "Untitled Update")
             summary = update.get("summary", "")
@@ -1936,18 +1950,24 @@ Type: {source_type}
                 except Exception as e:
                     logger.error(f"[Email Ingest] Failed to ingest '{title}': {e}")
 
-            # 2) Feed to Content Intelligence engine (for blog/newsletter generation)
+            # 2) Feed to Content Intelligence engine (dedup by title so the same
+            #    newsletter story isn't turned into a duplicate candidate).
             try:
-                from content_engine.engine import ContentEngine
-                engine = ContentEngine()
-                candidate = engine.analyze_update(title, summary or full_content[:500], source_url)
-                content_candidates.append({
-                    "id": candidate.id,
-                    "title": candidate.title,
-                    "priority": candidate.priority,
-                    "content_type": candidate.content_type,
-                })
-                logger.info(f"[Email Ingest] Content candidate created: '{candidate.title}' ({candidate.priority})")
+                norm_title = (title or "").strip().lower()
+                if norm_title and norm_title in existing_titles:
+                    logger.info(f"[Email Ingest] Skipping duplicate candidate: '{title}'")
+                else:
+                    from content_engine.engine import ContentEngine
+                    engine_ci = content_intel_engine or ContentEngine()
+                    candidate = engine_ci.analyze_update(title, summary or full_content[:500], source_url)
+                    existing_titles.add(norm_title)
+                    content_candidates.append({
+                        "id": candidate.id,
+                        "title": candidate.title,
+                        "priority": candidate.priority,
+                        "content_type": candidate.content_type,
+                    })
+                    logger.info(f"[Email Ingest] Content candidate created: '{candidate.title}' ({candidate.priority})")
             except Exception as e:
                 logger.error(f"[Email Ingest] Content engine failed for '{title}': {e}")
 
