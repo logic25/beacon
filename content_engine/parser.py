@@ -1,251 +1,349 @@
 """
 DOB Newsletter Email Parser
 
-Parses DOB Buildings News emails and extracts updates.
+Parses NYC DOB "Buildings News" / "My NYC.gov News" digest emails and extracts
+the individual updates so the Content Intelligence engine can turn them into
+content candidates.
+
+These emails are GovDelivery-style HTML (nested tables, <font> tags, <hr>
+separators) — NOT the idealized <h2>Service Updates</h2> + <ul> layout the
+first version of this parser assumed. Story headlines are rendered as
+<font style="font-size: 16pt"> elements:
+  * color #003399  -> feature stories (the actual updates)
+  * color #204496  -> section labels (Service Updates, Local Laws, Buildings
+                      Bulletins, Hearings + Rules, Code Notes, etc.)
+The masthead ("Buildings news") uses a much larger font (~43pt) and is skipped.
+
+The primary extractor below walks the document in reading order, treating each
+16pt heading as the start of a new update and everything up to the next heading
+(or <hr>) as that update's body. If it finds nothing (e.g. a differently
+formatted email), it falls back to the legacy header/list extractor.
 """
 
 import re
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
-from bs4 import BeautifulSoup
+
+from bs4 import BeautifulSoup, NavigableString, Tag
 import requests
 
 logger = logging.getLogger(__name__)
 
+# Heading font sizes (in pt). Story/section headings are ~16pt; the masthead is
+# ~43pt and must be excluded.
+_HEADING_MIN_PT = 14.0
+_HEADING_MAX_PT = 26.0
+
+# Boilerplate heading/title text we never want to emit as an update.
+_SKIP_TITLES = {
+    "buildings", "news", "buildings news", "dob now", "service notices",
+    "forms", "bis", "codes", "jobs",
+}
+
 
 class DOBNewsletterParser:
-    """Parse DOB Buildings News HTML emails"""
-    
+    """Parse NYC DOB Buildings News HTML emails."""
+
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         })
-    
-    def parse_email(self, html_content: str) -> Dict:
+
+    # ------------------------------------------------------------------
+    # Public entry point
+    # ------------------------------------------------------------------
+    def parse_email(self, html_content: str, fetch_linked_pages: bool = False) -> Dict:
         """
-        Parse DOB newsletter HTML email.
-        
+        Parse a DOB newsletter HTML email into a list of updates.
+
+        Args:
+            html_content: raw HTML of the email.
+            fetch_linked_pages: if True, fetch each update's primary link one
+                level deep for extra context. Off by default because the
+                newsletter links are opaque click-tracker redirects and the
+                email body itself is already good source content.
+
         Returns:
             {
-                "newsletter_date": "2026-01-28",
+                "newsletter_date": "2026-07-02",
                 "updates": [
                     {
-                        "title": "New Sidewalk Shed Rules",
+                        "title": "...",
                         "category": "Service Updates",
                         "summary": "...",
                         "source_url": "https://...",
-                        "referenced_links": ["https://...", ...],
+                        "referenced_links": [...],
                         "full_content": "..."
-                    }
+                    },
+                    ...
                 ]
             }
         """
-        
         soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Extract newsletter date from subject or content
+        for tag in soup(['script', 'style']):
+            tag.decompose()
+
         newsletter_date = self._extract_date(soup)
-        
-        # Extract all sections
-        updates = []
-        
-        # Service Updates section
-        updates.extend(self._extract_section(soup, "Service Updates"))
-        
-        # Local Laws section
-        updates.extend(self._extract_section(soup, "Local Laws"))
-        
-        # Buildings Bulletins section  
-        updates.extend(self._extract_section(soup, "Buildings Bulletins"))
-        
-        # Hearings + Rules section
-        updates.extend(self._extract_section(soup, "Hearings"))
-        updates.extend(self._extract_section(soup, "Rules"))
-        
-        # Weather Advisories
-        updates.extend(self._extract_section(soup, "Weather"))
-        
-        # Code Notes
-        updates.extend(self._extract_section(soup, "Code Notes"))
-        
-        logger.info(f"Parsed {len(updates)} updates from DOB newsletter")
-        
-        return {
-            "newsletter_date": newsletter_date,
-            "updates": updates
-        }
-    
+
+        # Primary: GovDelivery / real DOB newsletter format.
+        updates = self._extract_govdelivery(soup)
+
+        # Fallback: legacy idealized <h2>/<ul> format.
+        if not updates:
+            logger.info("GovDelivery extractor found nothing; trying legacy extractor")
+            updates = self._extract_legacy(soup)
+
+        # Optionally enrich with linked-page content.
+        if fetch_linked_pages:
+            for u in updates:
+                if u.get('source_url'):
+                    content, links = self._fetch_page_content(u['source_url'])
+                    if content:
+                        u['full_content'] = content
+                        u['referenced_links'] = links
+
+        logger.info(f"Parsed {len(updates)} updates from DOB newsletter (date={newsletter_date})")
+        return {"newsletter_date": newsletter_date, "updates": updates}
+
+    # ------------------------------------------------------------------
+    # Date
+    # ------------------------------------------------------------------
     def _extract_date(self, soup: BeautifulSoup) -> str:
-        """Extract newsletter date"""
-        # Look for date patterns in the HTML
-        date_patterns = [
-            r'(\w+ \d{1,2}, \d{4})',  # January 28, 2026
-            r'(\d{1,2}/\d{1,2}/\d{4})',  # 01/28/2026
+        """Extract the newsletter date, tolerant of embedded whitespace."""
+        # Collapse all whitespace (the email splits dates across lines/tabs,
+        # e.g. "July 2,\n\t\t2026").
+        text = ' '.join(soup.get_text(' ').split())
+
+        patterns = [
+            r'([A-Z][a-z]+\.?\s+\d{1,2},\s*\d{4})',   # July 2, 2026
+            r'(\d{1,2}/\d{1,2}/\d{4})',                # 07/02/2026
         ]
-        
-        text = soup.get_text()
-        
-        for pattern in date_patterns:
+        for pattern in patterns:
             match = re.search(pattern, text)
             if match:
                 try:
-                    date_str = match.group(1)
-                    # Try to parse it
-                    from dateutil import parser
-                    date_obj = parser.parse(date_str)
-                    return date_obj.strftime("%Y-%m-%d")
-                except:
-                    pass
-        
-        # Default to today if not found
+                    from dateutil import parser as dateparser
+                    return dateparser.parse(match.group(1)).strftime("%Y-%m-%d")
+                except Exception:
+                    continue
         return datetime.now().strftime("%Y-%m-%d")
-    
-    def _extract_section(self, soup: BeautifulSoup, section_name: str) -> List[Dict]:
-        """Extract updates from a specific section"""
-        
-        updates = []
-        
-        # Find section header
-        # DOB newsletters use various formats, so we search flexibly
-        section_patterns = [
-            section_name,
-            section_name.upper(),
-            section_name.lower(),
-        ]
-        
-        for pattern in section_patterns:
-            # Find all headers that might be section titles
-            headers = soup.find_all(['h2', 'h3', 'strong', 'b'])
-            
-            for header in headers:
-                if pattern.lower() in header.get_text().lower():
-                    # Found the section, extract items
-                    items = self._extract_items_after_header(header)
-                    
-                    for item in items:
-                        update = {
-                            "title": item['title'],
-                            "category": section_name,
-                            "summary": item['summary'],
-                            "source_url": item['link'],
-                            "referenced_links": [],
-                            "full_content": ""
-                        }
-                        
-                        # Fetch the linked page content
-                        if item['link']:
-                            content, links = self._fetch_page_content(item['link'])
-                            update['full_content'] = content
-                            update['referenced_links'] = links
-                        
-                        updates.append(update)
-                    
-                    break
-        
+
+    # ------------------------------------------------------------------
+    # Primary extractor: real GovDelivery newsletter format
+    # ------------------------------------------------------------------
+    def _is_heading(self, tag: Tag) -> bool:
+        """A <font> (or span) styled as a ~16pt section/story heading."""
+        if not isinstance(tag, Tag):
+            return False
+        if tag.name not in ('font', 'span'):
+            return False
+        style = tag.get('style', '') or ''
+        m = re.search(r'font-size:\s*([\d.]+)\s*pt', style)
+        if not m:
+            return False
+        size = float(m.group(1))
+        return _HEADING_MIN_PT <= size <= _HEADING_MAX_PT
+
+    def _tokenize(self, root: Tag) -> List[tuple]:
+        """Walk the tree in reading order into a flat token stream.
+
+        Tokens: ('head', title) | ('text', str) | ('link', text, href) | ('hr',)
+        Heading and anchor inner text is captured once (we don't recurse into
+        them) to avoid duplication.
+        """
+        tokens: List[tuple] = []
+
+        def walk(node: Tag):
+            for child in node.children:
+                if isinstance(child, NavigableString):
+                    s = ' '.join(str(child).split())
+                    if s:
+                        tokens.append(('text', s))
+                elif isinstance(child, Tag):
+                    if self._is_heading(child):
+                        title = ' '.join(child.get_text(' ', strip=True).split())
+                        tokens.append(('head', title))
+                    elif child.name == 'hr':
+                        tokens.append(('hr',))
+                    elif child.name == 'a':
+                        txt = ' '.join(child.get_text(' ', strip=True).split())
+                        href = child.get('href', '') or ''
+                        tokens.append(('link', txt, href))
+                        if txt:
+                            tokens.append(('text', txt))
+                    elif child.name in ('img', 'br'):
+                        continue
+                    else:
+                        walk(child)
+
+        walk(root)
+        return tokens
+
+    def _extract_govdelivery(self, soup: BeautifulSoup) -> List[Dict]:
+        root = soup.body or soup
+        tokens = self._tokenize(root)
+
+        raw: List[Dict] = []
+        cur: Optional[Dict] = None
+
+        def flush():
+            nonlocal cur
+            if cur is not None:
+                raw.append(cur)
+                cur = None
+
+        for tok in tokens:
+            kind = tok[0]
+            if kind == 'head':
+                title = tok[1].strip()
+                flush()
+                if not title or title.lower() in _SKIP_TITLES or len(title) < 3:
+                    cur = None
+                    continue
+                cur = {'title': title, 'summary_parts': [], 'links': []}
+            elif kind == 'hr':
+                flush()
+            elif kind == 'text':
+                if cur is not None:
+                    cur['summary_parts'].append(tok[1])
+            elif kind == 'link':
+                if cur is not None and tok[2]:
+                    cur['links'].append((tok[1], tok[2]))
+        flush()
+
+        updates: List[Dict] = []
+        for item in raw:
+            summary = ' '.join(' '.join(item['summary_parts']).split())
+            # Drop empty / pure-boilerplate blocks.
+            if len(summary) < 40:
+                continue
+            if self._is_boilerplate(item['title'], summary):
+                continue
+            source_url = item['links'][0][1] if item['links'] else ''
+            updates.append({
+                "title": item['title'],
+                "category": self._classify(item['title'], summary),
+                "summary": summary[:1200],
+                "source_url": source_url,
+                "referenced_links": [href for _, href in item['links'][:8]],
+                "full_content": summary,
+            })
         return updates
-    
+
+    @staticmethod
+    def _is_boilerplate(title: str, summary: str) -> bool:
+        t = f"{title} {summary}".lower()
+        markers = (
+            "unsubscribe", "manage your subscription", "update your preferences",
+            "this email was sent", "govdelivery", "privacy policy",
+        )
+        return any(m in t for m in markers)
+
+    @staticmethod
+    def _classify(title: str, summary: str = "") -> str:
+        """Map a heading to one of the categories bot_v2 knows how to ingest."""
+        t = f"{title} {summary}".lower()
+        if "local law" in t:
+            return "Local Laws"
+        if "code note" in t:
+            return "Code Notes"
+        if "bulletin" in t and "enforcement" not in t:
+            return "Buildings Bulletins"
+        if "hearing" in t or ("rule" in t and "rules" in title.lower()):
+            return "Hearings"
+        if any(w in t for w in ("weather advisor", "hurricane", "storm",
+                                 "heat wave", "extreme heat", "snow", "blizzard",
+                                 "flooding", "coastal storm")):
+            return "Weather"
+        return "Service Updates"
+
+    # ------------------------------------------------------------------
+    # Fallback extractor: legacy idealized <h2>/<ul> format
+    # ------------------------------------------------------------------
+    _LEGACY_SECTIONS = [
+        "Service Updates", "Local Laws", "Buildings Bulletins",
+        "Hearings", "Rules", "Weather", "Code Notes",
+    ]
+
+    def _extract_legacy(self, soup: BeautifulSoup) -> List[Dict]:
+        updates: List[Dict] = []
+        for section in self._LEGACY_SECTIONS:
+            updates.extend(self._extract_section(soup, section))
+        return updates
+
+    def _extract_section(self, soup: BeautifulSoup, section_name: str) -> List[Dict]:
+        updates = []
+        headers = soup.find_all(['h2', 'h3', 'strong', 'b'])
+        for header in headers:
+            if section_name.lower() in header.get_text().lower():
+                for item in self._extract_items_after_header(header):
+                    updates.append({
+                        "title": item['title'],
+                        "category": section_name,
+                        "summary": item['summary'],
+                        "source_url": item['link'],
+                        "referenced_links": [],
+                        "full_content": item['summary'],
+                    })
+                break
+        return updates
+
     def _extract_items_after_header(self, header) -> List[Dict]:
-        """Extract list items after a section header"""
-        
         items = []
-        
-        # Navigate to next sibling elements
         current = header.find_next_sibling()
-        
         while current and current.name not in ['h2', 'h3']:
-            # Check if it's a list
             if current.name in ['ul', 'ol']:
                 for li in current.find_all('li'):
                     item = self._parse_list_item(li)
                     if item:
                         items.append(item)
-            
-            # Check if it's a paragraph with a link
             elif current.name == 'p':
                 link = current.find('a')
                 if link:
                     items.append({
                         'title': link.get_text().strip(),
                         'summary': current.get_text().strip(),
-                        'link': link.get('href', '')
+                        'link': link.get('href', ''),
                     })
-            
             current = current.find_next_sibling()
-        
         return items
-    
+
     def _parse_list_item(self, li) -> Optional[Dict]:
-        """Parse a single list item"""
-        
-        # Find link in list item
         link = li.find('a')
-        
         if not link:
             return None
-        
-        title = link.get_text().strip()
         href = link.get('href', '')
-        
-        # Make absolute URL if relative
         if href and not href.startswith('http'):
-            href = f"https://www1.nyc.gov{href}"
-        
-        # Get summary (text after the link)
-        summary = li.get_text().strip()
-        
+            href = f"https://www.nyc.gov{href}"
         return {
-            'title': title,
-            'summary': summary,
-            'link': href
+            'title': link.get_text().strip(),
+            'summary': li.get_text().strip(),
+            'link': href,
         }
-    
-    def _fetch_page_content(self, url: str) -> tuple[str, List[str]]:
-        """
-        Fetch content from a linked page (1 level deep only).
-        
-        Returns:
-            (content_text, referenced_links)
-        """
-        
+
+    # ------------------------------------------------------------------
+    # Optional linked-page enrichment
+    # ------------------------------------------------------------------
+    def _fetch_page_content(self, url: str) -> Tuple[str, List[str]]:
         if not url or not url.startswith('http'):
             return "", []
-        
         try:
-            logger.info(f"Fetching content from: {url}")
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
-            
             soup = BeautifulSoup(response.content, 'html.parser')
-            
-            # Remove script and style elements
             for script in soup(['script', 'style']):
                 script.decompose()
-            
-            # Get text content
             content = soup.get_text(separator='\n', strip=True)
-            
-            # Extract referenced links (PDFs, related pages)
             referenced_links = []
             for link in soup.find_all('a', href=True):
                 href = link['href']
-                
-                # Make absolute
                 if not href.startswith('http'):
-                    href = f"https://www1.nyc.gov{href}"
-                
-                # Include PDFs and DOB pages
+                    href = f"https://www.nyc.gov{href}"
                 if any(ext in href.lower() for ext in ['.pdf', '/buildings/', '/dob']):
                     referenced_links.append(href)
-            
-            # Remove duplicates
-            referenced_links = list(set(referenced_links))
-            
-            logger.info(f"Fetched {len(content)} chars, found {len(referenced_links)} referenced links")
-            
-            return content[:5000], referenced_links  # Limit content length
-            
+            return content[:5000], list(set(referenced_links))
         except Exception as e:
             logger.error(f"Error fetching {url}: {e}")
             return "", []
@@ -253,63 +351,20 @@ class DOBNewsletterParser:
 
 # Email forwarding handler
 def handle_forwarded_email(email_content: str) -> Dict:
-    """
-    Handle a forwarded DOB newsletter email.
-    
-    This would be called when an email is forwarded to
-    beacon@greenlightexpediting.com
-    
-    Args:
-        email_content: Raw email HTML content
-        
-    Returns:
-        Parsed newsletter data
-    """
-    
-    parser = DOBNewsletterParser()
-    return parser.parse_email(email_content)
-
-
-# Test function
-def test_parser():
-    """Test the parser with a sample"""
-    
-    sample_html = """
-    <html>
-    <body>
-        <h1>Buildings News Update - January 28, 2026</h1>
-        
-        <h2>Service Updates</h2>
-        <ul>
-            <li><a href="https://www1.nyc.gov/site/buildings/news/sidewalk-shed-permits.page">
-                New Sidewalk Shed Permit Rules: 90-Day Expiration
-            </a> - Starting January 26, sidewalk shed permits expire every 90 days.</li>
-            
-            <li><a href="https://www1.nyc.gov/site/buildings/news/superintendent-limits.page">
-                Construction Superintendent One-Site Limit (LL149)
-            </a> - Superintendents can now only work at one site.</li>
-        </ul>
-        
-        <h2>Local Laws</h2>
-        <ul>
-            <li><a href="https://www1.nyc.gov/site/buildings/news/ll-update.page">
-                Local Law Updates
-            </a> - New accessibility requirements.</li>
-        </ul>
-    </body>
-    </html>
-    """
-    
-    parser = DOBNewsletterParser()
-    result = parser.parse_email(sample_html)
-    
-    print(f"Parsed {len(result['updates'])} updates:")
-    for update in result['updates']:
-        print(f"  - {update['title']} ({update['category']})")
-        print(f"    URL: {update['source_url']}")
-        print(f"    Referenced links: {len(update['referenced_links'])}")
-        print()
+    """Handle a forwarded DOB newsletter email."""
+    return DOBNewsletterParser().parse_email(email_content)
 
 
 if __name__ == "__main__":
-    test_parser()
+    import sys
+    path = sys.argv[1] if len(sys.argv) > 1 else None
+    if not path:
+        print("usage: python parser.py <newsletter.html>")
+        raise SystemExit(1)
+    result = DOBNewsletterParser().parse_email(open(path, encoding='utf-8').read())
+    print(f"newsletter_date: {result['newsletter_date']}")
+    print(f"updates: {len(result['updates'])}\n")
+    for u in result['updates']:
+        print(f"- [{u['category']}] {u['title']}")
+        print(f"    {u['summary'][:120]}...")
+        print(f"    url: {u['source_url'][:70]}")

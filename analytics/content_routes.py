@@ -566,14 +566,15 @@ def decide():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@content_bp.route('/api/content/auto-generate', methods=['POST'])
-def auto_generate_candidates():
-    """Generate content candidates from analytics data automatically.
+def run_auto_generate(engine_obj=None):
+    """Generate content candidates from analytics questions.
 
-    Pulls questions from whichever analytics backend is active:
-    1. Supabase edge function (persistent, preferred)
-    2. Local SQLite beacon_analytics.db (fallback)
+    Pulls questions from whichever analytics backend is active (Supabase edge
+    function, else local SQLite), clusters them by topic, and inserts any new
+    candidates. Returns a plain dict (no Flask objects) so both the HTTP route
+    and the background ContentScheduler can call it.
     """
+    eng = engine_obj or engine
     try:
         import sqlite3
 
@@ -648,12 +649,14 @@ def auto_generate_candidates():
                 logger.warning(f"[Content Auto-Gen] SQLite fetch also failed: {e}")
 
         if not all_question_texts:
-            return jsonify({
+            return {
                 "success": True,
                 "message": "No questions found in analytics. Ask Beacon some questions first.",
                 "candidates_created": 0,
+                "candidates": [],
+                "created_ids": [],
                 "source": source_used,
-            })
+            }
 
         # ----- Group questions by detected topic -----
         topic_questions = defaultdict(list)
@@ -670,29 +673,39 @@ def auto_generate_candidates():
         topic_groups.sort(key=lambda x: x[1], reverse=True)
 
         if not topic_groups:
-            return jsonify({
+            return {
                 "success": True,
                 "message": f"Found {len(all_question_texts)} questions but none have 2+ per topic yet.",
                 "candidates_created": 0,
+                "candidates": [],
+                "created_ids": [],
                 "source": source_used,
-            })
+            }
 
         # ----- Create content candidates -----
-        candidates_created = []
-        content_conn = sqlite3.connect(engine.db_path)
-        content_c = content_conn.cursor()
+        # Persist through the engine's Supabase-first save (SQLite fallback) so
+        # candidates land in the same store Ordino reads — NOT just Beacon's local
+        # SQLite, which Ordino never sees.
+        from content_engine.engine import ContentCandidate
 
-        content_c.execute("""
-            CREATE TABLE IF NOT EXISTS content_candidates (
-                id TEXT PRIMARY KEY, title TEXT, content_type TEXT, priority TEXT,
-                relevance_score INTEGER, search_interest TEXT, affects_services TEXT,
-                key_topics TEXT, reasoning TEXT, review_question TEXT,
-                team_questions_count INTEGER, team_questions TEXT, most_common_angle TEXT,
-                source_url TEXT, content_preview TEXT, status TEXT, created_at TEXT
-            )
-        """)
+        candidates_created = []
+        created_ids = []
+
+        # Dedup: skip any topic that already has a pending candidate.
+        try:
+            existing_pending = eng.get_pending_candidates()
+        except Exception as e:
+            logger.warning(f"[Content Auto-Gen] dedup load failed: {e}")
+            existing_pending = []
+        existing_topics = set()
+        for c in existing_pending:
+            for kt in (getattr(c, "key_topics", None) or []):
+                existing_topics.add(str(kt).lower())
 
         for topic, count, questions in topic_groups:
+            if topic.lower() in existing_topics:
+                continue
+
             priority = "high" if count >= 5 else ("medium" if count >= 3 else "low")
             content_type = "blog_post" if count >= 3 else "newsletter"
 
@@ -713,47 +726,55 @@ def auto_generate_candidates():
             elif any('require' in q.lower() for q in questions):
                 angle = "Requirement clarification"
 
-            candidate_id = f"cand_{uuid.uuid4().hex[:12]}"
-
-            # Skip if already pending for this topic
-            content_c.execute(
-                "SELECT id FROM content_candidates WHERE key_topics LIKE ? AND status = 'pending'",
-                (f'%{topic}%',),
+            candidate = ContentCandidate(
+                id=f"cand_{uuid.uuid4().hex[:12]}",
+                title=f"Guide to {topic} in NYC",
+                content_type=content_type,
+                priority=priority,
+                relevance_score=min(count * 10, 100),
+                search_interest=f"{count} team questions",
+                affects_services=services,
+                key_topics=[topic],
+                reasoning=f"Team asked {count} questions about {topic}.",
+                review_question=f"Create comprehensive {topic} guide?",
+                team_questions_count=count,
+                team_questions=questions,
+                most_common_angle=angle,
+                source_type="internal_analysis",
+                content_preview=f"Based on {count} questions...",
+                status="pending",
+                created_at=datetime.now().isoformat(),
             )
-            if content_c.fetchone():
-                continue
-
-            content_c.execute("""
-                INSERT INTO content_candidates VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (
-                candidate_id, f"Guide to {topic} in NYC", content_type, priority,
-                min(count * 10, 100), f"{count} team questions", json.dumps(services),
-                json.dumps([topic]), f"Team asked {count} questions about {topic}.",
-                f"Create comprehensive {topic} guide?", count, json.dumps(questions),
-                angle, "internal_analysis", f"Based on {count} questions...",
-                "pending", datetime.now().isoformat(),
-            ))
+            eng._save_candidate(candidate)
+            existing_topics.add(topic.lower())
 
             candidates_created.append({
-                "title": f"Guide to {topic} in NYC",
+                "title": candidate.title,
                 "priority": priority,
                 "questions": count,
             })
+            created_ids.append(candidate.id)
 
-        content_conn.commit()
-        content_conn.close()
-
-        return jsonify({
+        return {
             "success": True,
             "candidates_created": len(candidates_created),
             "candidates": candidates_created,
+            "created_ids": created_ids,
             "source": source_used,
-        })
+        }
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "error": str(e)}
+
+
+@content_bp.route('/api/content/auto-generate', methods=['POST'])
+def auto_generate_candidates():
+    """HTTP wrapper around run_auto_generate()."""
+    result = run_auto_generate()
+    return jsonify(result), (200 if result.get("success") else 500)
+
 
 @content_bp.route('/api/content/analyze-opportunities', methods=['POST'])
 def analyze_opportunities():
