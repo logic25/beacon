@@ -95,31 +95,32 @@ class DOBNewsletterParser:
             logger.info("GovDelivery extractor found nothing; trying legacy extractor")
             updates = self._extract_legacy(soup)
 
-        # Optionally enrich with linked-page content.
+        # RESOLVE each story's links to their final URLs, but do NOT fetch and
+        # concatenate the linked content into the story text. The sidebar sections
+        # ("Buildings Bulletins", "Code Notes", "Service Updates") are lists of
+        # links to DOB PDFs; the poller ingests each of those PDFs as its OWN clean
+        # doc (email_poller._download_and_ingest_pdf). Previously we also fetched and
+        # concatenated all of them into the section's full_content, producing a messy
+        # multi-notice blob that DUPLICATED the clean per-PDF docs. Now we only
+        # resolve the GovDelivery click-tracker URLs to their real destinations so
+        # the poller can ingest each PDF cleanly, and leave the section text as its
+        # own email blurb.
         if fetch_linked_pages:
             for u in updates:
-                # Follow the story's primary link AND its referenced links — the
-                # sidebar sections ("Service Updates", "Buildings Bulletins", ...)
-                # are LISTS of service-notice links, so fetching only the first
-                # missed most of the content. Bounded to MAX_LINKS_PER_UPDATE so a
-                # link-heavy section can't blow up ingestion time.
-                MAX_LINKS_PER_UPDATE = 4
-                urls = []
+                links = []
                 if u.get('source_url'):
-                    urls.append(u['source_url'])
+                    links.append(u['source_url'])
                 for link in (u.get('referenced_links') or []):
-                    if link not in urls:
-                        urls.append(link)
-                parts, found_links = [], []
-                for url in urls[:MAX_LINKS_PER_UPDATE]:
-                    content, links = self._fetch_page_content(url)
-                    if content:
-                        parts.append(content)
-                        found_links.extend(links)
-                if parts:
-                    u['full_content'] = "\n\n---\n\n".join(parts)
-                    if found_links:
-                        u['referenced_links'] = list(dict.fromkeys(found_links))[:8]
+                    if link not in links:
+                        links.append(link)
+                resolved = []
+                for link in links[:8]:
+                    final = self._resolve_url(link)
+                    if final and final not in resolved:
+                        resolved.append(final)
+                if resolved:
+                    u['source_url'] = resolved[0]
+                    u['referenced_links'] = resolved
 
         logger.info(f"Parsed {len(updates)} updates from DOB newsletter (date={newsletter_date})")
         return {"newsletter_date": newsletter_date, "updates": updates}
@@ -343,6 +344,20 @@ class DOBNewsletterParser:
     # ------------------------------------------------------------------
     # Optional linked-page enrichment
     # ------------------------------------------------------------------
+    def _resolve_url(self, url: str) -> str:
+        """Follow redirects (GovDelivery click-trackers) and return the final URL,
+        without downloading the body. Returns '' on failure."""
+        if not url or not url.startswith('http'):
+            return url or ''
+        try:
+            r = self.session.get(url, timeout=10, stream=True, allow_redirects=True)
+            final = str(r.url or url)
+            r.close()
+            return final
+        except Exception as e:
+            logger.warning(f"Could not resolve {url}: {e}")
+            return ''
+
     def _fetch_page_content(self, url: str) -> Tuple[str, List[str]]:
         if not url or not url.startswith('http'):
             return "", []
