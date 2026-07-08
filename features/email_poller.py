@@ -833,11 +833,20 @@ Type: email_digest
                 return
 
             # Save to temp file
+            # Save to a temp file whose basename is the REAL PDF filename, so the
+            # doc's source_file becomes the notice's real name (e.g.
+            # "permitrenewals_bizname-sn.pdf") instead of a random "tmpXXXX.pdf".
+            # This makes docs identifiable AND makes re-ingesting the same PDF
+            # idempotent (same source_file → manifest update, not a new duplicate).
             pdf_filename = pdf_url.split("/")[-1].split("?")[0] or "document.pdf"
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            if not pdf_filename.lower().endswith(".pdf"):
+                pdf_filename += ".pdf"
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", pdf_filename) or "document.pdf"
+            tmp_dir = tempfile.mkdtemp()
+            tmp_path = os.path.join(tmp_dir, safe_name)
+            with open(tmp_path, "wb") as tmp:
                 for chunk in resp.iter_content(chunk_size=8192):
                     tmp.write(chunk)
-                tmp_path = tmp.name
 
             try:
                 # Process the PDF
@@ -866,9 +875,13 @@ Type: email_digest
                             f"({document.metadata.get('page_count', '?')} pages)")
 
             finally:
-                # Clean up temp file
+                # Clean up temp file + its dir
                 try:
                     Path(tmp_path).unlink()
+                except OSError:
+                    pass
+                try:
+                    os.rmdir(os.path.dirname(tmp_path))
                 except OSError:
                     pass
 
