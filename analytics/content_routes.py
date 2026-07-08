@@ -509,47 +509,6 @@ def get_candidates():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
-@content_bp.route('/api/content/notifications', methods=['GET'])
-def content_notifications():
-    """Lightweight feed for a 'new content' notification bell/badge.
-
-    Query params:
-      since: optional ISO-8601 timestamp. Candidates with created_at greater
-             than this are counted as "new"; omit it to treat all pending
-             candidates as the badge count.
-
-    Returns: {pending_count, new_count, new:[...], pending:[...]}. A UI can show
-    new_count on the bell and list `new` in the dropdown; when the user opens it,
-    persist the newest created_at (per user) and pass it back as `since` next time.
-    """
-    try:
-        since = request.args.get('since')
-        candidates = engine.get_pending_candidates()
-        items = [{
-            "id": c.id,
-            "title": c.title,
-            "priority": c.priority,
-            "content_type": c.content_type,
-            "team_questions_count": c.team_questions_count,
-            "created_at": getattr(c, "created_at", "") or "",
-        } for c in candidates]
-        items.sort(key=lambda i: i["created_at"], reverse=True)
-
-        new_items = items
-        if since:
-            new_items = [i for i in items if i["created_at"] and i["created_at"] > since]
-
-        return jsonify({
-            "success": True,
-            "pending_count": len(items),
-            "new_count": len(new_items),
-            "new": new_items[:25],
-            "pending": items[:50],
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-
 @content_bp.route('/api/content/generate', methods=['POST'])
 def generate_content():
     try:
