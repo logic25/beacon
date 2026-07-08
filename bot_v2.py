@@ -131,6 +131,14 @@ try:
 except ImportError:
     EMAIL_POLLER_AVAILABLE = False
 
+# Content Scheduler (optional — auto-generates candidates from team questions
+# and posts a Google Chat notification when new content appears)
+try:
+    from features.content_scheduler import ContentScheduler
+    CONTENT_SCHEDULER_AVAILABLE = True
+except ImportError:
+    CONTENT_SCHEDULER_AVAILABLE = False
+
 
 def _sanitize_pinecone_id(raw_id: str) -> str:
     """Convert a string to ASCII-safe Pinecone vector ID.
@@ -190,6 +198,7 @@ zoning_analyzer: "ZoningAnalyzer | None" = None
 analytics_db: "AnalyticsDB | None" = None
 passive_listener: "PassiveListener | None" = None
 email_poller: "EmailPoller | None" = None
+content_scheduler: "ContentScheduler | None" = None
 logger = logging.getLogger(__name__)
 
 
@@ -414,6 +423,41 @@ def initialize_app() -> None:
         except Exception as e:
             logger.warning(f"Email poller initialization failed: {e}")
             email_poller = None
+
+    # Initialize Content Scheduler (auto-generates content candidates from team
+    # questions and posts a Google Chat notification when new content appears).
+    # Uses the same one-worker file-lock guard as the email poller so only a
+    # single gunicorn worker runs it.
+    global content_scheduler
+    if CONTENT_SCHEDULER_AVAILABLE:
+        try:
+            import fcntl
+            _sched_lock = open("/tmp/beacon_content_scheduler.lock", "w")
+            try:
+                fcntl.flock(_sched_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _have_sched_lock = True
+            except (IOError, OSError):
+                _have_sched_lock = False  # another worker already owns it
+
+            if _have_sched_lock:
+                try:
+                    from analytics.content_routes import engine as _content_engine
+                except Exception as _e:
+                    _content_engine = None
+                    logger.warning(f"Content scheduler: could not import content engine: {_e}")
+                content_scheduler = ContentScheduler(
+                    engine=_content_engine,
+                    chat_client=chat_client,
+                )
+                content_scheduler.start()
+                globals()["_content_scheduler_lock_fd"] = _sched_lock
+                logger.info("✅ Content scheduler started (this worker holds the scheduler lock)")
+            else:
+                _sched_lock.close()
+                logger.info("Content scheduler already running in another worker — skipping in this one")
+        except Exception as e:
+            logger.warning(f"Content scheduler initialization failed: {e}")
+            content_scheduler = None
 
     logger.info(f"Bot initialized with model: {settings.claude_model}")
 
@@ -1949,6 +1993,14 @@ def email_poller_status():
     """Get the status of the email newsletter poller."""
     if email_poller:
         return jsonify(email_poller.get_status()), 200
+    return jsonify({"running": False, "reason": "not configured"}), 200
+
+
+@app.route("/api/content-scheduler/status", methods=["GET"])
+def content_scheduler_status():
+    """Status of the content scheduler (auto-generate + Chat notifications)."""
+    if content_scheduler:
+        return jsonify(content_scheduler.get_status()), 200
     return jsonify({"running": False, "reason": "not configured"}), 200
 
 

@@ -566,14 +566,15 @@ def decide():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@content_bp.route('/api/content/auto-generate', methods=['POST'])
-def auto_generate_candidates():
-    """Generate content candidates from analytics data automatically.
+def run_auto_generate(engine_obj=None):
+    """Generate content candidates from analytics questions.
 
-    Pulls questions from whichever analytics backend is active:
-    1. Supabase edge function (persistent, preferred)
-    2. Local SQLite beacon_analytics.db (fallback)
+    Pulls questions from whichever analytics backend is active (Supabase edge
+    function, else local SQLite), clusters them by topic, and inserts any new
+    candidates. Returns a plain dict (no Flask objects) so both the HTTP route
+    and the background ContentScheduler can call it.
     """
+    eng = engine_obj or engine
     try:
         import sqlite3
 
@@ -648,12 +649,14 @@ def auto_generate_candidates():
                 logger.warning(f"[Content Auto-Gen] SQLite fetch also failed: {e}")
 
         if not all_question_texts:
-            return jsonify({
+            return {
                 "success": True,
                 "message": "No questions found in analytics. Ask Beacon some questions first.",
                 "candidates_created": 0,
+                "candidates": [],
+                "created_ids": [],
                 "source": source_used,
-            })
+            }
 
         # ----- Group questions by detected topic -----
         topic_questions = defaultdict(list)
@@ -670,16 +673,19 @@ def auto_generate_candidates():
         topic_groups.sort(key=lambda x: x[1], reverse=True)
 
         if not topic_groups:
-            return jsonify({
+            return {
                 "success": True,
                 "message": f"Found {len(all_question_texts)} questions but none have 2+ per topic yet.",
                 "candidates_created": 0,
+                "candidates": [],
+                "created_ids": [],
                 "source": source_used,
-            })
+            }
 
         # ----- Create content candidates -----
         candidates_created = []
-        content_conn = sqlite3.connect(engine.db_path)
+        created_ids = []
+        content_conn = sqlite3.connect(eng.db_path)
         content_c = content_conn.cursor()
 
         # Canonical schema — must match engine.py's _init_sqlite_fallback (24 cols).
@@ -754,21 +760,31 @@ def auto_generate_candidates():
                 "priority": priority,
                 "questions": count,
             })
+            created_ids.append(candidate_id)
 
         content_conn.commit()
         content_conn.close()
 
-        return jsonify({
+        return {
             "success": True,
             "candidates_created": len(candidates_created),
             "candidates": candidates_created,
+            "created_ids": created_ids,
             "source": source_used,
-        })
+        }
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
+        return {"success": False, "error": str(e)}
+
+
+@content_bp.route('/api/content/auto-generate', methods=['POST'])
+def auto_generate_candidates():
+    """HTTP wrapper around run_auto_generate()."""
+    result = run_auto_generate()
+    return jsonify(result), (200 if result.get("success") else 500)
+
 
 @content_bp.route('/api/content/analyze-opportunities', methods=['POST'])
 def analyze_opportunities():
