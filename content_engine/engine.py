@@ -65,6 +65,10 @@ class ContentEngine:
     def __init__(self, db_path: str = "beacon_content.db"):
         self.db_path = db_path
         self.claude = ClaudeClient()
+        # Content generation/analysis must never query or embed live client project
+        # data — disable Ordino tools on this client. (Also stops the beacon-data-proxy
+        # 401s from background calls that have no user JWT.)
+        self.claude.tools_enabled = False
         self.retriever = Retriever()
         self.parser = DOBNewsletterParser()
         self._analytics_db = None
