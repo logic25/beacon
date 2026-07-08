@@ -437,7 +437,12 @@ class EmailPoller:
         from ingestion.document_processor import DocumentProcessor
 
         parser = DOBNewsletterParser()
-        result = parser.parse_email(html_content)
+        # Follow each story's primary link to pull the full article text (not just
+        # the short newsletter blurb), so generation has real source material —
+        # fewer confabulated fees/dates/code sections. _fetch_page_content is
+        # bounded (10s timeout, 5000-char cap, fails soft) so a bad link can't
+        # stall or crash ingestion.
+        result = parser.parse_email(html_content, fetch_linked_pages=True)
 
         updates = result.get("updates", [])
         newsletter_date = result.get("newsletter_date", "unknown")

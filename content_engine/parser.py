@@ -98,11 +98,28 @@ class DOBNewsletterParser:
         # Optionally enrich with linked-page content.
         if fetch_linked_pages:
             for u in updates:
+                # Follow the story's primary link AND its referenced links — the
+                # sidebar sections ("Service Updates", "Buildings Bulletins", ...)
+                # are LISTS of service-notice links, so fetching only the first
+                # missed most of the content. Bounded to MAX_LINKS_PER_UPDATE so a
+                # link-heavy section can't blow up ingestion time.
+                MAX_LINKS_PER_UPDATE = 4
+                urls = []
                 if u.get('source_url'):
-                    content, links = self._fetch_page_content(u['source_url'])
+                    urls.append(u['source_url'])
+                for link in (u.get('referenced_links') or []):
+                    if link not in urls:
+                        urls.append(link)
+                parts, found_links = [], []
+                for url in urls[:MAX_LINKS_PER_UPDATE]:
+                    content, links = self._fetch_page_content(url)
                     if content:
-                        u['full_content'] = content
-                        u['referenced_links'] = links
+                        parts.append(content)
+                        found_links.extend(links)
+                if parts:
+                    u['full_content'] = "\n\n---\n\n".join(parts)
+                    if found_links:
+                        u['referenced_links'] = list(dict.fromkeys(found_links))[:8]
 
         logger.info(f"Parsed {len(updates)} updates from DOB newsletter (date={newsletter_date})")
         return {"newsletter_date": newsletter_date, "updates": updates}
