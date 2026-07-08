@@ -798,8 +798,14 @@ Type: email_digest
         logger.info(f"  Downloading PDF: {pdf_url}")
 
         try:
-            # Download the PDF
-            resp = req.get(pdf_url, timeout=30, stream=True)
+            # Download the PDF. nyc.gov returns 403 for the default requests
+            # User-Agent, so send a browser UA (same as the parser's session).
+            resp = req.get(
+                pdf_url,
+                timeout=30,
+                stream=True,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+            )
             resp.raise_for_status()
 
             # Check it's actually a PDF
