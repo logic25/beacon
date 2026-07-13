@@ -531,50 +531,84 @@ Tone: Direct, actionable, expert
     # ------------------------------------------------------------------
 
     def _check_team_questions(self, title: str, summary: str, days: int = 60) -> Dict:
-        """Check if team has been asking about this topic."""
+        """Check whether the team has been asking about this notice's topic.
+
+        Semantic match: embed the notice + the recent clean question batch and keep only
+        questions above a similarity threshold. Falls back to keyword overlap if embeddings
+        are unavailable, so the daily scheduler never breaks on a bad model/API call.
+        """
         text = f"{title} {summary}".lower()
         keywords = [w for w in text.split() if len(w) > 4][:5]
-        if not keywords:
-            return {"count": 0}
+        notice_text = f"{title}. {summary}".strip()
 
-        # Try Supabase first
+        # Fetch the recent, contamination-filtered batch (NOT keyword-limited — semantic
+        # ranking below does the topical match).
         try:
-            results = self._query_team_questions_supabase(keywords, days)
+            batch = self._query_team_questions_supabase(keywords, days)
         except Exception:
-            results = None
-
-        if results is None:
+            batch = None
+        if batch is None:
             try:
-                results = self._query_team_questions_sqlite(keywords, days)
+                batch = self._query_team_questions_sqlite(keywords, days)
             except Exception as e:
                 logger.warning(f"Error checking questions: {e}")
                 return {"count": 0}
-
-        if not results:
+        if not batch:
             return {"count": 0}
 
-        questions = [r[0] for r in results]
-        users = list(set([r[1] for r in results]))
+        # Semantic topical match; keyword overlap as fallback if embeddings unavailable.
+        matched = self._semantic_filter(notice_text, batch, threshold=0.55, top_k=5)
+        if matched is None:
+            matched = [(q, u) for (q, u) in batch if any(k in q.lower() for k in keywords)][:5]
+        if not matched:
+            return {"count": 0}  # real "no matching demand" signal — better than false matches
 
-        # Get angle with Claude
-        if len(questions) > 0:
-            from core.llm_client import Message
-            angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
-            angle_msg = Message(role="user", content=angle_prompt)
-            response_text, _, _ = self.claude.get_response(
-                user_message=angle_prompt,
-                conversation_history=[angle_msg]
-            )
-            angle = response_text
-        else:
-            angle = None
+        questions = [m[0] for m in matched]
+        users = list({m[1] for m in matched})
+
+        from core.llm_client import Message
+        angle_prompt = f"What's the main concern in these questions: {', '.join(questions[:3])}? One sentence."
+        angle_msg = Message(role="user", content=angle_prompt)
+        angle, _, _ = self.claude.get_response(
+            user_message=angle_prompt, conversation_history=[angle_msg]
+        )
 
         return {
             "count": len(questions),
             "questions": questions[:5],
             "users": users,
-            "angle": angle
+            "angle": angle,
         }
+
+    def _semantic_filter(self, notice_text: str, pairs: List, threshold: float = 0.55,
+                         top_k: int = 5) -> Optional[List]:
+        """Rank (question, user) pairs by semantic similarity to a DOB notice, keeping only
+        those at/above `threshold`. Reuses the Voyage embeddings already wired for RAG.
+
+        Returns None if embeddings are unavailable (caller falls back to keyword overlap);
+        returns [] if nothing clears the bar (a genuine "no matching demand" result).
+        """
+        if not pairs:
+            return []
+        try:
+            import math
+            vs = self.retriever.vector_store
+            vecs = vs._embed_voyage([notice_text] + [p[0] for p in pairs])
+            nvec = vecs[0]
+
+            def _cos(a, b):
+                dot = sum(x * y for x, y in zip(a, b))
+                na = math.sqrt(sum(x * x for x in a))
+                nb = math.sqrt(sum(y * y for y in b))
+                return dot / (na * nb) if na and nb else 0.0
+
+            scored = [(pairs[i], _cos(nvec, vecs[i + 1])) for i in range(len(pairs))]
+            scored = [(p, s) for p, s in scored if s >= threshold]
+            scored.sort(key=lambda x: -x[1])
+            return [p for p, _ in scored[:top_k]]
+        except Exception as e:
+            logger.warning(f"Semantic question match unavailable, falling back to keywords: {e}")
+            return None
 
     def _query_team_questions_supabase(self, keywords: List[str], days: int) -> Optional[List]:
         """Query team questions via Supabase edge function.
@@ -597,7 +631,13 @@ Tone: Direct, actionable, expert
             return None
 
         contamination = ("[instructions", "[context:", "[system instruction",
-                         "<!--bug_report", "respond conversationally like")
+                         "<!--bug_report", "respond conversationally like",
+                         # machine/tool-formatted research queries — formatting directives +
+                         # embedded field labels — are not human team questions (and can carry
+                         # client data like a property address), so never let them seed content.
+                         "no markdown", "no bold", "no asterisks", "no emojis", "no headers",
+                         "in plain text", "just clear, factual paragraphs",
+                         "answer this", "citing specific code sections", "filing type:")
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
         def _recent(conv) -> bool:
@@ -628,6 +668,9 @@ Tone: Direct, actionable, expert
             result = resp.json()
             conversations = result if isinstance(result, list) else result.get("conversations", [])
 
+            # Return the recent, clean batch (NOT keyword-filtered). _check_team_questions
+            # runs a semantic topical match on this pool — keyword overlap misses the point
+            # (it paired an 'electrical code' notice with generic 'filing fee' questions).
             results = []
             for conv in conversations:
                 question = conv.get("question", "")
@@ -636,10 +679,9 @@ Tone: Direct, actionable, expert
                     continue
                 if not _recent(conv):
                     continue
-                if any(kw in ql for kw in keywords):
-                    results.append((question, conv.get("user_name", "")))
+                results.append((question, conv.get("user_name", "")))
 
-            return results[:10] if results else None
+            return results[:60] if results else None
         except Exception:
             return None
 

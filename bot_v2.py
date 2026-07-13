@@ -857,7 +857,7 @@ def process_message_async(
                         break
 
             # RAG retrieval — skip if operational query handled by tools
-            skip_rag_webhook = llm_client._should_use_tools(user_message)
+            skip_rag_webhook = claude_client._should_use_tools(user_message)
             if skip_rag_webhook:
                 logger.info("Skipping RAG — operational query will use Ordino tools")
 
