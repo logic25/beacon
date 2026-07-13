@@ -534,9 +534,14 @@ def generate_content():
                 reasoning=data.get('reasoning', '') or '',
             )
 
-        content = (engine.generate_blog_post(candidate_id, candidate=candidate)
+        # Ordino sends low_confidence_topics (gap clusters < 0.6 KB confidence) so the
+        # generator biases hard toward [[VERIFY]] on those topics instead of asserting.
+        low_conf = data.get('low_confidence_topics') or []
+        content = (engine.generate_blog_post(candidate_id, candidate=candidate,
+                                             low_confidence_topics=low_conf)
                    if content_type == 'blog_post'
-                   else engine.generate_newsletter(candidate_id, candidate=candidate))
+                   else engine.generate_newsletter(candidate_id, candidate=candidate,
+                                                   low_confidence_topics=low_conf))
         # Surface the grounding gate so Ordino can flag drafts with unsourced facts
         # (fees/dollar amounts/code citations) before publish.
         grounding = getattr(engine, "_last_grounding", None)

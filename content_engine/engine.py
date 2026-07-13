@@ -242,7 +242,8 @@ Summarize in 2-3 paragraphs:
     # Generate Content
     # ------------------------------------------------------------------
 
-    def generate_blog_post(self, candidate_id: str, candidate: "ContentCandidate" = None) -> str:
+    def generate_blog_post(self, candidate_id: str, candidate: "ContentCandidate" = None,
+                           low_confidence_topics: list = None) -> str:
         """Generate a blog post draft for a candidate.
 
         candidate may be passed directly (e.g. from Ordino, which is the source of
@@ -260,8 +261,13 @@ Summarize in 2-3 paragraphs:
         query_parts += (candidate.key_topics or [])
         query_parts += (candidate.team_questions or [])[:3]
         retrieval_query = " ".join(p for p in query_parts if p)
-        retrieval_result = self.retriever.retrieve(retrieval_query, top_k=8)
+        retrieval_result = self.retriever.retrieve(retrieval_query, top_k=8, min_score=0.6)
         context = retrieval_result.context
+
+        _low = set(t.lower() for t in (low_confidence_topics or []))
+        _topic_is_low = any(t.lower() in _low for t in (candidate.key_topics or []) + [candidate.title])
+        _low_line = ("- LOW knowledge-base coverage on this topic — bias HARD toward [[VERIFY]] "
+                     "for any specific figure; do not assert numbers." if _topic_is_low else "")
 
         prompt = f"""Write a blog post for Green Light Expediting.
 
@@ -283,17 +289,17 @@ Write 1200-1500 words:
 - Include FAQ section with their actual questions
 - SEO keyword: {candidate.key_topics[0] if candidate.key_topics else candidate.title}
 - Actionable, expert but approachable tone
-- GROUNDING — do NOT invent specifics. Only state a fee, dollar amount, timeline,
-  day-count, percentage, or code/section number if it appears verbatim in the retrieved
-  knowledge-base documents. If a specific figure is not in the documents, describe it
-  qualitatively (e.g. "fees vary by estimated construction cost") WITHOUT inventing a
-  number. Accuracy is more important than completeness — a wrong fee or code citation
-  destroys credibility.
-- NEVER build a fee table, fee schedule, or list of specific amounts by filling in
-  estimated/typical numbers. If the documents contain only some fees or only a formula,
-  present ONLY the amounts that appear in the documents (and the formula), then say other
-  fees "vary by construction cost and work type — confirm the current amount in DOB NOW."
-  An incomplete-but-correct answer beats a complete-looking table of invented figures.
+- FACT-GUARD — for any specific fee/dollar amount, deadline or duration ("30 days"),
+  percentage, code section (BC/MC/AC/NYCECC/ZR/MDL/RCNY), form number (PW1, PW2, TR1,
+  TR8), or effective date: use it ONLY if it appears verbatim in the retrieved
+  knowledge-base documents. If it is NOT in the documents, write [[VERIFY: <the specific
+  fact needed>]] inline instead of guessing a value or omitting it silently. e.g. "the
+  filing fee is [[VERIFY: PW1 filing fee for this work type]]". A wrong fee or code
+  citation destroys credibility — an incomplete-but-correct answer beats an invented one.
+- NEVER build a fee table or list of specific amounts from estimated/typical numbers.
+  Present only amounts/formulas that appear in the documents; flag every other figure as
+  [[VERIFY: ...]].
+{_low_line}
 - REQUIRED final section — a clear call-to-action: getting the filing type wrong costs
   weeks of rework and examiner scrutiny. State that Green Light Expediting handles NYC
   DOB filings like this every day and can get it filed right the first time. Invite the
@@ -336,35 +342,73 @@ Format: Markdown with # headers"""
         return content
 
     def _grounding_check(self, content: str, sources: list) -> dict:
-        """Flag high-signal factual claims (fees, dollar amounts, code/section numbers)
-        in generated content that do not appear in the retrieved source documents.
+        """Grounding gate -> the object Ordino persists to generated_content.grounding.
 
-        Returns a dict with grounding_score (1.0 = all grounded), total_claims, and the
-        list of ungrounded_claims. Deterministic string-match — no extra LLM cost.
+        Detects specific factual claims (fees, durations, %, code sections, form numbers)
+        not backed by the retrieved KB chunks. Deterministic string-match, no extra LLM cost.
+        Returns the Ordino contract (kb_sources / kb_confidence_avg / verify_flags /
+        used_general_knowledge_for) plus grounding_score / ungrounded_claims for the log.
         """
         import re as _re
-        blob = _re.sub(r"[\s,]", "", "".join(
+        norm = lambda s: _re.sub(r"[\s,]", "", (s or "").lower())
+        blob = norm("".join(
             (s.get("text", "") if isinstance(s, dict) else "") for s in (sources or [])
-        ).lower())
+        ))
         patterns = [
-            r"\$[\d,]+(?:\.\d+)?",                          # dollar amounts
-            r"(?:§|[Ss]ection\s+)\s?\d+(?:[.\-]\d+)+",      # § / Section numbers
-            r"\b(?:ZR|BC|MDL|RCNY|NYCECC)\s?\d+(?:[.\-]\d+)*",  # code citations
+            r"\$[\d,]+(?:\.\d+)?",                                    # currency
+            r"\b\d+\s*(?:business\s+)?days?\b",                       # durations
+            r"\b\d+\s*(?:weeks?|months?|years?)\b",
+            r"\b\d+(?:\.\d+)?%",                                      # percentages
+            r"\b(?:BC|MC|AC|ZR|MDL|RCNY|NYCECC)\s?\d+(?:[.\-]\d+)*",  # code sections
+            r"\b(?:PW[123]|TR[18]|EN2|PD1|BN1|LAA)\b",               # form numbers
+            r"(?:§|[Ss]ection\s+)\s?\d+(?:[.\-]\d+)+",                # § / Section
         ]
         claims = []
         for p in patterns:
             claims += _re.findall(p, content or "", _re.I)
         claims = list(dict.fromkeys(c.strip() for c in claims))  # dedupe, keep order
-        ungrounded = [c for c in claims if _re.sub(r"[\s,]", "", c.lower()) not in blob]
+        lc = (content or "").lower()
+        ungrounded = [c for c in claims
+                      if norm(c) not in blob and f"[[verify:{c.lower()}" not in lc]
         total = len(claims)
         score = 1.0 if total == 0 else round(1 - len(ungrounded) / total, 2)
-        return {"grounding_score": score, "total_claims": total, "ungrounded_claims": ungrounded}
 
-    def generate_newsletter(self, candidate_id: str, candidate: "ContentCandidate" = None) -> str:
-        """Generate a newsletter section for a candidate."""
+        # Ordino contract. excerpt is load-bearing — Ordino's client-side fact-guard
+        # cross-checks flagged tokens against it, so keep it populated.
+        kb_sources = [{
+            "source_file": s.get("file") or s.get("title") or "unknown",
+            "score": round(float(s.get("score", 0.0)), 3),
+            "chunk_id": s.get("chunk_id"),
+            "excerpt": (s.get("text") or "")[:200],
+        } for s in (sources or []) if isinstance(s, dict) and s.get("type") != "correction"]
+        confs = [x["score"] for x in kb_sources]
+        return {
+            "kb_sources": kb_sources,
+            "kb_confidence_avg": round(sum(confs) / len(confs), 3) if confs else 0.0,
+            "verify_flags": ungrounded,
+            "used_general_knowledge_for": ["article structure and phrasing"],
+            "grounding_score": score,          # kept for the existing log line
+            "total_claims": total,
+            "ungrounded_claims": ungrounded,
+        }
+
+    def generate_newsletter(self, candidate_id: str, candidate: "ContentCandidate" = None,
+                            low_confidence_topics: list = None) -> str:
+        """Generate a newsletter section for a candidate, grounded in the Beacon KB."""
         candidate = candidate or self._get_candidate(candidate_id)
         if not candidate:
             raise ValueError(f"Candidate {candidate_id} not found")
+
+        # RAG retrieval — same grounding path as blog posts (was a pass-through before).
+        query_parts = [candidate.title] + (candidate.key_topics or [])
+        retrieval_result = self.retriever.retrieve(
+            " ".join(p for p in query_parts if p), top_k=8, min_score=0.6)
+        context = retrieval_result.context
+
+        _low = set(t.lower() for t in (low_confidence_topics or []))
+        _topic_is_low = any(t.lower() in _low for t in (candidate.key_topics or []) + [candidate.title])
+        _low_line = ("- LOW knowledge-base coverage on this topic — bias HARD toward [[VERIFY]] "
+                     "for any specific figure; do not assert numbers." if _topic_is_low else "")
 
         prompt = f"""Write a brief newsletter section for Green Light Expediting about: {candidate.title}
 
@@ -375,7 +419,13 @@ Format: Markdown with # headers"""
 - Why it matters for NYC building owners and developers
 - What to do next
 
-Tone: Direct, actionable, expert"""
+Tone: Direct, actionable, expert
+- FACT-GUARD: for any specific fee/dollar amount, deadline or duration ("30 days"),
+  percentage, code section (BC/MC/AC/NYCECC/ZR), form number (PW1, PW2, TR1, TR8), or
+  effective date — use it ONLY if it appears verbatim in the retrieved documents. If it is
+  NOT in the documents, write [[VERIFY: <the specific fact needed>]] inline instead of
+  guessing or silently omitting.
+{_low_line}"""
 
         from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
@@ -383,9 +433,20 @@ Tone: Direct, actionable, expert"""
         content, _, _ = self.claude.get_response(
             user_message=prompt,
             conversation_history=[prompt_msg],
+            rag_context=context,          # fires the anti-fabrication grounding rules
             format_for="web",
             max_tokens_override=4000,
+            temperature_override=0.2,     # factual generation
         )
+
+        # Populate grounding so Ordino gets the same object as for blog posts.
+        self._last_grounding = self._grounding_check(content, retrieval_result.sources)
+        if self._last_grounding["grounding_score"] < 0.7:
+            logger.warning(
+                "Low grounding on newsletter '%s': score=%.2f ungrounded=%s",
+                candidate.title, self._last_grounding["grounding_score"],
+                self._last_grounding["ungrounded_claims"],
+            )
 
         gen_id = f"gen_{uuid.uuid4().hex[:12]}"
         self._save_generated(gen_id, candidate_id, "newsletter", candidate.title, content)
