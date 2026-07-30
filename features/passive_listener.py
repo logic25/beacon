@@ -817,7 +817,11 @@ class PassiveListener:
                                 tokens_used=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
                                 cost_usd=0.0,
                                 response_time_ms=0,
-                                confidence=retrieval_result.avg_score,
+                                confidence=(
+                                    sum(s.get("score", 0.0) for s in retrieval_result.sources)
+                                    / len(retrieval_result.sources)
+                                    if retrieval_result.sources else 0.0
+                                ),
                                 topic=get_classifier().classify(pq.text, response_text),
                             )
                             self.analytics_db.log_interaction(interaction)
