@@ -275,6 +275,13 @@ class EmailPoller:
             text_for_class = ""
         category = self._classify_email(subject, sender, text_for_class)
 
+        # 'other' = promos, personal mail, low-value newsletters. Skip entirely so they
+        # never land in the permitting KB. (dob_regulatory still defaults to the KB below.)
+        if category == "other":
+            self._mark_processed(msg_id, headers, label_id)
+            logger.info(f"⏭️  Skipped (other/low-value): '{subject}'")
+            return
+
         if category in ("event", "market_news"):
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._route_to_bd(category, subject, sender, text_for_class, date_str):
@@ -350,10 +357,17 @@ class EmailPoller:
                     logger.warning(f"  Attachment too large ({len(pdf_bytes)} bytes): {filename}")
                     continue
 
-                # Save to temp file and process
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                    tmp.write(pdf_bytes)
-                    tmp_path = tmp.name
+                # Save to a temp file NAMED with the real attachment filename so the
+                # source_file Beacon cites is meaningful (not tmpXXXX.pdf). Sanitize to
+                # a safe basename and keep the .pdf suffix.
+                import re as _re
+                safe_name = _re.sub(r"[^A-Za-z0-9._ +-]", "_", os.path.basename(filename)).strip() or "attachment.pdf"
+                if not safe_name.lower().endswith(".pdf"):
+                    safe_name += ".pdf"
+                tmp_dir = tempfile.mkdtemp()
+                tmp_path = os.path.join(tmp_dir, safe_name)
+                with open(tmp_path, "wb") as _fh:
+                    _fh.write(pdf_bytes)
 
                 try:
                     processor = DocumentProcessor()
@@ -376,7 +390,9 @@ class EmailPoller:
 
                 finally:
                     try:
-                        Path(tmp_path).unlink()
+                        p = Path(tmp_path)
+                        p.unlink(missing_ok=True)
+                        p.parent.rmdir()  # remove the now-empty per-attachment temp dir
                     except OSError:
                         pass
 

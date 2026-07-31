@@ -175,17 +175,30 @@ class VectorStore:
                 cleaned[k] = str(v)
         return cleaned
 
-    def upsert_chunks(self, chunks: list[DocumentChunk]) -> int:
+    def upsert_chunks(self, chunks: list[DocumentChunk], replace: bool = True) -> int:
         """Insert or update document chunks in the vector store.
 
         Args:
             chunks: List of DocumentChunk objects to upsert
+            replace: If True (default), first remove any STALE chunks for these source
+                files — existing chunks that this ingest won't overwrite — so a
+                re-ingest never leaves an old version of a doc behind. We delete only
+                (existing IDs − new IDs), never an ID we're about to write, so it's
+                race-free despite deterministic chunk IDs.
 
         Returns:
             Number of chunks upserted
         """
         if not chunks:
             return 0
+
+        # Clean-replace: remove any existing chunks for these source files before
+        # writing the new ones, so a re-ingest never leaves an old version behind.
+        # Chunk IDs are md5(file_path:index) and every ingest uses a fresh temp path,
+        # so the new IDs differ from the old — full delete-then-upsert is race-free.
+        if replace:
+            for sf in {c.source_file for c in chunks if c.source_file}:
+                self.delete_by_source(sf)
 
         # Get embeddings for all chunks
         texts = [chunk.text for chunk in chunks]
@@ -286,18 +299,41 @@ class VectorStore:
 
         return formatted_results
 
-    def delete_by_source(self, source_file: str) -> None:
-        """Delete all chunks from a specific source file.
+    def delete_by_source(self, source_file: str) -> int:
+        """Delete ALL chunks for a source file (Pinecone-serverless-safe). Returns count.
 
-        Args:
-            source_file: Name of the source file to delete
+        Serverless can't delete-by-metadata-filter directly, so we repeatedly query by
+        the source_file filter and delete the returned IDs. Deleting BETWEEN queries is
+        what lets the loop progress past the top_k=100 limit on large docs; the `seen`
+        guard stops it cleanly once eventual consistency has caught up (a query that
+        returns only already-deleted IDs).
         """
-        # Note: Pinecone serverless doesn't support delete by metadata filter
-        # You'd need to track IDs separately or use a different approach
-        logger.warning(
-            f"Delete by source not fully supported in serverless. "
-            f"Consider recreating the index to remove {source_file}"
-        )
+        if not source_file:
+            return 0
+        seen: set[str] = set()
+        try:
+            dummy = [0.0] * self.settings.embedding_dimension
+            while True:
+                res = self.index.query(
+                    vector=dummy,
+                    top_k=100,
+                    include_metadata=False,
+                    filter={"source_file": {"$eq": source_file}},
+                )
+                matches = getattr(res, "matches", None) or []
+                ids = [m.id for m in matches if m.id not in seen]
+                if not ids:
+                    break
+                self.index.delete(ids=ids)
+                seen.update(ids)
+                if len(seen) > 5000:  # safety valve
+                    logger.warning(f"delete_by_source cap hit for {source_file!r}")
+                    break
+        except Exception as e:
+            logger.error(f"delete_by_source failed for {source_file!r}: {e}")
+        if seen:
+            logger.info(f"delete_by_source: removed {len(seen)} chunks for {source_file!r}")
+        return len(seen)
 
     def get_stats(self) -> dict:
         """Get index statistics.
