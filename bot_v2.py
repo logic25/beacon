@@ -1821,6 +1821,20 @@ def api_ingest():
 
         logger.info(f"[API Ingest] Ingested {count} chunks from '{document.title}' (type={source_type})")
 
+        # Notify GLE staff in Ordino when a genuinely NEW document is added to the KB
+        # (_version == 1 = no prior manifest; skip re-ingests and duplicates). Once per
+        # file, best-effort — never let a notification failure affect the ingest result.
+        if _version == 1 and not _duplicate_of and analytics_db and hasattr(analytics_db, "notify_ingest"):
+            try:
+                _loc = f"{_manifest_folder}/{_manifest_file}" if _manifest_folder else _manifest_file
+                analytics_db.notify_ingest(
+                    title=f"New KB document: {document.title}",
+                    body=f"Added to the knowledge base ({source_type}) — {_loc}.",
+                    link="/documents",
+                )
+            except Exception as _e:
+                logger.warning(f"[API Ingest] KB ingest notify failed: {_e}")
+
         response = {
             "success": True,
             "title": document.title,

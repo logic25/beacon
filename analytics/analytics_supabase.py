@@ -306,6 +306,17 @@ class SupabaseAnalyticsDB:
         result = self._call("save_content_candidate", candidate)
         return result or {}
 
+    def notify_ingest(self, title: str, body: str = None, link: str = None) -> dict:
+        """Fire an in-app Ordino notification for a net-new KB ingest.
+
+        Call this ONCE per ingest operation (a manual upload, or a newsletter that
+        was processed) — never per chunk — so the staff notification bell stays
+        low-noise. Best-effort: failures are logged, never raised."""
+        return self._call(
+            "notify_ingest",
+            {"title": title, "body": body, "link": link or "/documents"},
+        ) or {}
+
     def get_content_candidates(self, status: str = "pending",
                                 content_type: str = None,
                                 limit: int = 50) -> list[dict]:

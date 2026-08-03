@@ -318,6 +318,18 @@ class EmailPoller:
             self._mark_processed(msg_id, headers, failed_label)
             return
 
+        # Notify GLE staff in Ordino that new KB content landed — once per email
+        # (never per chunk), so the notification bell stays low-noise.
+        if self.analytics_db:
+            try:
+                self.analytics_db.notify_ingest(
+                    title=f"KB updated: {subject}",
+                    body=f"Beacon ingested a DOB/regulatory email from {sender}.",
+                    link="/documents",
+                )
+            except Exception as e:
+                logger.warning(f"KB ingest notify failed for '{subject}': {e}")
+
         # Mark as read and label
         self._mark_processed(msg_id, headers, label_id)
 
