@@ -871,9 +871,11 @@ Type: email_digest
         logger.info(f"  Downloading PDF: {pdf_url}")
 
         try:
-            # Download the PDF. nyc.gov returns 403 for the default requests
-            # User-Agent, so send a browser UA (same as the parser's session).
-            resp = req.get(
+            # SSRF guard: pdf_url comes from links in untrusted inbound email, so validate
+            # the host (and every redirect hop) resolves to a public IP before fetching.
+            # nyc.gov returns 403 for the default requests User-Agent, so send a browser UA.
+            from core.net_guard import safe_get
+            resp = safe_get(
                 pdf_url,
                 timeout=30,
                 stream=True,

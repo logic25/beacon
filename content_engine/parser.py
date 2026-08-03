@@ -362,7 +362,10 @@ class DOBNewsletterParser:
         if not url or not url.startswith('http'):
             return "", []
         try:
-            response = self.session.get(url, timeout=15)
+            # SSRF guard: this fetches links harvested from untrusted email/document
+            # content, so validate the host (and every redirect hop) is a public IP.
+            from core.net_guard import safe_get
+            response = safe_get(url, session=self.session, timeout=15)
             response.raise_for_status()
 
             # DOB service-notice links are GovDelivery trackers that redirect to a
