@@ -310,18 +310,23 @@ class Retriever:
         smap: dict = {}
         try:
             index = self.vector_store.index
-            for id_batch in index.list(prefix="__file__:", limit=100):
-                if not id_batch:
-                    break
-                fetched = index.fetch(ids=list(id_batch))
-                for _vid, vdata in fetched.vectors.items():
-                    m = vdata.metadata or {}
-                    sf = m.get("source_file")
-                    if sf:
-                        smap[sf] = {
-                            "is_current": str(m.get("is_current", "true")).lower() != "false",
-                            "superseded_by": m.get("superseded_by", "") or "",
-                        }
+            # Read manifests via a metadata-filtered query, NOT index.list(prefix=...):
+            # on Pinecone serverless, list-by-prefix does not reliably return the manifest
+            # vectors, so a zero-vector query filtered to is_manifest="true" is the robust
+            # way to enumerate them.
+            dim = self.vector_store.settings.embedding_dimension
+            res = index.query(
+                vector=[0.0] * dim, top_k=2000, include_metadata=True,
+                filter={"is_manifest": {"$eq": "true"}},
+            )
+            for match in (getattr(res, "matches", None) or []):
+                m = match.metadata or {}
+                sf = m.get("source_file")
+                if sf:
+                    smap[sf] = {
+                        "is_current": str(m.get("is_current", "true")).lower() != "false",
+                        "superseded_by": m.get("superseded_by", "") or "",
+                    }
         except Exception as e:
             logger.warning(f"supersession map load failed: {e}")
         self._supersession_map = smap
