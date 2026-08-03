@@ -2652,13 +2652,26 @@ def update_knowledge_metadata():
                 if (vdata.metadata or {}).get("source_file", "") == source_file:
                     index.update(id=vid, set_metadata=set_meta)
                     updated += 1
-        # Content chunks (top_k high enough for any single doc).
+        # Content chunks — page through ALL of them. A single query caps at top_k, so a
+        # large doc (e.g. a full Local Law = 300+ chunks) would otherwise be partially
+        # updated and SPLIT (half under the old name/title, half the new). The seen-guard
+        # terminates both cases: on a rename, updated chunks drop out of the old-name
+        # filter; on a title/folder-only edit, they still match but are already seen.
         dummy = vector_store.embed_query(f"content from {source_file}")
-        res = index.query(vector=dummy, top_k=300, include_metadata=True,
-                          filter={"source_file": {"$eq": source_file}})
-        for m in res.matches:
-            index.update(id=m.id, set_metadata=set_meta)
-            updated += 1
+        seen: set = set()
+        while True:
+            res = index.query(vector=dummy, top_k=300, include_metadata=False,
+                              filter={"source_file": {"$eq": source_file}})
+            ids = [m.id for m in (res.matches or []) if m.id not in seen]
+            if not ids:
+                break
+            for vid in ids:
+                index.update(id=vid, set_metadata=set_meta)
+                updated += 1
+            seen.update(ids)
+            if len(seen) > 5000:  # safety valve
+                logger.warning(f"[KB Update] page cap hit for {source_file!r}")
+                break
         logger.info(f"[KB Update] '{source_file}' metadata updated ({updated} vectors): {set_meta}")
         return jsonify({"success": True, "source_file": source_file, "updated": updated, "set": set_meta})
     except Exception as e:
