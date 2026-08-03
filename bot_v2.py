@@ -1670,10 +1670,17 @@ def api_ingest():
                 else:
                     source_type = detect_document_type(filename)
 
-            # Save to temp file and process
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-                file.save(tmp.name)
-                tmp_path = tmp.name
+            # Save to a temp file NAMED with the uploaded filename so the cited source_file
+            # is the real document name, not a random tmpXXXX (NamedTemporaryFile produced
+            # those — the origin of the ugly KB names). Sanitize to a safe basename with no
+            # path separators, so a name can't fake a folder in the KB list.
+            import re as _re
+            safe_name = _re.sub(r"[^A-Za-z0-9._ +&()-]", "_", os.path.basename(filename)).strip() or f"upload{ext or '.txt'}"
+            if ext and not safe_name.lower().endswith(ext):
+                safe_name += ext
+            tmp_dir = tempfile.mkdtemp()
+            tmp_path = os.path.join(tmp_dir, safe_name)
+            file.save(tmp_path)
 
             try:
                 if ext == ".pdf":
@@ -1690,7 +1697,11 @@ def api_ingest():
                         metadata=metadata,
                     )
             finally:
-                os.unlink(tmp_path)
+                try:
+                    os.unlink(tmp_path)
+                    os.rmdir(tmp_dir)
+                except Exception:
+                    pass
 
         else:
             # JSON text submission
