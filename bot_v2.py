@@ -178,6 +178,8 @@ app = Flask(__name__)
 
 # Configure Flask secret key for sessions (required for OAuth)
 import os
+import hmac
+from functools import wraps
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
 
 # Enable CORS for all routes (Ordino widget on different domain calls /api/chat and /)
@@ -200,6 +202,38 @@ passive_listener: "PassiveListener | None" = None
 email_poller: "EmailPoller | None" = None
 content_scheduler: "ContentScheduler | None" = None
 logger = logging.getLogger(__name__)
+
+# Warn loudly if the Flask session secret is the known default — a constant secret lets
+# an attacker forge signed session cookies (dashboard/OAuth auth).
+if app.secret_key == "dev-secret-change-in-production":
+    logger.critical(
+        "FLASK_SECRET_KEY is not set — using a publicly-known default; set it in the "
+        "Railway environment to prevent session-cookie forgery."
+    )
+
+
+# ── Shared-secret auth for internet-facing endpoints ─────────────────────────────
+def _beacon_key_authorized() -> bool:
+    """True iff the request carries the shared admin secret (x-beacon-key), compared in
+    constant time. Fails CLOSED when the secret isn't configured."""
+    expected = os.getenv("BEACON_ANALYTICS_KEY", "")
+    provided = request.headers.get("x-beacon-key", "")
+    return bool(expected) and hmac.compare_digest(provided, expected)
+
+
+def require_beacon_key(f):
+    """Decorator: gate a route behind the shared admin secret. Ordino reaches these
+    routes through the beacon-proxy edge function, which forwards the key — so this is
+    transparent to the app and blocks only anonymous internet callers. Fails closed."""
+    @wraps(f)
+    def _wrapped(*args, **kwargs):
+        if not _beacon_key_authorized():
+            logger.warning(
+                f"[Auth] BLOCKED {request.method} {request.path} from {request.remote_addr}"
+            )
+            return jsonify({"error": "Unauthorized"}), 403
+        return f(*args, **kwargs)
+    return _wrapped
 
 
 # Admin whitelist for /correct (only these users can apply corrections immediately)
@@ -1149,6 +1183,7 @@ def _persist_widget_messages(
 
 
 @app.route("/api/chat", methods=["POST"])
+@require_beacon_key
 def api_chat():
     """Web API chat endpoint for Ordino's Ask Beacon widget.
     Processes questions synchronously (no Google Chat) and returns structured JSON.
@@ -1577,6 +1612,7 @@ def api_analytics():
 
 
 @app.route("/api/ingest", methods=["POST"])
+@require_beacon_key
 def api_ingest():
     """Ingest a document into the Beacon knowledge base (Pinecone).
 
@@ -1859,6 +1895,7 @@ def api_ingest():
 
 
 @app.route("/api/ingest-email", methods=["POST"])
+@require_beacon_key
 def api_ingest_email():
     """Process a forwarded DOB newsletter email.
 
@@ -2063,6 +2100,7 @@ def main() -> None:
 # ------------------------------------------------------------------
 
 @app.route("/api/knowledge/list", methods=["GET"])
+@require_beacon_key
 def list_knowledge_files():
     """List all ingested knowledge base files.
 
@@ -2271,6 +2309,7 @@ def list_knowledge_files():
 
 
 @app.route("/api/knowledge/file-content", methods=["GET"])
+@require_beacon_key
 def get_file_content():
     """Retrieve the full text content of an ingested file by reassembling its chunks.
 
@@ -2358,6 +2397,7 @@ def get_file_content():
 
 
 @app.route("/api/knowledge/rebuild-manifest", methods=["POST"])
+@require_beacon_key
 def rebuild_knowledge_manifest():
     """Scan all existing Pinecone vectors and create manifest entries for files
     that were ingested before the manifest system was added.
@@ -2442,9 +2482,9 @@ def rebuild_knowledge_manifest():
 
 def _kb_delete_authorized() -> bool:
     """Destructive KB endpoints require the shared admin secret. Fail CLOSED: if the
-    secret isn't configured, deny — KB deletion must never be open to the internet."""
-    expected = os.getenv("BEACON_ANALYTICS_KEY", "")
-    return bool(expected) and request.headers.get("x-beacon-key", "") == expected
+    secret isn't configured, deny — KB deletion must never be open to the internet.
+    Constant-time comparison via the shared helper."""
+    return _beacon_key_authorized()
 
 
 def _reconstruct_kb_content(index, vector_store, source_file: str) -> str:
@@ -2696,6 +2736,7 @@ def delete_knowledge_batch():
 
 
 @app.route("/api/knowledge/assign-folders", methods=["POST"])
+@require_beacon_key
 def assign_knowledge_folders():
     """Auto-assign folders to manifest vectors based on filename and source_type.
 
@@ -2848,6 +2889,7 @@ def assign_knowledge_folders():
 
 
 @app.route("/api/knowledge/<path:filepath>", methods=["GET"])
+@require_beacon_key
 def serve_knowledge_file(filepath):
     """Serve a single knowledge base file for Ordino document seeding."""
     import os
