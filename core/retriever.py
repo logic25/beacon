@@ -83,6 +83,11 @@ class Retriever:
         self.knowledge_base_path = Path(knowledge_base_path)
         self.corrections = self._load_corrections()
         self._corrections_mtime: float = self._get_kb_mtime()
+        # {source_file: {is_current, superseded_by}} built from KB manifests (cached),
+        # so retrieval can down-rank superseded docs and the answer can narrate the
+        # replacement — without stamping is_current onto every content chunk.
+        self._supersession_map: "dict | None" = None
+        self._supersession_loaded_at: float = 0.0
 
     # ------------------------------------------------------------------
     # Corrections loading
@@ -293,16 +298,48 @@ class Retriever:
 
         return "\n".join(parts)
 
-    def _rerank(self, results: list[dict]) -> list[dict]:
-        """Re-rank candidates by raw score + small recency & authority boosts.
+    def _load_supersession_map(self, force: bool = False) -> None:
+        """Build/refresh {source_file: {is_current, superseded_by}} from the KB manifests
+        (cached ~10 min). Cheap (~one pass over manifest vectors), and lets retrieval act
+        on supersession without stamping is_current onto every content chunk."""
+        import time
+        now = time.time()
+        if (not force and self._supersession_map is not None
+                and (now - self._supersession_loaded_at) < 600):
+            return
+        smap: dict = {}
+        try:
+            index = self.vector_store.index
+            for id_batch in index.list(prefix="__file__:", limit=100):
+                if not id_batch:
+                    break
+                fetched = index.fetch(ids=list(id_batch))
+                for _vid, vdata in fetched.vectors.items():
+                    m = vdata.metadata or {}
+                    sf = m.get("source_file")
+                    if sf:
+                        smap[sf] = {
+                            "is_current": str(m.get("is_current", "true")).lower() != "false",
+                            "superseded_by": m.get("superseded_by", "") or "",
+                        }
+        except Exception as e:
+            logger.warning(f"supersession map load failed: {e}")
+        self._supersession_map = smap
+        self._supersession_loaded_at = now
 
-        The boosts are deliberately small (recency ≤ 0.08, authority ≤ 0.05) so they
-        only change the order when relevance is CLOSE — a freshness/authority
-        tiebreaker, NOT an override of genuine relevance. This lets a recent DOB
-        service notice beat an older general guide on the same topic, without
-        surfacing off-topic recent docs (a large relevance gap still wins).
+    def _rerank(self, results: list[dict]) -> list[dict]:
+        """Re-rank candidates by raw score + small recency & authority boosts, and a
+        supersession penalty.
+
+        The recency/authority boosts are deliberately small (≤ 0.08 / ≤ 0.05) — a
+        tiebreaker when relevance is CLOSE, not an override. A doc marked superseded
+        (is_current=false) gets a moderate penalty so the CURRENT doc ranks above it,
+        while a strongly-relevant old doc still survives in the pool (so a "didn't there
+        used to be a rule…" question can surface it — flagged as superseded in context).
         """
         from datetime import datetime
+        self._load_supersession_map()
+        smap = self._supersession_map or {}
         now = datetime.now()
         for r in results:
             score = r.get("score", 0.0)
@@ -317,7 +354,12 @@ class Retriever:
                     recency_boost = 0.08 * (1 - days / 365.0)  # up to +0.08, very recent
             except Exception:
                 pass
-            r["_rerank_score"] = score + auth_boost + recency_boost
+            superseded_penalty = 0.0
+            info = smap.get(r.get("source_file", ""))
+            if info and not info.get("is_current", True):
+                r["_superseded_by"] = info.get("superseded_by", "")
+                superseded_penalty = 0.12  # current ranks above; relevant old doc survives
+            r["_rerank_score"] = score + auth_boost + recency_boost - superseded_penalty
         return sorted(
             results,
             key=lambda r: r.get("_rerank_score", r.get("score", 0.0)),
@@ -374,8 +416,20 @@ class Retriever:
             else:
                 confidence = "LOW - use cautiously"
 
+            # Supersession flag (set by _rerank from the manifest map). Tell the LLM so it
+            # never presents a dead rule as current — and can point to the replacement.
+            superseded_note = ""
+            if "_superseded_by" in result:
+                repl = result["_superseded_by"]
+                superseded_note = (
+                    f" | ⚠ SUPERSEDED by '{repl}' — this is NO LONGER CURRENT; tell the user "
+                    f"it was replaced and point them to the current version"
+                    if repl else
+                    " | ⚠ SUPERSEDED — this is NO LONGER CURRENT; tell the user this rule was replaced"
+                )
+
             context_parts.append(
-                f"[Document {i}: {source_info} — {source_type}{date_str} | "
+                f"[Document {i}: {source_info} — {source_type}{date_str}{superseded_note} | "
                 f"{confidence} confidence ({score:.0%} match)]\n"
                 f"{result['text']}\n"
             )
