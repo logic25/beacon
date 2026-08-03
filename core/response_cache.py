@@ -50,6 +50,7 @@ class CacheEntry:
     created_at: str = ""
     hit_count: int = 0
     last_hit: Optional[str] = None
+    sources: list = field(default_factory=list)  # Citations, so a cache hit still shows them
 
     def is_expired(self, ttl_hours: int = 24) -> bool:
         """Check if cache entry has expired."""
@@ -238,15 +239,9 @@ class SemanticCache:
         else:
             return "general"
 
-    def get(self, question: str) -> Optional[str]:
-        """
-        Get cached response for a question.
-
-        Uses semantic similarity to match similar questions.
-
-        Returns:
-            Cached response or None if not found
-        """
+    def get_entry(self, question: str) -> Optional[CacheEntry]:
+        """Get the cached CacheEntry (response + sources) for a question via semantic
+        similarity, or None. Increments hit stats on a match."""
         question_keywords = self._extract_keywords(question)
         question_embedding = self._get_embedding(question)
 
@@ -277,13 +272,19 @@ class SemanticCache:
             self._save()
 
             logger.info(f"Cache HIT (score={best_score:.2f}): {question[:50]}...")
-            return best_match.response
+            return best_match
 
         logger.info(f"Cache MISS: {question[:50]}...")
         return None
 
-    def set(self, question: str, response: str):
-        """Cache a response for a question."""
+    def get(self, question: str) -> Optional[str]:
+        """Get the cached response STRING for a question (back-compat shim). Prefer
+        get_entry() when you also need the sources."""
+        entry = self.get_entry(question)
+        return entry.response if entry else None
+
+    def set(self, question: str, response: str, sources: Optional[list] = None):
+        """Cache a response (and its citation sources) for a question."""
         # Generate cache key
         cache_key = hashlib.md5(question.lower().encode()).hexdigest()[:12]
 
@@ -295,6 +296,7 @@ class SemanticCache:
             keywords=self._extract_keywords(question),
             created_at=datetime.now().isoformat(),
             hit_count=0,
+            sources=sources or [],
         )
 
         self.cache[cache_key] = entry

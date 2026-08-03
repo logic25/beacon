@@ -1264,13 +1264,13 @@ def api_chat():
 
         # === CHECK CACHE ===
         if response_cache and CACHE_AVAILABLE:
-            cached = response_cache.get(user_message)
-            if cached:
+            cached_entry = response_cache.get_entry(user_message)
+            if cached_entry:
                 logger.info(f"[API Chat] Cache hit for: {user_message[:50]}")
                 return jsonify({
-                    "response": cached,
+                    "response": cached_entry.response,
                     "confidence": 0.85,
-                    "sources": [],
+                    "sources": cached_entry.sources or [],
                     "flow_type": "cache",
                     "cached": True,
                     "response_time_ms": int((time.time() - request_start_time) * 1000)
@@ -1442,7 +1442,9 @@ def api_chat():
 
         # === CACHE RESPONSE ===
         if response_cache and CACHE_AVAILABLE:
-            response_cache.set(user_message, ai_response)
+            # Store the citation sources too, so a later cache hit still shows them
+            # (previously a cached answer came back grounded but with empty sources).
+            response_cache.set(user_message, ai_response, sources=rag_sources_list)
 
         # === LOG TO ANALYTICS ===
         response_time_ms = int((time.time() - request_start_time) * 1000)
