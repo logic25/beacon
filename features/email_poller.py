@@ -68,6 +68,9 @@ GMAIL_SCOPES = [
 
 # Label name for processed emails
 INGESTED_LABEL = "Beacon-Ingested"
+# Label for emails that threw during ingest — so a poison email surfaces for review
+# instead of silently retry-failing every poll forever.
+FAILED_LABEL = "Beacon-Ingest-Failed"
 
 
 class EmailPoller:
@@ -87,7 +90,7 @@ class EmailPoller:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._credentials: Optional[service_account.Credentials] = None
-        self._label_id: Optional[str] = None
+        self._label_ids: dict = {}  # label name -> id (cached across polls)
         self._processed_count = 0
         self._last_poll: Optional[str] = None
         self._last_error: Optional[str] = None
@@ -291,11 +294,21 @@ class EmailPoller:
             # Routing not configured / failed — fall through to KB so nothing is lost.
             logger.info(f"  BD routing unavailable; keeping '{subject}' in KB as fallback")
 
-        # DOB regulatory (or fallback): parse and ingest the body (text + linked PDFs)
-        self._ingest_newsletter(subject, sender, html_content)
-
-        # Also ingest any PDF attachments directly on the email
-        self._ingest_attachments(message, subject, headers)
+        # DOB regulatory (or fallback): parse and ingest the body (text + linked PDFs).
+        # Wrap the whole ingest so a single email that throws can NEVER get stranded in a
+        # silent retry loop: on failure we still mark it processed, but with a distinct
+        # 'Beacon-Ingest-Failed' label so it surfaces for review instead of re-failing
+        # every poll forever.
+        try:
+            self._ingest_newsletter(subject, sender, html_content)
+            # Also ingest any PDF attachments directly on the email
+            self._ingest_attachments(message, subject, headers)
+        except Exception as e:
+            self._last_error = f"ingest failed for '{subject}': {e}"
+            logger.error(f"❌ Ingest failed for '{subject}', marking failed: {e}", exc_info=True)
+            failed_label = self._get_or_create_label(headers, FAILED_LABEL)
+            self._mark_processed(msg_id, headers, failed_label)
+            return
 
         # Mark as read and label
         self._mark_processed(msg_id, headers, label_id)
@@ -458,7 +471,19 @@ class EmailPoller:
         # fewer confabulated fees/dates/code sections. _fetch_page_content is
         # bounded (10s timeout, 5000-char cap, fails soft) so a bad link can't
         # stall or crash ingestion.
-        result = parser.parse_email(html_content, fetch_linked_pages=True)
+        try:
+            result = parser.parse_email(html_content, fetch_linked_pages=True)
+        except Exception as e:
+            # The structured parser crashed on this email's markup (heavy DOB NOW
+            # newsletters have exercised edge cases the simple recaps don't). Never let
+            # that lose the whole email — fall back to harvesting its linked documents
+            # plus the raw text, exactly like the no-updates path below.
+            logger.error(f"Newsletter parser crashed on '{subject}', using harvest+raw fallback: {e}")
+            harvested = self._harvest_and_ingest_links(html_content, subject, "unknown")
+            self._ingest_raw_email(subject, sender, html_content, "unknown")
+            if harvested:
+                logger.info(f"  Followed {harvested} linked document(s) from '{subject}' (fallback)")
+            return
 
         updates = result.get("updates", [])
         newsletter_date = result.get("newsletter_date", "unknown")
@@ -925,10 +950,10 @@ Type: email_digest
         except Exception as e:
             logger.warning(f"Failed to mark email {msg_id} as processed: {e}")
 
-    def _get_or_create_label(self, headers: dict) -> Optional[str]:
-        """Get or create the 'Beacon-Ingested' label."""
-        if self._label_id:
-            return self._label_id
+    def _get_or_create_label(self, headers: dict, name: str = INGESTED_LABEL) -> Optional[str]:
+        """Get or create a Gmail label by name (cached per name across polls)."""
+        if name in self._label_ids:
+            return self._label_ids[name]
 
         import requests
 
@@ -940,25 +965,24 @@ Type: email_digest
             labels = resp.json().get("labels", [])
 
             for label in labels:
-                if label.get("name") == INGESTED_LABEL:
-                    self._label_id = label["id"]
-                    return self._label_id
+                if label.get("name") == name:
+                    self._label_ids[name] = label["id"]
+                    return self._label_ids[name]
 
             # Create the label
-            create_url = url
             body = {
-                "name": INGESTED_LABEL,
+                "name": name,
                 "labelListVisibility": "labelShow",
                 "messageListVisibility": "show",
             }
-            resp = requests.post(create_url, headers=headers, json=body, timeout=10)
+            resp = requests.post(url, headers=headers, json=body, timeout=10)
             resp.raise_for_status()
-            self._label_id = resp.json().get("id")
-            logger.info(f"Created Gmail label: {INGESTED_LABEL}")
-            return self._label_id
+            self._label_ids[name] = resp.json().get("id")
+            logger.info(f"Created Gmail label: {name}")
+            return self._label_ids[name]
 
         except Exception as e:
-            logger.warning(f"Could not get/create Gmail label: {e}")
+            logger.warning(f"Could not get/create Gmail label {name!r}: {e}")
             return None
 
     # ------------------------------------------------------------------
