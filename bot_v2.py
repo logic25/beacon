@@ -1832,6 +1832,21 @@ def api_ingest():
         except Exception as e:
             logger.warning(f"[API Ingest] Supersedes detection skipped: {e}")
 
+        # Explicit supersession override — a caller (e.g. the bulletin master-index pull)
+        # can set is_current / superseded_by directly instead of relying on text detection.
+        # This is what lets the supersession-aware retriever down-rank + flag dead rules.
+        _superseded_by = ""
+        try:
+            _fic = (request.form.get("is_current", "") or "").strip().lower()
+            if _fic in ("true", "false"):
+                _is_current = _fic
+            _fsb = (request.form.get("superseded_by", "") or "").strip()
+            if _fsb:
+                _superseded_by = _fsb
+                _is_current = "false"  # superseded by something ⇒ not current
+        except Exception:
+            pass
+
         # Store manifest vector so /api/knowledge/list can find this file.
         try:
             dim = vector_store.settings.embedding_dimension
@@ -1861,6 +1876,7 @@ def api_ingest():
                     "is_current": _is_current,
                     "version": _version,
                     "supersedes": _supersedes,
+                    "superseded_by": _superseded_by,
                     "content_hash": _content_hash,
                     "duplicate_of": _duplicate_of,
                 },
