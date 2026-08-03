@@ -2618,8 +2618,8 @@ def update_knowledge_metadata():
     """Update a KB doc's title / folder / jurisdiction IN PLACE — no re-embed, no
     duplicate, chunk IDs preserved. Use this for Ordino's doc Properties editor so a
     rename/move/jurisdiction change doesn't re-ingest the file (which leaves the old
-    copy behind). JSON: {"source_file": "...", "title"?, "folder"?, "jurisdiction"?}
-    (any subset). Requires the x-beacon-key admin secret."""
+    copy behind). JSON: {"source_file": "...", "title"?, "folder"?, "jurisdiction"?,
+    "new_source_file"?} (any subset). Requires the x-beacon-key admin secret."""
     if not _kb_delete_authorized():
         return jsonify({"error": "Unauthorized — KB edits require the admin key"}), 403
     if retriever is None or not RAG_AVAILABLE:
@@ -2629,8 +2629,16 @@ def update_knowledge_metadata():
     if not source_file:
         return jsonify({"error": "source_file is required"}), 400
     set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction") if data.get(k) is not None}
+    # Optional rename: change the cited source_file across the doc's chunks + manifest.
+    # Citations and the KB list key on the source_file METADATA, so this cleans up ugly
+    # ingest names (e.g. tmpXXXX.pdf) with no re-embed. Chunks are found by the OLD name
+    # below, then their metadata is set to the new one; the manifest vector's opaque ID
+    # is left as-is (every user-visible surface reads the metadata we set here).
+    new_source_file = (data.get("new_source_file") or "").strip()
+    if new_source_file:
+        set_meta["source_file"] = new_source_file
     if not set_meta:
-        return jsonify({"error": "nothing to update (title/folder/jurisdiction)"}), 400
+        return jsonify({"error": "nothing to update (title/folder/jurisdiction/new_source_file)"}), 400
     try:
         vector_store = retriever.vector_store
         index = vector_store.index
