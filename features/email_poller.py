@@ -59,7 +59,15 @@ DEFAULT_SENDERS = (
     "no-reply@buildings.nyc.gov,"
     "buildings@nyc.gov"
 )
-SENDER_FILTERS = os.getenv("EMAIL_SENDER_FILTERS", DEFAULT_SENDERS).split(",")
+# EMAIL_SENDER_FILTERS AUGMENTS the defaults (union), it does NOT replace them. This is
+# deliberate: the env var previously overrode DEFAULT_SENDERS entirely, so a single typo
+# there (e.g. "no-noreply@newsletters.nyc.gov") silently dropped the real DOB sender
+# noreply@newsletters.nyc.gov and every "Buildings News Update" went un-ingested. Union +
+# de-dup means a bad env entry is harmless noise and a core DOB sender can never be lost.
+_env_senders = os.getenv("EMAIL_SENDER_FILTERS", "")
+SENDER_FILTERS = list(dict.fromkeys(
+    s.strip() for s in f"{DEFAULT_SENDERS},{_env_senders}".split(",") if s.strip()
+))
 
 # Gmail API scopes needed for reading + labeling
 GMAIL_SCOPES = [
