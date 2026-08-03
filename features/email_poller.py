@@ -79,6 +79,9 @@ INGESTED_LABEL = "Beacon-Ingested"
 # Label for emails that threw during ingest — so a poison email surfaces for review
 # instead of silently retry-failing every poll forever.
 FAILED_LABEL = "Beacon-Ingest-Failed"
+# Label for emails routed to the BD module (events / market news) instead of the KB, so
+# it's visible at a glance which inbound mail became BD intel vs. permitting knowledge.
+BD_LABEL = "Beacon-BD"
 
 
 class EmailPoller:
@@ -296,7 +299,8 @@ class EmailPoller:
         if category in ("event", "market_news"):
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._route_to_bd(category, subject, sender, text_for_class, date_str):
-                self._mark_processed(msg_id, headers, label_id)
+                bd_label = self._get_or_create_label(headers, BD_LABEL)
+                self._mark_processed(msg_id, headers, bd_label)
                 logger.info(f"✅ Email routed to BD ({category}): '{subject}'")
                 return
             # Routing not configured / failed — fall through to KB so nothing is lost.
