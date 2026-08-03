@@ -2657,7 +2657,7 @@ def update_knowledge_metadata():
     source_file = (data.get("source_file") or "").strip()
     if not source_file:
         return jsonify({"error": "source_file is required"}), 400
-    set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction") if data.get(k) is not None}
+    set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction", "is_current", "superseded_by") if data.get(k) is not None}
     # Optional rename: change the cited source_file across the doc's chunks + manifest.
     # Citations and the KB list key on the source_file METADATA, so this cleans up ugly
     # ingest names (e.g. tmpXXXX.pdf) with no re-embed. Chunks are found by the OLD name
