@@ -2113,8 +2113,6 @@ def main() -> None:
 # Knowledge Base file serving (for Ordino document seeding)
 # ------------------------------------------------------------------
 
-@app.route("/api/knowledge/list", methods=["GET"])
-@require_beacon_key
 def _all_manifests(index, vector_store):
     """Return [(vector_id, metadata_dict), ...] for EVERY KB manifest vector.
 
@@ -2161,6 +2159,8 @@ def _all_manifests(index, vector_store):
     return manifests
 
 
+@app.route("/api/knowledge/list", methods=["GET"])
+@require_beacon_key
 def list_knowledge_files():
     """List all ingested knowledge base files.
 
