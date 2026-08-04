@@ -1752,19 +1752,11 @@ def api_ingest():
         # Check for duplicate content under a different filename
         _duplicate_of = ""
         try:
-            for _dup_batch in vector_store.index.list(prefix="__file__:", limit=100):
-                if not _dup_batch:
-                    break
-                _dup_ids = list(_dup_batch)
-                _dup_fetched = vector_store.index.fetch(ids=_dup_ids)
-                for _dup_vid, _dup_vdata in _dup_fetched.vectors.items():
-                    _dup_meta = _dup_vdata.metadata or {}
-                    if (_dup_meta.get("content_hash") == _content_hash
-                            and _dup_meta.get("source_file") != _manifest_file):
-                        _duplicate_of = _dup_meta.get("source_file", "")
-                        logger.warning(f"[API Ingest] Duplicate content detected: '{_manifest_file}' has same content as '{_duplicate_of}'")
-                        break
-                if _duplicate_of:
+            for _dup_vid, _dup_meta in _all_manifests(vector_store.index, vector_store):
+                if (_dup_meta.get("content_hash") == _content_hash
+                        and _dup_meta.get("source_file") != _manifest_file):
+                    _duplicate_of = _dup_meta.get("source_file", "")
+                    logger.warning(f"[API Ingest] Duplicate content detected: '{_manifest_file}' has same content as '{_duplicate_of}'")
                     break
         except Exception as e:
             logger.warning(f"[API Ingest] Duplicate check skipped: {e}")
@@ -1808,27 +1800,20 @@ def api_ingest():
 
             # If this document supersedes another, mark the old one as not current
             if _supersedes and (_manifest_folder or _manifest_file):
-                # Try to find the superseded document's manifest and mark it
-                for old_id_batch in vector_store.index.list(prefix="__file__:", limit=100):
-                    if not old_id_batch:
-                        break
-                    old_ids = list(old_id_batch)
-                    # Look for manifests whose filename contains the superseded reference
-                    fetched = vector_store.index.fetch(ids=old_ids)
-                    for vid, vdata in fetched.vectors.items():
-                        old_m = vdata.metadata or {}
-                        old_name = old_m.get("source_file", "").lower()
-                        if _supersedes in old_name and vid != _manifest_id:
-                            # Mark old document as no longer current
-                            old_m["is_current"] = "false"
-                            old_m["superseded_by"] = _manifest_file
-                            dim = vector_store.settings.embedding_dimension
-                            vector_store.index.upsert(vectors=[{
-                                "id": vid,
-                                "values": [1e-7] * dim,
-                                "metadata": old_m,
-                            }])
-                            logger.info(f"[API Ingest] Marked '{old_m.get('source_file')}' as superseded by '{_manifest_file}'")
+                # Find the superseded document's manifest (serverless-safe) and mark it
+                for vid, old_m in _all_manifests(vector_store.index, vector_store):
+                    old_name = old_m.get("source_file", "").lower()
+                    if _supersedes in old_name and vid != _manifest_id:
+                        # Mark old document as no longer current
+                        old_m["is_current"] = "false"
+                        old_m["superseded_by"] = _manifest_file
+                        dim = vector_store.settings.embedding_dimension
+                        vector_store.index.upsert(vectors=[{
+                            "id": vid,
+                            "values": [1e-7] * dim,
+                            "metadata": old_m,
+                        }])
+                        logger.info(f"[API Ingest] Marked '{old_m.get('source_file')}' as superseded by '{_manifest_file}'")
         except Exception as e:
             logger.warning(f"[API Ingest] Supersedes detection skipped: {e}")
 
@@ -2130,6 +2115,52 @@ def main() -> None:
 
 @app.route("/api/knowledge/list", methods=["GET"])
 @require_beacon_key
+def _all_manifests(index, vector_store):
+    """Return [(vector_id, metadata_dict), ...] for EVERY KB manifest vector.
+
+    Pinecone serverless does NOT reliably return manifest vectors from
+    index.list(prefix="__file__:") — that quirk silently broke KB list details,
+    manifest deletion, metadata updates, and folder assignment (manifests looked
+    like they didn't exist). A zero-vector query filtered to is_manifest="true"
+    enumerates them robustly — the same approach the retriever uses for the
+    supersession map. Falls back to the legacy list(prefix=) scan only if the
+    query path itself errors, so behavior degrades gracefully instead of
+    returning nothing. Every current KB write stamps is_manifest="true"
+    (see /api/ingest and rebuild-manifest); run rebuild-manifest to backfill any
+    pre-existing manifests that predate that field.
+    """
+    manifests = []
+    try:
+        dim = vector_store.settings.embedding_dimension
+        res = index.query(
+            vector=[0.0] * dim, top_k=2000, include_metadata=True,
+            filter={"is_manifest": {"$eq": "true"}},
+        )
+        for match in (getattr(res, "matches", None) or []):
+            vid = getattr(match, "id", None)
+            if vid:
+                manifests.append((vid, match.metadata or {}))
+        if manifests:
+            return manifests
+    except Exception as e:
+        logger.warning(f"[KB] manifest metadata-query failed ({e}); falling back to list(prefix=)")
+    # Fallback: legacy prefix scan + fetch (older non-serverless index / query error).
+    try:
+        for id_batch in index.list(prefix="__file__:", limit=100):
+            if not id_batch:
+                break
+            ids = [getattr(i, "id", i) for i in id_batch]
+            ids = [i for i in ids if isinstance(i, str)]
+            if not ids:
+                continue
+            fetched = index.fetch(ids=ids)
+            for vid, vdata in fetched.vectors.items():
+                manifests.append((vid, vdata.metadata or {}))
+    except Exception as e:
+        logger.warning(f"[KB] manifest prefix-fallback failed: {e}")
+    return manifests
+
+
 def list_knowledge_files():
     """List all ingested knowledge base files.
 
@@ -2145,42 +2176,30 @@ def list_knowledge_files():
             vector_store = retriever.vector_store
             index = vector_store.index
 
-            # Collect all __file__: manifest vector IDs
-            manifest_ids = []
-            for id_batch in index.list(prefix="__file__:", limit=100):
-                if not id_batch:
-                    break
-                manifest_ids.extend(list(id_batch))
-
+            # Read all manifest vectors via metadata-query (serverless-safe).
             files = []
             file_details = []
 
-            if manifest_ids:
-                # Fast path: read the manifest vectors.
-                for i in range(0, len(manifest_ids), 100):
-                    batch = manifest_ids[i:i + 100]
-                    fetched = index.fetch(ids=batch)
-                    for vec_id, vec_data in fetched.vectors.items():
-                        meta = vec_data.metadata or {}
-                        source_file = meta.get("source_file", "")
-                        folder = meta.get("folder", "")
+            for vec_id, meta in _all_manifests(index, vector_store):
+                source_file = meta.get("source_file", "")
+                folder = meta.get("folder", "")
 
-                        if folder and source_file:
-                            files.append(f"{folder}/{source_file}")
-                        elif source_file:
-                            files.append(source_file)
+                if folder and source_file:
+                    files.append(f"{folder}/{source_file}")
+                elif source_file:
+                    files.append(source_file)
 
-                        file_details.append({
-                            "filename": source_file,
-                            "folder": folder,
-                            "source_type": meta.get("source_type", "document"),
-                            "chunks_created": meta.get("chunks_created", 0),
-                            "ingested_at": meta.get("ingested_at", ""),
-                            "version": meta.get("version", 1),
-                            "is_current": meta.get("is_current", "true"),
-                            "supersedes": meta.get("supersedes", ""),
-                            "superseded_by": meta.get("superseded_by", ""),
-                        })
+                file_details.append({
+                    "filename": source_file,
+                    "folder": folder,
+                    "source_type": meta.get("source_type", "document"),
+                    "chunks_created": meta.get("chunks_created", 0),
+                    "ingested_at": meta.get("ingested_at", ""),
+                    "version": meta.get("version", 1),
+                    "is_current": meta.get("is_current", "true"),
+                    "supersedes": meta.get("supersedes", ""),
+                    "superseded_by": meta.get("superseded_by", ""),
+                })
             if not file_details:
                 # Fallback 1: manifests missing OR present-but-unfetchable (serverless
                 # list/fetch can be inconsistent). Build the list straight from chunk
@@ -2394,16 +2413,11 @@ def get_file_content():
             if fetched.vectors and manifest_id_1 in fetched.vectors:
                 manifest_meta = fetched.vectors[manifest_id_1].metadata or {}
             else:
-                # Try with folder prefix — scan manifest vectors for this filename
-                for id_batch in index.list(prefix="__file__:", limit=100):
-                    if not id_batch:
-                        break
-                    batch_fetched = index.fetch(ids=list(id_batch))
-                    for vid, vdata in batch_fetched.vectors.items():
-                        if (vdata.metadata or {}).get("source_file") == source_file:
-                            manifest_meta = vdata.metadata
-                            break
-                    if manifest_meta:
+                # Manifest ID not found by direct fetch — enumerate manifests
+                # (serverless-safe) and match on source_file.
+                for vid, meta in _all_manifests(index, vector_store):
+                    if meta.get("source_file") == source_file:
+                        manifest_meta = meta
                         break
         except Exception:
             pass
@@ -2595,19 +2609,11 @@ def delete_knowledge_file():
         # 0. Back up the content BEFORE deleting, so a wrongful delete is restorable.
         _backup_deleted_kb_doc(source_file, _reconstruct_kb_content(index, vector_store, source_file))
 
-        # 1. Find and delete the manifest vector
-        for id_batch in index.list(prefix="__file__:", limit=100):
-            if not id_batch:
-                break
-            ids = list(id_batch)
-            fetched = index.fetch(ids=ids)
-            for vid, vdata in fetched.vectors.items():
-                meta = vdata.metadata or {}
-                if meta.get("source_file", "") == source_file:
-                    index.delete(ids=[vid])
-                    deleted_manifest = True
-                    break
-            if deleted_manifest:
+        # 1. Find and delete the manifest vector (serverless-safe manifest read).
+        for vid, meta in _all_manifests(index, vector_store):
+            if meta.get("source_file", "") == source_file:
+                index.delete(ids=[vid])
+                deleted_manifest = True
                 break
 
         # 2. Find and delete all content chunks for this file.
@@ -2673,14 +2679,10 @@ def update_knowledge_metadata():
         index = vector_store.index
         updated = 0
         # Manifest vector(s) — what /api/knowledge/list reads for title/folder.
-        for id_batch in index.list(prefix="__file__:", limit=100):
-            if not id_batch:
-                break
-            fetched = index.fetch(ids=list(id_batch))
-            for vid, vdata in fetched.vectors.items():
-                if (vdata.metadata or {}).get("source_file", "") == source_file:
-                    index.update(id=vid, set_metadata=set_meta)
-                    updated += 1
+        for vid, meta in _all_manifests(index, vector_store):
+            if meta.get("source_file", "") == source_file:
+                index.update(id=vid, set_metadata=set_meta)
+                updated += 1
         # Content chunks — page through ALL of them. A single query caps at top_k, so a
         # large doc (e.g. a full Local Law = 300+ chunks) would otherwise be partially
         # updated and SPLIT (half under the old name/title, half the new). The seen-guard
@@ -2745,19 +2747,11 @@ def delete_knowledge_batch():
             # Back up content before deleting (restorable).
             _backup_deleted_kb_doc(sf, _reconstruct_kb_content(index, vector_store, sf))
 
-            # Delete manifest
-            for id_batch in index.list(prefix="__file__:", limit=100):
-                if not id_batch:
-                    break
-                ids = list(id_batch)
-                fetched = index.fetch(ids=ids)
-                for vid, vdata in fetched.vectors.items():
-                    meta = vdata.metadata or {}
-                    if meta.get("source_file", "") == sf:
-                        index.delete(ids=[vid])
-                        deleted_manifest = True
-                        break
-                if deleted_manifest:
+            # Delete manifest (serverless-safe manifest read).
+            for vid, meta in _all_manifests(index, vector_store):
+                if meta.get("source_file", "") == sf:
+                    index.delete(ids=[vid])
+                    deleted_manifest = True
                     break
 
             # Delete chunks
@@ -2893,34 +2887,27 @@ def assign_knowledge_folders():
         updated = []
         skipped = []
 
-        for id_batch in index.list(prefix="__file__:", limit=100):
-            if not id_batch:
-                break
-            ids = list(id_batch)
-            fetched = index.fetch(ids=ids)
+        for vid, meta in _all_manifests(index, vector_store):
+            filename = meta.get("source_file", "")
+            source_type = meta.get("source_type", "")
+            current_folder = meta.get("folder", "")
 
-            for vid, vdata in fetched.vectors.items():
-                meta = vdata.metadata or {}
-                filename = meta.get("source_file", "")
-                source_type = meta.get("source_type", "")
-                current_folder = meta.get("folder", "")
+            # Determine new folder
+            if filename in manual_assignments:
+                new_folder = manual_assignments[filename]
+            else:
+                new_folder = _auto_folder(filename, source_type)
 
-                # Determine new folder
-                if filename in manual_assignments:
-                    new_folder = manual_assignments[filename]
-                else:
-                    new_folder = _auto_folder(filename, source_type)
-
-                if new_folder and new_folder != current_folder:
-                    meta["folder"] = new_folder
-                    index.upsert(vectors=[{
-                        "id": vid,
-                        "values": [1e-7] * dim,
-                        "metadata": meta,
-                    }])
-                    updated.append({"file": filename, "folder": new_folder, "was": current_folder})
-                else:
-                    skipped.append({"file": filename, "folder": current_folder or new_folder, "reason": "already correct"})
+            if new_folder and new_folder != current_folder:
+                meta["folder"] = new_folder
+                index.upsert(vectors=[{
+                    "id": vid,
+                    "values": [1e-7] * dim,
+                    "metadata": meta,
+                }])
+                updated.append({"file": filename, "folder": new_folder, "was": current_folder})
+            else:
+                skipped.append({"file": filename, "folder": current_folder or new_folder, "reason": "already correct"})
 
         # Also update folder metadata on content chunks so filtered queries work
         # (This is optional but helps with folder-based retrieval)
