@@ -1761,6 +1761,17 @@ def api_ingest():
                     _key = request.headers.get("x-beacon-key", "")
                     _port = os.getenv("PORT", "8080")
                     _uploader = request.form.get("_uploaded_by") or "Chris Henry"
+                    # Idempotency: skip jobs already in the KB so a re-uploaded zip doesn't
+                    # create duplicate objection docs (the dedup-incident guard).
+                    _existing_jobs = set()
+                    try:
+                        _lr = _u.Request(f"http://localhost:{_port}/api/knowledge/list", headers={"x-beacon-key": _key})
+                        for _d in json.load(_u.urlopen(_lr, timeout=30)).get("details", []):
+                            _j = _job_from_name(_d.get("filename", ""))
+                            if _j:
+                                _existing_jobs.add(_j)
+                    except Exception:
+                        pass
                     results = []
                     for m in members:
                         try:
@@ -1770,6 +1781,8 @@ def api_ingest():
                         if not _rows:
                             results.append({"member": m, "skipped": "no objection rows"}); continue
                         job = _job_from_name(m) or _job_from_name(filename) or os.path.splitext(os.path.basename(m))[0]
+                        if job in _existing_jobs:
+                            results.append({"member": m, "job": job, "skipped": "already in KB"}); continue
                         payload = json.dumps({
                             "text": _to_markdown(job, _rows),
                             "title": f"DOB NOW Objections - {job}",
