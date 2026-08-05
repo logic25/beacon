@@ -976,27 +976,86 @@ Type: {source_type}
             logger.warning(f"Email classify failed ('{subject[:40]}'), defaulting to dob_regulatory: {e}")
         return "dob_regulatory"
 
+    @staticmethod
+    def _strip_fwd(s: str) -> str:
+        return re.sub(r"^(?:\s*(?:fwd?|re|fw)\s*:\s*)+", "", s or "", flags=re.I).strip()
+
+    def _extract_event_fields(self, subject: str, text: str) -> dict:
+        """LLM-extract clean event details from a (usually forwarded) email so BD events
+        aren't named 'Fwd: ...' with no date/venue. Returns
+        {is_event, name, date, location, host, url}. is_event=False means this is NOT a
+        single concrete event (a newsletter digest, market report, bundle) → the caller
+        downgrades it to market_news instead of creating a junk event row.
+        """
+        import json as _json
+        default = {"is_event": True, "name": self._strip_fwd(subject),
+                   "date": None, "location": None, "host": None, "url": None}
+        try:
+            import anthropic
+            from config import get_settings
+            client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
+            prompt = (
+                "Extract details for ONE industry event from this email (often a forward).\n"
+                'Return STRICT JSON: {"is_event": bool, "name": str, "date": "YYYY-MM-DD"|null, '
+                '"location": str|null, "host": str|null, "url": str|null}\n'
+                "- is_event=false if this is NOT one concrete event (a newsletter digest, a market "
+                "report, a general announcement, or multiple events bundled together).\n"
+                "- name = the REAL event name, never the raw subject line, no 'Fwd:'/'Re:'.\n"
+                "- date = the event's start date if stated, else null. location = venue/area if stated.\n\n"
+                f"Subject: {subject}\nBody (first 2000 chars): {text[:2000]}\n\nJSON only."
+            )
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001", max_tokens=250, temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = re.sub(r"^```(?:json)?|```$", "", msg.content[0].text.strip(), flags=re.I | re.M).strip()
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict) and parsed.get("name"):
+                return {**default, **parsed}
+        except Exception as e:
+            logger.warning(f"Event extract failed for '{subject[:40]}': {e}")
+        return default
+
     def _route_to_bd(self, category: str, subject: str, sender: str, text: str, date: str) -> bool:
-        """POST a classified BD signal (event / market_news) to Ordino so it lands in
-        the BD module automatically — no manual triage. Uses the same shared-secret
-        path as ordino_tools. Returns False if not configured or the POST fails (caller
-        then falls back to KB so nothing is lost).
+        """POST a classified BD signal (event / market_news) to Ordino's BD module. For
+        events we first EXTRACT clean fields (real name/date/venue) instead of dumping the
+        raw 'Fwd: ...' subject — and if it isn't really a single event, downgrade it to
+        market_news so the Events list doesn't fill with junk rows. Returns False if not
+        configured or the POST fails (caller then falls back to KB so nothing is lost).
         """
         import requests
         supabase_url = os.getenv("SUPABASE_URL", "")
         beacon_key = os.getenv("BEACON_ANALYTICS_KEY", "")
         if not supabase_url or not beacon_key:
             return False
+
+        title = self._strip_fwd(subject)
+        location = None
+        source_url = None
+        if category == "event":
+            ev = self._extract_event_fields(subject, text)
+            if not ev.get("is_event", True):
+                category = "market_news"  # not a real event → don't create an event row
+                title = ev.get("name") or title
+                logger.info(f"  Downgraded non-event to market_news: '{title}'")
+            else:
+                title = ev.get("name") or title
+                date = ev.get("date") or date
+                location = ev.get("location")
+                source_url = ev.get("url")
+
         try:
             resp = requests.post(
                 f"{supabase_url}/functions/v1/bd-email-ingest",
                 headers={"x-beacon-key": beacon_key, "Content-Type": "application/json"},
                 json={
                     "signal_type": category,       # 'event' | 'market_news'
-                    "title": subject,
+                    "title": title,
                     "summary": text[:1000],
                     "sender": sender,
                     "date": date,
+                    "location": location,
+                    "source_url": source_url,
                 },
                 timeout=30,
             )
