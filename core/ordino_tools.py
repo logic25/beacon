@@ -613,6 +613,57 @@ def _resolve_owner(params: dict, user_jwt: str = None) -> str:
     })
 
 
+_SIGNAL_URL_RE = re.compile(r'https?://[^\s"\'<>)\]]+', re.I)
+_SIGNAL_SKIP_URL = re.compile(
+    r'(unsubscribe|/unsub|mailto:|utm_source=email|list-manage|/pixel|/track|'
+    r'(?:facebook|twitter|x|linkedin|instagram|youtube)\.com|'
+    r'\.(?:png|jpe?g|gif|svg|css|js|pdf|ico)(?:\?|$))', re.I)
+
+
+def _crawl_signal_links(text: str, max_links: int = 4, per_char_cap: int = 2500, total_cap: int = 8000) -> str:
+    """Crawl the article links inside a market-news signal so the LLM extracts the REAL
+    parties / buildings / addresses from the full story, not just the email blurb.
+    Public-web (news) links, SSRF-guarded via net_guard.safe_get (blocks internal IPs)."""
+    try:
+        from core import net_guard
+        from bs4 import BeautifulSoup
+    except Exception:
+        return ""
+    seen, urls = set(), []
+    for m in _SIGNAL_URL_RE.finditer(text or ""):
+        u = m.group(0).rstrip('.,);]”"')
+        if u in seen or _SIGNAL_SKIP_URL.search(u):
+            continue
+        seen.add(u)
+        urls.append(u)
+        if len(urls) >= max_links:
+            break
+    out, total = [], 0
+    for u in urls:
+        try:
+            resp = net_guard.safe_get(u, timeout=12, headers={"User-Agent": "Mozilla/5.0 (BeaconBD/1.0)"})
+            if resp.status_code != 200 or "html" not in resp.headers.get("content-type", "").lower():
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer", "form", "noscript", "aside"]):
+                tag.decompose()
+            title = soup.title.get_text(strip=True) if soup.title else u
+            body = soup.get_text(" ", strip=True)
+            if len(body) < 200:
+                continue
+            snippet = body[:per_char_cap]
+            out.append(f"[Article: {title}]\n{snippet}")
+            total += len(snippet)
+            if total >= total_cap:
+                break
+        except Exception as e:
+            logger.info(f"[signal-crawl] skipped {u[:70]}: {e}")
+            continue
+    if out:
+        logger.info(f"[signal-crawl] pulled {len(out)} linked article(s), {total} chars")
+    return "\n\n".join(out)
+
+
 def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
     """Reactive cascade: crack a market-news signal into enriched, actionable leads.
 
@@ -623,6 +674,11 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
     text = (params.get("text") or "").strip()
     if not text:
         return json.dumps({"error": "text is required"})
+
+    # Crawl the article links so extraction sees the REAL parties/buildings/addresses from
+    # the full story, not just the newsletter blurb (the Signals requirement).
+    crawled = _crawl_signal_links(text)
+    enriched = (text + "\n\n--- LINKED ARTICLE CONTENT ---\n" + crawled) if crawled else text
 
     # 1) Extract opportunities
     try:
@@ -639,7 +695,7 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
             "- address = street address or building name if stated, else null.\n"
             "- angle = one line on the permit opportunity (tenant fit-out, base-building/white-box, "
             "new building, conversion, etc.).\n\n"
-            f"News:\n{text[:3000]}\n\nJSON only."
+            f"News:\n{enriched[:9000]}\n\nJSON only."
         )
         msg = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=700,
                                      temperature=0, messages=[{"role": "user", "content": prompt}])
