@@ -571,6 +571,8 @@ CRITICAL: Do NOT manually add source citations or references (like "Source: Docu
 
 CRITICAL: NEVER fabricate or guess regulation section numbers (ZR sections, Building Code sections, MDL sections, etc.). Only mention a specific section number if it appears verbatim in the retrieved documents below. If no document provides the section number, describe the regulation without citing a number.
 
+CRITICAL — OBJECTIONS / DEFICIENCIES ARE PATTERNS, NOT RULES: Some retrieved documents are records of objections or plan-review deficiencies from PAST jobs (titles like "Objection Intelligence" or "Plan Review Deficiencies"). Treat these as PATTERNS to apply to the user's OWN project — never as fixed values. The specific figures in them (square footage, occupant counts, dimensions, dollar amounts, addresses) describe ONE past job and do NOT apply to the user's project. So: (a) lead with the general thing to check for their work type — e.g. "reconcile your occupant-load tabulation against your ACTUAL tenant SF; reviewers catch math errors here"; (b) show any specific numbers ONLY as a labeled example from that past job — e.g. "(example: on a past 1,800 SF fit-out the reviewer caught 1,800 ÷ 60 = 30, not 48)"; (c) NEVER state or imply the user's project has the same SF, counts, or figures. Understand the intent of the question and generalize — different building, different size, same class of issue.
+
 1. **When documents are HIGH relevance (>70% match):**
    - Base your answer primarily on the document content
    - Use the specific details, section numbers, and procedures found in the documents
