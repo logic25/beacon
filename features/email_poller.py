@@ -1016,6 +1016,30 @@ Type: {source_type}
             logger.warning(f"Event extract failed for '{subject[:40]}': {e}")
         return default
 
+    def _clean_bd_summary(self, subject: str, text: str) -> str:
+        """A clean 1-2 sentence summary of a forwarded market-news email — stripping the GLE
+        signature, contact block, and 'Forwarded message' headers so the BD signal card is
+        READABLE instead of a raw forward blob. Falls back to trimmed raw text on any failure.
+        """
+        fallback = " ".join((text or "").split())[:400]
+        try:
+            import anthropic
+            from config import get_settings
+            client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
+            prompt = (
+                "Summarize the actual real-estate news in this forwarded email in 1-2 tight sentences. "
+                "IGNORE the sender's signature, contact block, and 'Forwarded message'/'From:' headers. "
+                "Name the key parties, buildings, and dollar figures. No preamble, no 'This email'.\n\n"
+                f"Subject: {subject}\nBody: {text[:2500]}"
+            )
+            msg = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=180,
+                                         temperature=0, messages=[{"role": "user", "content": prompt}])
+            out = msg.content[0].text.strip()
+            return out or fallback
+        except Exception as e:
+            logger.warning(f"BD summary clean failed for '{subject[:40]}': {e}")
+            return fallback
+
     def _route_to_bd(self, category: str, subject: str, sender: str, text: str, date: str) -> bool:
         """POST a classified BD signal (event / market_news) to Ordino's BD module. For
         events we first EXTRACT clean fields (real name/date/venue) instead of dumping the
@@ -1051,7 +1075,7 @@ Type: {source_type}
                 json={
                     "signal_type": category,       # 'event' | 'market_news'
                     "title": title,
-                    "summary": text[:1000],
+                    "summary": self._clean_bd_summary(subject, text),
                     "sender": sender,
                     "date": date,
                     "location": location,

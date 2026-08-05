@@ -305,6 +305,17 @@ TOOL_DEFINITIONS = [
             "required": ["address"],
         },
     },
+    {
+        "name": "extract_deal_leads",
+        "description": "Turn a raw market-news SIGNAL (a Bisnow/CO/TRD real-estate email) into actionable LEADS. Reads the text, pulls out the concrete opportunities inside it (each a party + space/building that will likely need permit/expediting work), then enriches each with DOB Open Data (owner, incumbent expediter, GLE's gap) and 'who do we know'. Use when someone pastes/points at a market signal and asks to crack it into leads, or 'what's the opportunity here'. This is the reactive BD cascade: signal → the leads inside it → matched to who we know.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "The market-signal / news email text to crack into leads."},
+            },
+            "required": ["text"],
+        },
+    },
 ]
 
 
@@ -345,6 +356,8 @@ def execute_tool(tool_name: str, tool_input: dict, user_jwt: str = None) -> str:
             return _dob_team_sheet(tool_input, user_jwt=user_jwt)
         elif tool_name == "resolve_owner":
             return _resolve_owner(tool_input, user_jwt=user_jwt)
+        elif tool_name == "extract_deal_leads":
+            return _extract_deal_leads(tool_input, user_jwt=user_jwt)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -591,6 +604,91 @@ def _resolve_owner(params: dict, user_jwt: str = None) -> str:
         "summary": f"{label} — owner: {owner or 'unknown'}; incumbent expediter: {incumbent or 'none'}; "
                    f"GLE filings here: {gle_here}."
                    + (" GLE is absent — open wedge." if gle_here == 0 else ""),
+    })
+
+
+def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
+    """Reactive cascade: crack a market-news signal into enriched, actionable leads.
+
+    1) LLM-extract the concrete opportunities (party + space/address + deal type + angle).
+    2) For each with an address → resolve_owner (owner / incumbent / GLE gap).
+    3) who_do_we_know on the party AND the resolved owner → the warm path in.
+    """
+    text = (params.get("text") or "").strip()
+    if not text:
+        return json.dumps({"error": "text is required"})
+
+    # 1) Extract opportunities
+    try:
+        import anthropic
+        from config import get_settings
+        client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
+        prompt = (
+            "You are a BD analyst for a NYC permit-expediting firm. From this real-estate news, "
+            "extract the CONCRETE opportunities — each a specific party and/or building that will "
+            "likely need permit / expediting / filing work. Ignore pure macro/finance news.\n"
+            'Return STRICT JSON: {"opportunities":[{"party":str,"address":str|null,'
+            '"deal_type":"lease|sale|development|renovation|other","angle":str}]}\n'
+            "- party = the company/person (tenant, buyer, owner, developer).\n"
+            "- address = street address or building name if stated, else null.\n"
+            "- angle = one line on the permit opportunity (tenant fit-out, base-building/white-box, "
+            "new building, conversion, etc.).\n\n"
+            f"News:\n{text[:3000]}\n\nJSON only."
+        )
+        msg = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=700,
+                                     temperature=0, messages=[{"role": "user", "content": prompt}])
+        raw = re.sub(r"^```(?:json)?|```$", "", msg.content[0].text.strip(), flags=re.I | re.M).strip()
+        opps = (json.loads(raw) or {}).get("opportunities", [])
+    except Exception as e:
+        logger.warning(f"extract_deal_leads: extraction failed: {e}")
+        return json.dumps({"error": f"Could not extract opportunities: {e}"})
+
+    if not opps:
+        return json.dumps({"found": False, "summary": "No concrete permit/expediting opportunities in this signal (looks like macro/finance news)."})
+
+    # 2 + 3) Enrich each opportunity
+    leads, wdwk_cache = [], {}
+
+    def wdwk(name):
+        if not name:
+            return None
+        key = name.strip().lower()
+        if key not in wdwk_cache:
+            try:
+                wdwk_cache[key] = json.loads(_who_do_we_know({"name": name}, user_jwt=user_jwt))
+            except Exception:
+                wdwk_cache[key] = None
+        r = wdwk_cache[key]
+        return r if (r and r.get("found")) else None
+
+    for o in opps[:5]:
+        lead = {"party": o.get("party"), "deal_type": o.get("deal_type"),
+                "angle": o.get("angle"), "address": o.get("address")}
+        # property / owner enrichment
+        if o.get("address"):
+            prop = json.loads(_resolve_owner({"address": o["address"]}))
+            if prop.get("found"):
+                lead["property"] = {"owner": prop.get("owner"),
+                                    "incumbent_expediter": prop.get("incumbent_expediter"),
+                                    "gle_filings_here": prop.get("gle_filings_here"),
+                                    "resolved_address": prop.get("address")}
+        # who do we know — the tenant/party AND the building owner
+        owner = (lead.get("property") or {}).get("owner")
+        wk_party = wdwk(o.get("party"))
+        wk_owner = wdwk(owner)
+        rels = []
+        if wk_party:
+            rels.append(f"{o.get('party')}: {wk_party['summary']}")
+        if wk_owner and owner:
+            rels.append(f"{owner} (building owner): {wk_owner['summary']}")
+        lead["who_we_know"] = rels or ["No existing relationship on file — cold."]
+        leads.append(lead)
+
+    return json.dumps({
+        "found": True, "lead_count": len(leads), "leads": leads,
+        "summary": f"Cracked the signal into {len(leads)} lead(s). "
+                   "Each includes the party, the permit angle, the building owner + incumbent expediter "
+                   "(where an address was given), and who we already know — the warm path in.",
     })
 
 
