@@ -1736,6 +1736,73 @@ def api_ingest():
             jurisdiction = request.form.get("jurisdiction", "").strip()
 
             ext = os.path.splitext(filename)[1].lower()
+
+            # Objection exports: DOB NOW gives a .zip (with the .xlsx inside) — or a bare
+            # .xlsx. Parse the spreadsheet server-side into objection-intelligence doc(s) so a
+            # person can just drop the file into Ordino's KB (no Drive/service-account wiring).
+            # Uses the exact same parser the Drive poller uses.
+            _xlsx_markdown = None
+            if ext in {".zip", ".xlsx", ".xlsm"}:
+                try:
+                    from features.drive_objection_poller import parse_xlsx_bytes, _to_markdown, _job_from_name
+                except Exception as _e:
+                    return jsonify({"error": f"objection parsing unavailable: {_e}"}), 503
+                raw = file.read()
+                if ext == ".zip":
+                    import zipfile, io as _io, urllib.request as _u
+                    try:
+                        zf = zipfile.ZipFile(_io.BytesIO(raw))
+                    except Exception as _e:
+                        return jsonify({"error": f"Not a valid zip: {_e}", "chunks_created": 0}), 422
+                    members = [n for n in zf.namelist()
+                               if n.lower().endswith((".xlsx", ".xlsm")) and "__MACOSX" not in n]
+                    if not members:
+                        return jsonify({"error": "Zip contains no .xlsx objection export", "chunks_created": 0}), 422
+                    _key = request.headers.get("x-beacon-key", "")
+                    _port = os.getenv("PORT", "8080")
+                    _uploader = request.form.get("_uploaded_by") or "Chris Henry"
+                    results = []
+                    for m in members:
+                        try:
+                            _rows = parse_xlsx_bytes(zf.read(m))
+                        except Exception as _e:
+                            results.append({"member": m, "error": str(_e)}); continue
+                        if not _rows:
+                            results.append({"member": m, "skipped": "no objection rows"}); continue
+                        job = _job_from_name(m) or _job_from_name(filename) or os.path.splitext(os.path.basename(m))[0]
+                        payload = json.dumps({
+                            "text": _to_markdown(job, _rows),
+                            "title": f"DOB NOW Objections - {job}",
+                            "source_type": "objection_intelligence", "jurisdiction": "NYC",
+                            "metadata": {"folder": "objections", "jurisdiction": "NYC",
+                                         "uploaded_by": _uploader, "source_export": m},
+                        }).encode()
+                        rq = _u.Request(f"http://localhost:{_port}/api/ingest", data=payload,
+                                        headers={"x-beacon-key": _key, "Content-Type": "application/json"}, method="POST")
+                        try:
+                            rr = json.load(_u.urlopen(rq, timeout=120))
+                            results.append({"member": m, "job": job, "chunks": rr.get("chunks_created")})
+                        except Exception as _e:
+                            results.append({"member": m, "job": job, "error": str(_e)})
+                    ingested = len([r for r in results if r.get("chunks")])
+                    return jsonify({"success": True, "zip": True, "docs_ingested": ingested, "results": results})
+                else:
+                    # bare .xlsx/.xlsm → one objection doc, fall through as markdown below
+                    job = _job_from_name(filename) or "UNKNOWN"
+                    try:
+                        _rows = parse_xlsx_bytes(raw)
+                    except Exception as _e:
+                        return jsonify({"error": f"Could not read spreadsheet: {_e}", "chunks_created": 0}), 422
+                    if not _rows:
+                        return jsonify({"error": "No objection rows found in spreadsheet", "chunks_created": 0}), 422
+                    _xlsx_markdown = _to_markdown(job, _rows)
+                    filename = f"DOB NOW Objections - {job}.md"
+                    ext = ".md"
+                    if not source_type:
+                        source_type = "objection_intelligence"
+                    if not folder_hint:
+                        folder_hint = "objections"
+
             if ext not in {".pdf", ".md", ".txt"}:
                 # TOLERATE extensionless / oddly-named uploads instead of rejecting them.
                 # A missing/unknown extension was the #1 cause of SILENT ingest failure:
@@ -1777,7 +1844,11 @@ def api_ingest():
                 safe_name += ext
             tmp_dir = tempfile.mkdtemp()
             tmp_path = os.path.join(tmp_dir, safe_name)
-            file.save(tmp_path)
+            if _xlsx_markdown is not None:
+                with open(tmp_path, "w", encoding="utf-8") as _fh:
+                    _fh.write(_xlsx_markdown)
+            else:
+                file.save(tmp_path)
 
             try:
                 if ext == ".pdf":

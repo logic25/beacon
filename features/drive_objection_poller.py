@@ -115,6 +115,42 @@ def _to_markdown(job: str, rows) -> str:
     return "\n".join(lines) + "\n"
 
 
+def parse_xlsx_bytes(content: bytes):
+    """Parse DOB NOW objection-export .xlsx bytes into objection rows.
+    Pure (no Drive/network) so the /api/ingest upload path can reuse it — a person can
+    drop an export into Ordino's KB and it parses server-side, same as the poller does."""
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    grid = [[("" if c is None else str(c)).strip() for c in r] for r in ws.iter_rows(values_only=True)]
+    grid = [r for r in grid if any(c for c in r)]
+    if not grid:
+        return []
+    # Find the header row: the first row whose cells map to >=2 canonical fields incl. objection.
+    header_idx, colmap = None, {}
+    for i, row in enumerate(grid[:15]):
+        m = _map_columns(row)
+        if len(set(m.values())) >= 2 and "objection" in m.values():
+            header_idx, colmap = i, m
+            break
+    rows = []
+    if header_idx is not None:
+        for row in grid[header_idx + 1:]:
+            rec = {}
+            for idx, field in colmap.items():
+                if idx < len(row):
+                    rec[field] = row[idx]
+            if rec.get("objection"):
+                rows.append(rec)
+    else:
+        # No clear header — don't lose the data: emit each non-empty row as an objection.
+        for row in grid:
+            text = " | ".join(c for c in row if c)
+            if text:
+                rows.append({"objection": text})
+    return rows
+
+
 def _now() -> str:
     import datetime
     return datetime.datetime.now().isoformat(timespec="seconds")
