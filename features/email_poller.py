@@ -332,9 +332,12 @@ class EmailPoller:
 
         # Official DOB / nyc.gov agency newsletters are KNOWLEDGE — force them to the KB even
         # if the classifier saw event-ish content (e.g. a "Buildings News Update" digest that
-        # mentions "DOB in Your Community" events). Only the BD-sender feed (Bisnow etc.) and
-        # staff forwards are BD-eligible; official DOB mail must never route to the BD module.
-        if "nyc.gov" in sender_l and category in ("event", "market_news"):
+        # mentions "DOB in Your Community" events) OR dismissed it as low-value 'other'. Haiku
+        # sometimes mislabels a Buildings News Update digest as 'other'; the 'other' skip below
+        # was then silently dropping it — which flat-lined the content engine for ~29 days.
+        # Only the BD-sender feed (Bisnow etc.) and staff forwards are BD-eligible; official DOB
+        # mail must never route to the BD module NOR be dropped on a misclassification.
+        if "nyc.gov" in sender_l and category in ("event", "market_news", "other"):
             logger.info(f"  Forcing nyc.gov newsletter to KB (classifier said {category}): '{subject}'")
             category = "dob_regulatory"
 
