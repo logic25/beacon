@@ -1954,6 +1954,79 @@ def api_ingest():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/backfill-originals", methods=["POST"])
+@require_beacon_key
+def api_backfill_originals():
+    """Re-fetch original PDFs from their source_url and hand them to Ordino for storage.
+
+    Only touches KB docs whose source_url is a PDF (the DOB service notices / bulletins that
+    came in via the newsletter poller). Filing guides (manual .md/.txt) have no source PDF and
+    are skipped automatically.
+
+    Body:
+      {"dry_run": true}  -> list what WOULD be backfilled; fetch/store nothing (default).
+      {"dry_run": false} -> re-fetch each PDF and POST it to Ordino's store-original edge fn.
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+    data = request.get_json(silent=True) or {}
+    dry_run = data.get("dry_run", True)
+    vector_store = retriever.vector_store
+    index = vector_store.index
+    dim = vector_store.settings.embedding_dimension
+
+    # Collect source_file -> source_url for docs that have a PDF source_url (read one chunk/doc).
+    candidates, seen = [], set()
+    for _vid, meta in _all_manifests(index, vector_store):
+        src = meta.get("source_file", "")
+        if not src or src in seen:
+            continue
+        seen.add(src)
+        folder = meta.get("folder", "")
+        try:
+            q = index.query(vector=[1e-7] * dim, top_k=1, include_metadata=True,
+                            filter={"source_file": {"$eq": src}})
+            surl = (q.matches[0].metadata.get("source_url", "") if q.matches else "")
+        except Exception:
+            surl = ""
+        if surl and surl.lower().split("?")[0].endswith(".pdf"):
+            candidates.append({"source_file": src, "folder": folder, "source_url": surl})
+
+    if dry_run:
+        return jsonify({"dry_run": True, "count": len(candidates), "candidates": candidates})
+
+    # Real run: re-fetch each PDF (SSRF-guarded) and POST to Ordino's store-original edge fn.
+    import base64
+    import requests as _rq
+    from core import net_guard
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    beacon_key = os.getenv("BEACON_ANALYTICS_KEY", "")
+    stored = failed = 0
+    for c in candidates:
+        try:
+            resp = net_guard.safe_get(c["source_url"], timeout=30, headers={"User-Agent": "BeaconKB/1.0"})
+            if resp.status_code != 200 or b"%PDF" not in resp.content[:1024]:
+                failed += 1
+                continue
+            r = _rq.post(
+                f"{supabase_url}/functions/v1/beacon-proxy?action=store-original",
+                headers={"x-beacon-key": beacon_key, "Content-Type": "application/json"},
+                json={"source_file": c["source_file"], "folder": c["folder"],
+                      "source_url": c["source_url"], "filename": os.path.basename(c["source_file"]),
+                      "content_base64": base64.b64encode(resp.content).decode()},
+                timeout=60,
+            )
+            if r.ok:
+                stored += 1
+            else:
+                failed += 1
+                logger.warning(f"[Backfill] store-original {c['source_file']} -> {r.status_code}")
+        except Exception as e:
+            failed += 1
+            logger.warning(f"[Backfill] failed for {c.get('source_file')}: {e}")
+    return jsonify({"dry_run": False, "candidates": len(candidates), "stored": stored, "failed": failed})
+
+
 @app.route("/api/enrich-signal", methods=["POST"])
 @require_beacon_key
 def api_enrich_signal():
