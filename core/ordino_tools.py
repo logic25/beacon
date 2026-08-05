@@ -9,6 +9,7 @@ Actions require PM approval before execution.
 """
 
 import os
+import re
 import json
 import logging
 from typing import Optional
@@ -271,6 +272,39 @@ TOOL_DEFINITIONS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "dob_capture",
+        "description": "GLE's CAPTURE RATE for a developer/owner or architect, from live NYC DOB Open Data (DOB NOW Build, 2020+). Given a name, returns their total DOB filings, how many GLE filed, GLE's share %, and the incumbent expediter to displace — computed both as building-owner and as architect-of-record. Use for 'what's our capture at X', 'how much of X's work do we do', 'who's the incumbent expediter at X', or Client-Health 'are we losing X'. Public data, always current.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Developer/owner or architect name (e.g. 'Tishman Speyer', 'Robert Derector', 'Rudin')."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "dob_team_sheet",
+        "description": "The full CAST at a building from live NYC DOB Open Data: top owners, architects/engineers, expediters (filing reps), and whether GLE has filed there. Accepts a street address or a 7-digit BIN. Use for 'who works at 250 Vesey', 'who's the expediter at <building>', team-sheet / competitive-intel questions on a specific building.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "building": {"type": "string", "description": "Street address (e.g. '250 Vesey Street') or a BIN (e.g. '1000060')."},
+            },
+            "required": ["building"],
+        },
+    },
+    {
+        "name": "resolve_owner",
+        "description": "Given a street address, resolve the building's OWNER + the incumbent expediter + whether GLE files there, from live DOB Open Data. Lighter than dob_team_sheet — use for the reactive BD cascade: a deal-signal names an address, and you need 'who owns it / who files there / are we in'.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "address": {"type": "string", "description": "Street address (e.g. '250 Vesey Street')."},
+            },
+            "required": ["address"],
+        },
+    },
 ]
 
 
@@ -305,6 +339,12 @@ def execute_tool(tool_name: str, tool_input: dict, user_jwt: str = None) -> str:
             return _draft_follow_up_email(tool_input, user_jwt=user_jwt)
         elif tool_name == "who_do_we_know":
             return _who_do_we_know(tool_input, user_jwt=user_jwt)
+        elif tool_name == "dob_capture":
+            return _dob_capture(tool_input, user_jwt=user_jwt)
+        elif tool_name == "dob_team_sheet":
+            return _dob_team_sheet(tool_input, user_jwt=user_jwt)
+        elif tool_name == "resolve_owner":
+            return _resolve_owner(tool_input, user_jwt=user_jwt)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
@@ -378,6 +418,180 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
     return json.dumps({"query": name, "found": found, "summary": summary,
                        "contacts": contacts[:25], "companies": companies[:10],
                        "projects": projects[:20]})
+
+
+# ═══════════════════════════════════════════════════════
+# DOB OPEN DATA TOOLS — live NYC Socrata (public, no auth)
+# ═══════════════════════════════════════════════════════
+
+DOB_NOW_BUILD = "w9ak-ipjd"  # DOB NOW: Build job filings, 2020+, has filing_representative_business_name
+_OWNER_PLACEHOLDERS = {"PR", "N/A", "NA", "NOT APPLICABLE", "OWNER", "OWNERS REP", "SELF", ""}
+
+
+def _dob_soql(dataset: str, params: dict) -> list:
+    """Query NYC Open Data (Socrata). Public, no auth. Returns rows or []."""
+    try:
+        resp = httpx.get(f"https://data.cityofnewyork.us/resource/{dataset}.json",
+                         params=params, timeout=25.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logger.error(f"DOB Open Data query failed ({dataset}): {e}")
+        return []
+
+
+def _dob_building_where(target: str):
+    """Locate a building by BIN or address → (soql_where, label, bin). BIN via GeoSearch,
+    fallback to a house_no + street parse. Returns (None, target, None) if unresolvable."""
+    t = (target or "").strip()
+    # 7-digit-ish BIN passthrough
+    if t.isdigit() and 6 <= len(t) <= 7:
+        return f"bin='{t}'", f"BIN {t}", t
+    # GeoSearch the address → BIN
+    try:
+        resp = httpx.get("https://geosearch.planninglabs.nyc/v2/search",
+                         params={"text": t, "size": 1}, timeout=15.0)
+        resp.raise_for_status()
+        feats = resp.json().get("features", [])
+        if feats:
+            props = feats[0].get("properties", {}) or {}
+            bin_ = ((props.get("addendum", {}) or {}).get("pad", {}) or {}).get("bin")
+            label = props.get("label", t)
+            if bin_ and str(bin_).isdigit():
+                return f"bin='{bin_}'", label, str(bin_)
+    except Exception as e:
+        logger.warning(f"GeoSearch failed for {t!r}: {e}")
+    # Fallback: parse "250 Vesey Street" → house_no + street token
+    m = re.match(r"\s*(\d+)\s+(.+)", t)
+    if m:
+        hn = m.group(1)
+        st = re.sub(r"[^A-Z0-9 ]", " ", m.group(2).upper())
+        st = re.sub(r"\b(STREET|ST|AVENUE|AVE|ROAD|RD|BOULEVARD|BLVD|PLACE|PL|DRIVE|DR|LANE|LN)\b", "", st).strip()
+        tok = (st.split() or [st])[0]
+        if tok:
+            return f"house_no='{hn}' AND upper(street_name) like '%{tok}%'", t, None
+    return None, t, None
+
+
+def _dob_capture(params: dict, user_jwt: str = None) -> str:
+    """GLE's capture rate for an owner/architect from DOB NOW Build (2020+)."""
+    name = (params.get("name") or "").strip()
+    if not name:
+        return json.dumps({"error": "name is required"})
+    esc = name.upper().replace("'", "''")
+
+    def cap_for(col):
+        rows = _dob_soql(DOB_NOW_BUILD, {
+            "$select": "filing_representative_business_name,count(*)",
+            "$where": f"upper({col}) like '%{esc}%' AND filing_representative_business_name IS NOT NULL",
+            "$group": "filing_representative_business_name",
+            "$order": "count(*) desc", "$limit": "50"})
+        if not rows:
+            return None
+        total = sum(int(r["count"]) for r in rows)
+        if total < 3:
+            return None
+        gle = sum(int(r["count"]) for r in rows
+                  if "GREEN LIGHT" in (r.get("filing_representative_business_name") or "").upper())
+        top = rows[0].get("filing_representative_business_name") or "?"
+        first_tok = (esc.split() or [""])[0]
+        return {
+            "total_filings": total, "gle_filings": gle,
+            "gle_capture_pct": round(gle / total * 100, 1) if total else 0,
+            "incumbent_expediter": top,
+            "self_files": bool(first_tok) and first_tok in top.upper(),
+            "top_expediters": [f"{r.get('filing_representative_business_name')} ({r['count']})" for r in rows[:5]],
+        }
+
+    as_owner = cap_for("owner_s_business_name")
+    as_arch = cap_for("applicant_business_name")
+    if not as_owner and not as_arch:
+        return json.dumps({"name": name, "found": False,
+                           "summary": f"No DOB NOW Build filings found matching '{name}' (2020+). "
+                                      f"Note: owners using per-project LLCs are undercounted, and BIS-era "
+                                      f"filings aren't in this dataset."})
+    parts = []
+    if as_owner:
+        parts.append(f"as OWNER: GLE {as_owner['gle_capture_pct']}% ({as_owner['gle_filings']}/"
+                     f"{as_owner['total_filings']}), incumbent {as_owner['incumbent_expediter']}"
+                     + (" [SELF-FILES]" if as_owner['self_files'] else ""))
+    if as_arch:
+        parts.append(f"as ARCHITECT: GLE {as_arch['gle_capture_pct']}% ({as_arch['gle_filings']}/"
+                     f"{as_arch['total_filings']}), incumbent {as_arch['incumbent_expediter']}")
+    return json.dumps({"name": name, "found": True,
+                       "summary": f"{name} — " + " · ".join(parts),
+                       "as_owner": as_owner, "as_architect": as_arch,
+                       "caveat": "DOB NOW Build 2020+. LLC-heavy owners undercounted; entity name-matching is fuzzy."})
+
+
+def _dob_team_sheet(params: dict, user_jwt: str = None) -> str:
+    """Full cast at a building: owners, architects, expediters, GLE presence."""
+    target = (params.get("building") or params.get("address") or "").strip()
+    if not target:
+        return json.dumps({"error": "building (address or BIN) is required"})
+    where, label, bin_ = _dob_building_where(target)
+    if not where:
+        return json.dumps({"error": f"Couldn't resolve '{target}' to a building (try a full address or a BIN)."})
+
+    def top(col, n=6):
+        rows = _dob_soql(DOB_NOW_BUILD, {
+            "$select": f"{col},count(*)", "$where": f"{where} AND {col} IS NOT NULL",
+            "$group": col, "$order": "count(*) desc", "$limit": str(n)})
+        return [f"{(r.get(col) or '?')} ({r['count']})" for r in rows]
+
+    owners = top("owner_s_business_name")
+    architects = top("applicant_business_name")
+    expediters = top("filing_representative_business_name")
+    gle_rows = _dob_soql(DOB_NOW_BUILD, {
+        "$select": "count(*)",
+        "$where": f"{where} AND upper(filing_representative_business_name) like '%GREEN LIGHT%'"})
+    gle_here = int(gle_rows[0]["count"]) if gle_rows else 0
+    if not (owners or architects or expediters):
+        return json.dumps({"building": label, "found": False,
+                           "summary": f"No DOB NOW Build filings found for {label}."})
+    incumbent = expediters[0] if expediters else "?"
+    return json.dumps({
+        "building": label, "bin": bin_, "found": True,
+        "owners": owners, "architects": architects, "expediters": expediters,
+        "gle_filings_here": gle_here,
+        "summary": f"{label}: incumbent expediter {incumbent}; "
+                   f"top owner {owners[0] if owners else '?'}; top architect {architects[0] if architects else '?'}; "
+                   f"GLE has {gle_here} filing(s) here.",
+    })
+
+
+def _resolve_owner(params: dict, user_jwt: str = None) -> str:
+    """Reactive-cascade helper: address → owner + incumbent expediter + GLE presence."""
+    address = (params.get("address") or "").strip()
+    if not address:
+        return json.dumps({"error": "address is required"})
+    where, label, bin_ = _dob_building_where(address)
+    if not where:
+        return json.dumps({"error": f"Couldn't resolve '{address}' to a building."})
+    owners = _dob_soql(DOB_NOW_BUILD, {
+        "$select": "owner_s_business_name,count(*)", "$where": f"{where} AND owner_s_business_name IS NOT NULL",
+        "$group": "owner_s_business_name", "$order": "count(*) desc", "$limit": "8"})
+    owner = next((r["owner_s_business_name"] for r in owners
+                  if (r.get("owner_s_business_name") or "").strip().upper() not in _OWNER_PLACEHOLDERS), None)
+    reps = _dob_soql(DOB_NOW_BUILD, {
+        "$select": "filing_representative_business_name,count(*)",
+        "$where": f"{where} AND filing_representative_business_name IS NOT NULL",
+        "$group": "filing_representative_business_name", "$order": "count(*) desc", "$limit": "5"})
+    incumbent = reps[0].get("filing_representative_business_name") if reps else None
+    gle_rows = _dob_soql(DOB_NOW_BUILD, {
+        "$select": "count(*)",
+        "$where": f"{where} AND upper(filing_representative_business_name) like '%GREEN LIGHT%'"})
+    gle_here = int(gle_rows[0]["count"]) if gle_rows else 0
+    if not owner and not incumbent:
+        return json.dumps({"address": label, "found": False,
+                           "summary": f"No DOB NOW Build filings found for {label}."})
+    return json.dumps({
+        "address": label, "bin": bin_, "found": True,
+        "owner": owner, "incumbent_expediter": incumbent, "gle_filings_here": gle_here,
+        "summary": f"{label} — owner: {owner or 'unknown'}; incumbent expediter: {incumbent or 'none'}; "
+                   f"GLE filings here: {gle_here}."
+                   + (" GLE is absent — open wedge." if gle_here == 0 else ""),
+    })
 
 
 def _draft_follow_up_email(params: dict, user_jwt: str = None) -> str:
