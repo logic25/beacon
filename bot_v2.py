@@ -1467,6 +1467,18 @@ def api_chat():
         )
         logger.info(f"[API Chat] Model routing: {model_used} for '{user_message[:50]}...'")
 
+        # Suppress phantom KB "sources" when a DATA tool produced the answer. dob_capture /
+        # who_do_we_know / resolve_owner / query_* answer from live Open Data or Ordino — the
+        # retrieved KB docs didn't ground the reply, so listing them as "sources" is misleading
+        # (that's the "why is a DOB refrigerant bulletin a source for a capture question" noise).
+        _DATA_TOOLS = {"dob_capture", "dob_team_sheet", "resolve_owner", "who_do_we_know",
+                       "extract_deal_leads", "query_ordino", "query_projects", "query_project_detail",
+                       "query_property_violations", "query_pm_workload", "check_filing_readiness",
+                       "query_proposals", "query_invoices"}
+        if _DATA_TOOLS.intersection(api_usage.get("tools_used") or []):
+            rag_sources_list = []
+            confidence = None
+
         # Store assistant response in session
         if session_manager:
             session_manager.add_assistant_message(user_id, space_id, ai_response)

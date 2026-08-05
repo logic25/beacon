@@ -490,6 +490,7 @@ IMPORTANT:
             # Agentic loop: handle tool calls
             max_tool_rounds = 5
             tool_round = 0
+            tools_used: list[str] = []  # so the caller can tell a tool-answered query from a RAG one
             while self.tools_enabled and response.stop_reason == "tool_use" and tool_round < max_tool_rounds:
                 tool_round += 1
                 # Collect all tool calls from response
@@ -498,6 +499,7 @@ IMPORTANT:
 
                 for block in assistant_content:
                     if block.type == "tool_use":
+                        tools_used.append(block.name)
                         logger.info(f"Tool call: {block.name}({json.dumps(block.input)[:200]})")
                         result = execute_tool(block.name, block.input, user_jwt=user_jwt)
                         logger.info(f"Tool result: {result[:200]}...")
@@ -545,6 +547,7 @@ IMPORTANT:
             usage = {
                 "input_tokens": response.usage.input_tokens,
                 "output_tokens": response.usage.output_tokens,
+                "tools_used": tools_used,
             }
 
             logger.info(
