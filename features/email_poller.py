@@ -69,6 +69,17 @@ SENDER_FILTERS = list(dict.fromkeys(
     s.strip() for s in f"{DEFAULT_SENDERS},{_env_senders}".split(",") if s.strip()
 ))
 
+# "Forward-to-teach": emails GLE staff FORWARD to beacon@ (from the company domain) are
+# ingested as general KB docs — body text + PDF attachments — regardless of the DOB
+# newsletter format. This is the "I forward it and Beacon learns it" path Manny/Chris
+# asked for. Restricted to the company domain(s) so random inbound to beacon@ (spam,
+# lists) can never poison the KB — only a trusted staffer's forward teaches Beacon.
+TRUSTED_FORWARD_DOMAINS = list(dict.fromkeys(
+    d.strip().lower() for d in os.getenv(
+        "BEACON_TRUSTED_FORWARD_DOMAINS", "greenlightexpediting.com"
+    ).split(",") if d.strip()
+))
+
 # Gmail API scopes needed for reading + labeling
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -82,6 +93,8 @@ FAILED_LABEL = "Beacon-Ingest-Failed"
 # Label for emails routed to the BD module (events / market news) instead of the KB, so
 # it's visible at a glance which inbound mail became BD intel vs. permitting knowledge.
 BD_LABEL = "Beacon-BD"
+# Label for internal forwards Beacon learned from a GLE staffer (the forward-to-teach path).
+TAUGHT_LABEL = "Beacon-Taught"
 
 
 class EmailPoller:
@@ -196,20 +209,22 @@ class EmailPoller:
         messages = data.get("messages", [])
         if not messages:
             logger.info("Email poller: no new newsletter emails found")
-            return
+        else:
+            logger.info(f"Email poller: found {len(messages)} new emails to process")
 
-        logger.info(f"Email poller: found {len(messages)} new emails to process")
+            # Ensure we have the ingested label
+            label_id = self._get_or_create_label(headers)
 
-        # Ensure we have the ingested label
-        label_id = self._get_or_create_label(headers)
+            for msg_ref in messages:
+                msg_id = msg_ref["id"]
+                try:
+                    self._process_email(msg_id, headers, label_id)
+                    self._processed_count += 1
+                except Exception as e:
+                    logger.error(f"Failed to process email {msg_id}: {e}", exc_info=True)
 
-        for msg_ref in messages:
-            msg_id = msg_ref["id"]
-            try:
-                self._process_email(msg_id, headers, label_id)
-                self._processed_count += 1
-            except Exception as e:
-                logger.error(f"Failed to process email {msg_id}: {e}", exc_info=True)
+        # Second pass: internal forwards (GLE staff teaching Beacon what they email in).
+        self._check_forwarded(headers)
 
     # ------------------------------------------------------------------
     # Gmail API helpers
@@ -435,6 +450,156 @@ class EmailPoller:
 
             except Exception as e:
                 logger.error(f"  Failed to ingest attachment '{filename}': {e}")
+
+    # ------------------------------------------------------------------
+    # Forward-to-teach: GLE staff forward any email to beacon@ → KB
+    # ------------------------------------------------------------------
+
+    def _check_forwarded(self, headers: dict):
+        """Second inbox pass: emails FORWARDED by GLE staff to beacon@.
+
+        Anything a trusted staffer forwards in is treated as "teach Beacon this" —
+        we ingest the body text + PDF attachments as a general KB doc, no DOB-newsletter
+        format required. Restricted to TRUSTED_FORWARD_DOMAINS so only staff can teach.
+        """
+        import requests
+        if not TRUSTED_FORWARD_DOMAINS:
+            return
+
+        # from:(domain) catches forwards INTO beacon@; exclude beacon's own address so a
+        # notification/self-copy can never loop back in.
+        dom_query = " OR ".join(f"from:{d}" for d in TRUSTED_FORWARD_DOMAINS)
+        query = f"is:unread ({dom_query})"
+        if BEACON_EMAIL:
+            query += f" -from:{BEACON_EMAIL}"
+
+        logger.info(f"Email poller (forwards): searching for: {query}")
+        try:
+            resp = requests.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                headers=headers, params={"q": query, "maxResults": 10}, timeout=30,
+            )
+            resp.raise_for_status()
+            messages = resp.json().get("messages", [])
+        except Exception as e:
+            logger.error(f"Gmail forward-list failed: {e}")
+            return
+
+        if not messages:
+            logger.info("Email poller (forwards): none found")
+            return
+
+        logger.info(f"Email poller (forwards): {len(messages)} to process")
+        taught_label = self._get_or_create_label(headers, TAUGHT_LABEL)
+        for msg_ref in messages:
+            try:
+                self._process_forwarded_email(msg_ref["id"], headers, taught_label)
+                self._processed_count += 1
+            except Exception as e:
+                logger.error(f"Failed to process forward {msg_ref['id']}: {e}", exc_info=True)
+
+    def _process_forwarded_email(self, msg_id: str, headers: dict, taught_label: Optional[str]):
+        """Ingest a staff-forwarded email as a general KB doc (body + attachments)."""
+        import requests
+        resp = requests.get(
+            f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}",
+            headers=headers, params={"format": "full"}, timeout=30,
+        )
+        resp.raise_for_status()
+        message = resp.json()
+
+        subject, sender = "", ""
+        for h in message.get("payload", {}).get("headers", []):
+            if h["name"].lower() == "subject": subject = h["value"]
+            if h["name"].lower() == "from": sender = h["value"]
+
+        # Defense-in-depth: re-verify the sender domain (search filter is not enough on
+        # its own — a spoofed display name shouldn't be able to teach the KB).
+        sender_l = sender.lower()
+        if not any(f"@{d}" in sender_l or sender_l.endswith(d) for d in TRUSTED_FORWARD_DOMAINS):
+            logger.warning(f"Forward from untrusted sender, skipping: {sender}")
+            self._mark_processed(msg_id, headers, taught_label)
+            return
+
+        logger.info(f"Processing forward: '{subject}' from {sender}")
+
+        html_content = self._extract_html_body(message.get("payload", {}))
+        try:
+            from bs4 import BeautifulSoup
+            text_for_class = BeautifulSoup(html_content or "", "html.parser").get_text(" ", strip=True)
+        except Exception:
+            text_for_class = ""
+
+        # A forwarded event / market-news item is BD intel, not permitting knowledge —
+        # route it to the BD module, same as the primary path. Everything else the staffer
+        # forwarded is treated as teach-the-KB intent (we do NOT drop 'other' here: unlike
+        # nyc.gov mail, a human deliberately sent this in).
+        category = self._classify_email(subject, sender, text_for_class)
+        if category in ("event", "market_news"):
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if self._route_to_bd(category, subject, sender, text_for_class, date_str):
+                bd_label = self._get_or_create_label(headers, BD_LABEL)
+                self._mark_processed(msg_id, headers, bd_label)
+                logger.info(f"✅ Forward routed to BD ({category}): '{subject}'")
+                return
+
+        ingested_any = False
+        try:
+            if self._ingest_forwarded_text(subject, sender, text_for_class, category):
+                ingested_any = True
+            # PDF attachments (bulletins, notices, rule PDFs) — the common case for forwards.
+            before = self._processed_count
+            self._ingest_attachments(message, subject, headers)
+            if self._processed_count > before:
+                ingested_any = True
+        except Exception as e:
+            self._last_error = f"forward ingest failed for '{subject}': {e}"
+            logger.error(f"❌ Forward ingest failed for '{subject}': {e}", exc_info=True)
+            failed_label = self._get_or_create_label(headers, FAILED_LABEL)
+            self._mark_processed(msg_id, headers, failed_label)
+            return
+
+        if ingested_any and self.analytics_db:
+            try:
+                self.analytics_db.notify_ingest(
+                    title=f"KB updated: {subject}",
+                    body=f"Beacon learned a forwarded email from {sender}.",
+                    link="/documents",
+                )
+            except Exception as e:
+                logger.warning(f"KB ingest notify failed for '{subject}': {e}")
+
+        self._mark_processed(msg_id, headers, taught_label)
+        logger.info(f"✅ Forward learned: '{subject}' (body={ingested_any})")
+
+    def _ingest_forwarded_text(self, subject: str, sender: str, text: str, category: str) -> bool:
+        """Ingest a forwarded email's body text as a general KB doc. Returns True if ingested."""
+        if not self.retriever:
+            return False
+        # Skip thin bodies — a bare "FYI" forward with only a PDF attachment shouldn't create
+        # an empty text doc (the attachment path handles the substance).
+        if not text or len(text.strip()) < 200:
+            return False
+        from ingestion.document_processor import DocumentProcessor
+        # Clean subject → a meaningful KB title (drop Fwd:/Re: prefixes).
+        title = re.sub(r"^(?:\s*(?:fwd?|re|fw)\s*:\s*)+", "", subject, flags=re.I).strip() or "Forwarded Email"
+        source_type = "service_notice" if category == "dob_regulatory" else "reference"
+        processor = DocumentProcessor()
+        document = processor.process_text(
+            text=text,
+            title=title,
+            source_type=source_type,
+            metadata={
+                "title": title,
+                "ingested_from": "staff_forward",
+                "forwarded_by": sender,
+                "category": category,
+                "jurisdiction": "NYC",
+            },
+        )
+        count = self.retriever.vector_store.upsert_chunks(document.chunks)
+        logger.info(f"  ✅ Forward body ingested: '{title}' → {count} chunks")
+        return count > 0
 
     def _extract_html_body(self, payload: dict) -> str:
         """Extract HTML body from Gmail message payload.
