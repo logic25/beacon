@@ -273,6 +273,24 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "find_contacts",
+        "description": "Find CONTACTS / VENDORS / SUBS / consultants in GLE's contact book BY TRADE, specialty, license, or role — use this when someone has NO specific name and wants to find someone by what they DO. Answers: 'who's a good plumber', 'do we have an electrician we use', 'any architect that's done a small project', 'a GC that would do this', 'recommend a [trade / vendor / consultant / expediter / engineer]'. Searches client_contacts across license_type, specialty, title, and company_name, optionally narrowed to a license state. Returns the people/firms we know in that trade with contact info + our notes. (For a NAMED company/person relationship — 'who do we know at Tishman' — use who_do_we_know instead.)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "trade": {
+                    "type": "string",
+                    "description": "The trade, specialty, license, or role to find (e.g. 'plumber', 'electrician', 'architect', 'general contractor', 'expediter', 'structural engineer', 'facade', 'surveyor').",
+                },
+                "state": {
+                    "type": "string",
+                    "description": "Optional 2-letter state code to filter by license jurisdiction (e.g. 'NY', 'NJ'). Omit for all states.",
+                },
+            },
+            "required": ["trade"],
+        },
+    },
+    {
         "name": "dob_capture",
         "description": "GLE's CAPTURE RATE for a developer/owner or architect, from live NYC DOB Open Data (DOB NOW Build, 2020+). Given a name, returns their total DOB filings, how many GLE filed, GLE's share %, and the incumbent expediter to displace — computed both as building-owner and as architect-of-record. Use for 'what's our capture at X', 'how much of X's work do we do', 'who's the incumbent expediter at X', or Client-Health 'are we losing X'. Public data, always current.",
         "input_schema": {
@@ -350,6 +368,8 @@ def execute_tool(tool_name: str, tool_input: dict, user_jwt: str = None) -> str:
             return _draft_follow_up_email(tool_input, user_jwt=user_jwt)
         elif tool_name == "who_do_we_know":
             return _who_do_we_know(tool_input, user_jwt=user_jwt)
+        elif tool_name == "find_contacts":
+            return _find_contacts(tool_input, user_jwt=user_jwt)
         elif tool_name == "dob_capture":
             return _dob_capture(tool_input, user_jwt=user_jwt)
         elif tool_name == "dob_team_sheet":
@@ -438,6 +458,71 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
     return json.dumps({"query": name, "found": found, "summary": summary,
                        "contacts": contacts[:25], "companies": companies[:10],
                        "projects": projects[:20]})
+
+
+def _find_contacts(params: dict, user_jwt: str = None) -> str:
+    """Find contacts/vendors/subs BY TRADE / specialty / license / role — 'who's a good
+    plumber', 'an architect who's done a small project', 'a GC that would do this'. Searches
+    client_contacts across license_type / specialty / title / company_name (OR-ed), optionally
+    narrowed to a license state. Complements who_do_we_know, which is name-keyed and structurally
+    can't answer a capability search. NOTE: no rating/review data exists yet (the contact review
+    system isn't live), so results are who we KNOW in a trade, not ranked by quality.
+    """
+    trade = (params.get("trade") or "").strip()
+    if not trade:
+        return json.dumps({"error": "trade is required"})
+    state = (params.get("state") or "").strip().upper()
+    like = f"%{trade}%"
+
+    def q(col, limit=40):
+        # query_ordino ANDs a filter array, so OR-across-columns = one query per column.
+        r = _proxy_call("query_ordino", {
+            "table": "client_contacts",
+            "select": ("name,first_name,last_name,company_name,title,license_type,specialty,"
+                       "licensed_jurisdictions,state,email,phone,mobile,is_referrer,notes"),
+            "filters": [{"column": col, "operator": "ilike", "value": like}],
+            "limit": limit}, user_jwt=user_jwt)
+        if isinstance(r, list):
+            return r
+        if isinstance(r, dict):
+            if "error" in r:
+                return []
+            for k in ("data", "rows", "results"):
+                if isinstance(r.get(k), list):
+                    return r[k]
+        return []
+
+    results, seen = [], set()
+    for col in ("license_type", "specialty", "title", "company_name"):
+        for c in q(col):
+            key = f"{c.get('email') or ''}|{c.get('name') or ''}".strip("|")
+            if key and key not in seen:
+                seen.add(key)
+                results.append(c)
+
+    # Optional state narrowing — done in Python (licensed_jurisdictions is an array/CSV).
+    if state:
+        def in_state(c):
+            lj = c.get("licensed_jurisdictions") or []
+            if isinstance(lj, str):
+                lj = [s.strip() for s in lj.split(",")]
+            states = [str(s).strip().upper() for s in lj]
+            return state in states or (c.get("state") or "").strip().upper() == state
+        results = [c for c in results if in_state(c)]
+
+    found = bool(results)
+    quality_note = (" No rating/review data is tracked yet (the contact review system isn't "
+                    "live), so these are who we KNOW in this trade, not ranked by quality.")
+    if found:
+        summary = (f"Found {len(results)} contact(s) matching '{trade}'"
+                   + (f" licensed in {state}" if state else "") + "." + quality_note)
+    else:
+        summary = (f"No contacts found matching '{trade}'"
+                   + (f" in {state}" if state else "")
+                   + " in GLE's contact book. Try a broader term, or they may not be on file yet.")
+    return json.dumps({"query": trade, "state": state or None, "found": found,
+                       "summary": summary, "count": len(results),
+                       "contacts": results[:30], "review_data_available": False})
 
 
 # ═══════════════════════════════════════════════════════

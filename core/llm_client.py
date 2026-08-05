@@ -244,6 +244,8 @@ SONNET_MODEL = "claude-sonnet-4-6"
 SONNET_SIGNALS = {
     # Complex analysis keywords
     "analyze", "analysis", "strategy", "recommend", "should i", "should we",
+    # Finding a contact/vendor by trade/role — route up so tool selection is reliable
+    "plumber", "electrician", "vendor", "subcontractor", "who's a good", "who's good",
     "what's the best", "compare", "difference between", "pros and cons",
     "how do i handle", "what are my options", "help me understand",
     "objection", "resolve", "appeal", "variance", "special permit",
@@ -408,6 +410,7 @@ billing, change orders, company settings, team members, and more.
 WHEN TO USE TOOLS:
 - Any question about GLE's business, projects, clients, money, team, or properties → USE TOOLS
 - Any question where the answer is in the database → USE TOOLS
+- Finding a person/firm by TRADE or role — "who's a good plumber", "an architect who's done a small project", "a GC that would do this", "an electrician/vendor/consultant/expediter we use" → USE TOOLS (find_contacts). Search the contact book FIRST; never deflect to "ask the team" or "I don't have a vendor database."
 - Any follow-up question after a tool-based answer → USE TOOLS
 - Building code, zoning, or regulatory questions → use your RAG knowledge, NOT tools
 
