@@ -16,6 +16,7 @@ Ordino widget's source cards (chunk_preview, confidence score, title).
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,35 @@ logger = logging.getLogger(__name__)
 # Document authority hierarchy: higher number = higher authority
 # When docs conflict, prefer higher-authority sources.
 # Keys must match the source_type metadata values stored in Pinecone.
+# DOB form/report codes. Short alphanumeric codes ("TR2", "PW1", "PAA") don't embed
+# distinctively, so pure semantic search misses the right doc. We detect codes in the query
+# and keyword-boost candidate chunks that actually contain them. Word boundaries keep PA
+# (Place of Assembly) and PAA (Post Approval Amendment) — where PA ⊂ PAA — strictly separate.
+_FORM_CODES = ["PAA", "TR1", "TR2", "TR3", "TR8", "PW1", "PW2", "PW3", "ALT1", "ALT2", "ALT3",
+               "TPP", "TPA", "BPP", "AHV", "LNO", "TCO", "PACO", "EUP", "LAA", "FISP",
+               "PA", "NB", "DM", "COC", "OT"]
+
+
+def _code_pattern(code: str) -> str:
+    """Regex body for a code allowing a separator between letters and digits (TR2 / TR-2 / TR 2)."""
+    m = re.match(r"^([A-Za-z]+)(\d+)$", code)
+    if m:
+        return re.escape(m.group(1)) + r"[-\s]?" + re.escape(m.group(2))
+    return re.escape(code)
+
+
+# Longest codes first so 'PAA' is preferred over 'PA' in alternation.
+_FORM_CODE_RE = re.compile(
+    r"\b(" + "|".join(_code_pattern(c) for c in sorted(_FORM_CODES, key=len, reverse=True)) + r")s?\b",
+    re.I,
+)
+
+
+def _extract_form_codes(text: str) -> set:
+    """Normalized DOB form codes present in the text (TR-2/tr2s -> 'TR2')."""
+    return {re.sub(r"[-\s]", "", m.group(1).upper()) for m in _FORM_CODE_RE.finditer(text or "")}
+
+
 DOC_AUTHORITY = {
     "determination": 10,            # DOB rulings — highest authority
     "correction": 10,               # Team corrections — always override
@@ -226,13 +256,19 @@ class Retriever:
         # re-rank so a recent, authoritative doc (e.g. a new DOB service notice) can
         # surface above an older general guide it supersedes. Raw vector score alone
         # let stale guides out-rank fresh notices on the same topic.
+        # Detect DOB form codes in the query. When present, WIDEN the candidate pool so a
+        # keyword-matching doc that scored low on pure semantics is still in scope, then
+        # keyword-boost it during rerank (this is what fixes "when are TR2s required" pulling
+        # the TR2 guide, and keeps PA vs PAA distinct).
+        query_codes = _extract_form_codes(query)
+        candidate_k = max(top_k * 6, 40) if query_codes else max(top_k * 3, 15)
         results = self.vector_store.search(
             query=query,
-            top_k=max(top_k * 3, 15),
+            top_k=candidate_k,
             source_type_filter=source_type,
             jurisdiction_filter=jurisdiction,
         )
-        results = self._rerank(results)[:top_k]
+        results = self._rerank(results, query_codes=query_codes)[:top_k]
 
         # Filter by minimum score (on the raw vector score)
         filtered_results = [r for r in results if r["score"] >= min_score]
@@ -332,9 +368,10 @@ class Retriever:
         self._supersession_map = smap
         self._supersession_loaded_at = now
 
-    def _rerank(self, results: list[dict]) -> list[dict]:
+    def _rerank(self, results: list[dict], query_codes: set = None) -> list[dict]:
         """Re-rank candidates by raw score + small recency & authority boosts, and a
-        supersession penalty.
+        supersession penalty. When the query contains DOB form codes, a candidate that
+        actually contains that code (in its title or text) gets a strong keyword boost.
 
         The recency/authority boosts are deliberately small (≤ 0.08 / ≤ 0.05) — a
         tiebreaker when relevance is CLOSE, not an override. A doc marked superseded
@@ -346,8 +383,15 @@ class Retriever:
         self._load_supersession_map()
         smap = self._supersession_map or {}
         now = datetime.now()
+        # Word-boundary patterns for each queried form code (PA won't match PAA, and vice versa).
+        code_res = [re.compile(r"\b" + _code_pattern(c) + r"\b", re.I) for c in (query_codes or set())]
         for r in results:
             score = r.get("score", 0.0)
+            keyword_boost = 0.0
+            if code_res:
+                hay = f"{r.get('source_file', '')} {r.get('text', '')} {(r.get('metadata') or {}).get('text', '')}"
+                if any(p.search(hay) for p in code_res):
+                    keyword_boost = 0.18  # exact form-code match in title/text = strong signal
             auth = DOC_AUTHORITY.get(r.get("source_type", "document"), 2)
             auth_boost = min(auth, 10) / 200.0  # up to +0.05
             recency_boost = 0.0
@@ -364,7 +408,7 @@ class Retriever:
             if info and not info.get("is_current", True):
                 r["_superseded_by"] = info.get("superseded_by", "")
                 superseded_penalty = 0.12  # current ranks above; relevant old doc survives
-            r["_rerank_score"] = score + auth_boost + recency_boost - superseded_penalty
+            r["_rerank_score"] = score + auth_boost + recency_boost + keyword_boost - superseded_penalty
         return sorted(
             results,
             key=lambda r: r.get("_rerank_score", r.get("score", 0.0)),
