@@ -2382,25 +2382,41 @@ def get_file_content():
         # Chunk IDs are md5(file_path:chunk_index), so we can't use prefix filtering.
         # Instead, use a targeted search: embed a generic query and filter by source_file.
         # This is more efficient than scanning all vectors.
+        # Content chunks and the manifest can disagree on whether source_file
+        # carries the extension (chunks stored as "Foo", manifest as "Foo.md").
+        # Ordino shows the manifest name, so a naive exact match on "Foo.md" hits
+        # ONLY the empty manifest vector and returns blank. Try the name with and
+        # without the extension, skip the manifest, and keep chunks that have text.
+        import os as _os
+        _base = _os.path.splitext(source_file)[0]
+        candidates = []
+        for c in (source_file, _base, source_file + ".md", _base + ".md"):
+            if c and c not in candidates:
+                candidates.append(c)
+
         dummy_query = vector_store.embed_query(f"content from {source_file}")
-        results = index.query(
-            vector=dummy_query,
-            top_k=200,  # Max chunks per file — most files have <100
-            include_metadata=True,
-            filter={"source_file": {"$eq": source_file}},
-        )
-
-        if not results.matches:
-            return jsonify({"error": "File not found in knowledge base"}), 404
-
-        # Sort by chunk_index and reassemble
         chunks = []
-        for match in results.matches:
-            meta = match.metadata or {}
-            chunks.append({
-                "index": int(meta.get("chunk_index", 0)),
-                "text": meta.get("text", ""),
-            })
+        for cand in candidates:
+            results = index.query(
+                vector=dummy_query,
+                top_k=200,  # Max chunks per file — most files have <100
+                include_metadata=True,
+                filter={"source_file": {"$eq": cand}},
+            )
+            got = []
+            for match in (results.matches or []):
+                meta = match.metadata or {}
+                if str(meta.get("is_manifest", "")).lower() == "true":
+                    continue  # manifest vector has no chunk text
+                txt = meta.get("text", "")
+                if txt:
+                    got.append({"index": int(meta.get("chunk_index", 0)), "text": txt})
+            if got:
+                chunks = got
+                break
+
+        if not chunks:
+            return jsonify({"error": "File not found in knowledge base"}), 404
 
         chunks.sort(key=lambda c: c["index"])
         full_text = "\n\n".join(c["text"] for c in chunks)
