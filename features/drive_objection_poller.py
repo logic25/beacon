@@ -10,6 +10,10 @@ Beacon gets smarter with every batch Chris exports.
 Idempotent: an export whose Job# already has a KB doc is skipped, so the loop is safe
 to run as often as you like and survives restarts (state lives in the KB, not on disk).
 
+Google access uses the Drive v3 REST API with a service-account bearer token — the same
+pattern the Gmail poller uses — so it needs NO extra pip deps (no google-api-python-client,
+which drags in a conflicting protobuf).
+
 Setup (one-time):
   1. Reuse the existing service account (GOOGLE_SERVICE_ACCOUNT_JSON / _FILE).
   2. Give it read access to the objection folder — either share the folder with the
@@ -41,6 +45,7 @@ IMPERSONATE = os.getenv("DRIVE_IMPERSONATE_USER", os.getenv("BEACON_EMAIL", ""))
 SELF_URL = os.getenv("BEACON_SELF_URL", f"http://localhost:{os.getenv('PORT', '8080')}").rstrip("/")
 BEACON_KEY = os.getenv("BEACON_ANALYTICS_KEY", "")
 
+DRIVE_API = "https://www.googleapis.com/drive/v3"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
@@ -63,7 +68,7 @@ def _job_from_name(name: str) -> str:
     return m.group(1).upper() if m else ""
 
 
-def _map_columns(header: list[str]) -> dict:
+def _map_columns(header) -> dict:
     """header cell index -> canonical field name."""
     out = {}
     for idx, cell in enumerate(header):
@@ -79,7 +84,7 @@ def _map_columns(header: list[str]) -> dict:
     return out
 
 
-def _to_markdown(job: str, rows: list[dict]) -> str:
+def _to_markdown(job: str, rows) -> str:
     """Render parsed objection rows into an objection-intelligence KB doc."""
     lines = [
         f"# DOB NOW Objection Intelligence — Job {job}",
@@ -93,7 +98,7 @@ def _to_markdown(job: str, rows: list[dict]) -> str:
         "",
     ]
     for i, r in enumerate(rows, 1):
-        obj = r.get("objection", "").strip()
+        obj = (r.get("objection") or "").strip()
         if not obj:
             continue
         bits = [f"- **#{i}** {obj}"]
@@ -111,7 +116,6 @@ def _to_markdown(job: str, rows: list[dict]) -> str:
 
 
 def _now() -> str:
-    # Avoid datetime.now() cost here is fine; poller isn't resumed like a workflow.
     import datetime
     return datetime.datetime.now().isoformat(timespec="seconds")
 
@@ -168,7 +172,7 @@ class DriveObjectionPoller:
                 logger.error(f"[Drive Poller] cycle failed: {e}", exc_info=True)
             self._stop.wait(POLL_INTERVAL)
 
-    # ---- google drive ----
+    # ---- google auth (REST, no google-api-python-client) ----
     def _get_credentials(self):
         from google.oauth2 import service_account
         sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
@@ -183,29 +187,39 @@ class DriveObjectionPoller:
             creds = creds.with_subject(IMPERSONATE)
         return creds
 
-    def _drive(self):
-        from googleapiclient.discovery import build
-        return build("drive", "v3", credentials=self._get_credentials(), cache_discovery=False)
+    def _auth_headers(self) -> dict:
+        from google.auth.transport.requests import Request as GARequest
+        creds = self._get_credentials()
+        creds.refresh(GARequest())
+        return {"Authorization": f"Bearer {creds.token}"}
 
     # ---- core sync ----
     def sync_once(self, folder_id: Optional[str] = None) -> int:
         """List the folder and ingest any export whose Job# isn't already in the KB.
         Returns the number of new exports ingested."""
+        import requests
         fid = (folder_id or FOLDER_ID).strip()
         if not fid:
             raise RuntimeError("no folder id configured (DRIVE_OBJECTIONS_FOLDER_ID)")
-        drive = self._drive()
+        headers = self._auth_headers()
         q = (f"'{fid}' in parents and trashed = false "
              f"and (mimeType = '{XLSX_MIME}' or mimeType = '{SHEET_MIME}')")
         files, page = [], None
         while True:
-            resp = drive.files().list(
-                q=q, fields="nextPageToken, files(id,name,mimeType,modifiedTime)",
-                pageSize=200, supportsAllDrives=True, includeItemsFromAllDrives=True,
-                pageToken=page,
-            ).execute()
-            files += resp.get("files", [])
-            page = resp.get("nextPageToken")
+            params = {
+                "q": q,
+                "fields": "nextPageToken, files(id,name,mimeType,modifiedTime)",
+                "pageSize": 200,
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            }
+            if page:
+                params["pageToken"] = page
+            resp = requests.get(f"{DRIVE_API}/files", headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            files += data.get("files", [])
+            page = data.get("nextPageToken")
             if not page:
                 break
 
@@ -219,7 +233,7 @@ class DriveObjectionPoller:
             if job in already:
                 continue  # idempotent
             try:
-                rows = self._parse_export(drive, f)
+                rows = self._parse_export(headers, f)
                 if not rows:
                     logger.info(f"[Drive Poller] '{f['name']}': no objection rows — skip")
                     continue
@@ -231,19 +245,25 @@ class DriveObjectionPoller:
                 logger.warning(f"[Drive Poller] failed on '{f['name']}': {e}")
         return count
 
-    def _parse_export(self, drive, f) -> list[dict]:
+    def _parse_export(self, headers: dict, f: dict):
         import openpyxl
+        import requests
+        fid = f["id"]
         if f["mimeType"] == SHEET_MIME:
-            data = drive.files().export(fileId=f["id"], mimeType=XLSX_MIME).execute()
+            url = f"{DRIVE_API}/files/{fid}/export"
+            params = {"mimeType": XLSX_MIME}
         else:
-            data = drive.files().get_media(fileId=f["id"], supportsAllDrives=True).execute()
-        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            url = f"{DRIVE_API}/files/{fid}"
+            params = {"alt": "media", "supportsAllDrives": "true"}
+        resp = requests.get(url, headers=headers, params=params, timeout=60)
+        resp.raise_for_status()
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content), read_only=True, data_only=True)
         ws = wb.active
         grid = [[("" if c is None else str(c)).strip() for c in r] for r in ws.iter_rows(values_only=True)]
         grid = [r for r in grid if any(c for c in r)]
         if not grid:
             return []
-        # Find the header row: the first row whose cells map to >=2 canonical fields.
+        # Find the header row: the first row whose cells map to >=2 canonical fields incl. objection.
         header_idx, colmap = None, {}
         for i, row in enumerate(grid[:15]):
             m = _map_columns(row)
