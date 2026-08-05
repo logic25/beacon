@@ -182,8 +182,11 @@ import hmac
 from functools import wraps
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
 
-# Enable CORS for all routes (Ordino widget on different domain calls /api/chat and /)
-CORS(app, supports_credentials=True)
+# Enable CORS. Pin via env when origins are known (comma-separated CORS_ALLOWED_ORIGINS);
+# defaults to the prior permissive behavior so nothing breaks. Sensitive routes are
+# beacon-key gated (header auth, not cookies), so this is defense-in-depth, not the lock.
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+CORS(app, origins=(_cors_origins or "*"), supports_credentials=True)
 
 # Initialize components (will be set up in main)
 settings: Settings | None = None
@@ -1551,8 +1554,11 @@ def analytics():
 
 
 @app.route("/analytics-data", methods=["GET"])
+@require_beacon_key
 def analytics_data() -> tuple[Response, int]:
-    """JSON endpoint for analytics data."""
+    """JSON endpoint for analytics data. Gated: it returns top_questions (raw user
+    question text). The legacy Beacon-hosted dashboard is superseded by Ordino's
+    Help Desk -> AI Usage page (which uses the gated /api/analytics)."""
     analytics_data = {
         "status": "ok",
     }
