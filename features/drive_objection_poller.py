@@ -119,10 +119,55 @@ def parse_xlsx_bytes(content: bytes):
     """Parse DOB NOW objection-export .xlsx bytes into objection rows.
     Pure (no Drive/network) so the /api/ingest upload path can reuse it — a person can
     drop an export into Ordino's KB and it parses server-side, same as the poller does."""
-    import openpyxl
-    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    ws = wb.active
-    grid = [[("" if c is None else str(c)).strip() for c in r] for r in ws.iter_rows(values_only=True)]
+    # DOB NOW's export engine writes a stylesheet openpyxl can't parse ("expected Fill").
+    # We only need cell VALUES, so read the sheet XML directly (stdlib) — robust and
+    # dependency-light, immune to the malformed stylesheet.
+    import zipfile
+    import re as _re
+    from xml.etree import ElementTree as _ET
+    NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    try:
+        z = zipfile.ZipFile(io.BytesIO(content))
+    except Exception:
+        return []
+    shared = []
+    if "xl/sharedStrings.xml" in z.namelist():
+        _r = _ET.fromstring(z.read("xl/sharedStrings.xml"))
+        for si in _r.findall(f"{NS}si"):
+            shared.append("".join(t.text or "" for t in si.iter(f"{NS}t")))
+    sheets = sorted(n for n in z.namelist() if _re.match(r"xl/worksheets/sheet\d+\.xml$", n))
+    if not sheets:
+        return []
+
+    def _col(ref):
+        m = _re.match(r"[A-Z]+", ref or "")
+        n = 0
+        for ch in (m.group(0) if m else ""):
+            n = n * 26 + (ord(ch) - 64)
+        return n - 1
+
+    grid = []
+    root = _ET.fromstring(z.read(sheets[0]))
+    for row in root.iter(f"{NS}row"):
+        cells, maxc = {}, -1
+        for c in row.findall(f"{NS}c"):
+            ci = _col(c.get("r", ""))
+            t = c.get("t")
+            v = c.find(f"{NS}v")
+            isn = c.find(f"{NS}is")
+            if t == "s" and v is not None:
+                try:
+                    val = shared[int(v.text)]
+                except Exception:
+                    val = ""
+            elif t == "inlineStr" and isn is not None:
+                val = "".join(x.text or "" for x in isn.iter(f"{NS}t"))
+            else:
+                val = (v.text if v is not None else "") or ""
+            cells[ci] = val.strip()
+            if ci > maxc:
+                maxc = ci
+        grid.append([cells.get(i, "") for i in range(maxc + 1)] if maxc >= 0 else [])
     grid = [r for r in grid if any(c for c in r)]
     if not grid:
         return []
