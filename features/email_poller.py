@@ -80,6 +80,19 @@ TRUSTED_FORWARD_DOMAINS = list(dict.fromkeys(
     ).split(",") if d.strip()
 ))
 
+# BD / market-intel newsletters. beacon@ can subscribe DIRECTLY to these; the poller
+# fetches them and the classifier routes them to the BD module (market_news / event) —
+# NOT the permitting KB. So Manny can unsubscribe personally and let Beacon aggregate.
+# Augmentable via EMAIL_BD_SENDERS (union, same pattern as EMAIL_SENDER_FILTERS).
+DEFAULT_BD_SENDERS = (
+    "bisnow.com,commercialobserver.com,credaily.com,therealdeal.com,"
+    "pincusco.com,crainsnewyork.com"
+)
+_env_bd = os.getenv("EMAIL_BD_SENDERS", "")
+BD_SENDERS = list(dict.fromkeys(
+    s.strip() for s in f"{DEFAULT_BD_SENDERS},{_env_bd}".split(",") if s.strip()
+))
+
 # Gmail API scopes needed for reading + labeling
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
@@ -188,8 +201,11 @@ class EmailPoller:
             "Content-Type": "application/json",
         }
 
-        # Build search query for unread emails from configured senders
-        sender_query = " OR ".join(f"from:{s.strip()}" for s in SENDER_FILTERS if s.strip())
+        # Build search query for unread emails from configured senders. BD newsletters are
+        # fetched here too — the classifier routes them to the BD module, not the KB, so
+        # beacon@ can subscribe to Bisnow/CO/CRE Daily/etc. and they auto-file as BD intel.
+        all_senders = list(dict.fromkeys(SENDER_FILTERS + BD_SENDERS))
+        sender_query = " OR ".join(f"from:{s.strip()}" for s in all_senders if s.strip())
         query = f"is:unread ({sender_query})"
 
         logger.info(f"Email poller: searching for: {query}")
@@ -556,6 +572,27 @@ class EmailPoller:
             self._ingest_attachments(message, subject, headers)
             if self._processed_count > before:
                 ingested_any = True
+            # Crawl any nyc.gov links in the forward too (e.g. Manny forwarding a DOB
+            # newsletter → follow its links, same as the direct newsletter path).
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html_content or "", "html.parser")
+                seen_l = set()
+                for a in soup.find_all("a", href=True):
+                    href = a["href"]
+                    if "nyc.gov" not in href.lower() or href.lower().endswith(".pdf"):
+                        continue
+                    if href in seen_l:
+                        continue
+                    seen_l.add(href)
+                    if len(seen_l) > 4:
+                        break
+                    self._crawl_and_ingest_page(
+                        href, subject, category,
+                        datetime.now(timezone.utc).strftime("%Y-%m-%d"), "service_notice")
+                    ingested_any = True
+            except Exception as e:
+                logger.warning(f"  forward link-crawl failed: {e}")
         except Exception as e:
             self._last_error = f"forward ingest failed for '{subject}': {e}"
             logger.error(f"❌ Forward ingest failed for '{subject}': {e}", exc_info=True)
@@ -604,6 +641,50 @@ class EmailPoller:
         count = self.retriever.vector_store.upsert_chunks(document.chunks)
         logger.info(f"  ✅ Forward body ingested: '{title}' → {count} chunks")
         return count > 0
+
+    def _crawl_and_ingest_page(self, url: str, parent_title: str, category: str,
+                               newsletter_date: str, source_type: str):
+        """Fetch a linked HTML page (nyc.gov only) and ingest its text into the KB.
+
+        This is how linked newsletter content actually gets learned — the email body only
+        carries a blurb + a link. Restricted to official nyc.gov hosts (SSRF-guarded via
+        net_guard) so we never follow tracking/ad/third-party links embedded in the email.
+        """
+        if not self.retriever or not url:
+            return
+        u = url.strip()
+        if not u.lower().startswith("http") or u.lower().endswith(".pdf"):
+            return
+        from urllib.parse import urlparse
+        host = (urlparse(u).hostname or "").lower()
+        if not (host == "nyc.gov" or host.endswith(".nyc.gov")):
+            return  # only crawl official NYC pages
+        try:
+            from core import net_guard
+            resp = net_guard.safe_get(u, timeout=15, headers={"User-Agent": "BeaconKB/1.0"})
+            ctype = resp.headers.get("content-type", "").lower()
+            if resp.status_code != 200 or "html" not in ctype:
+                return
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer", "form", "noscript"]):
+                tag.decompose()
+            page_title = (soup.title.get_text(strip=True) if soup.title else "") or parent_title
+            text = soup.get_text(" ", strip=True)
+            if len(text) < 300:  # thin/redirect/landing page — nothing to learn
+                return
+            from ingestion.document_processor import DocumentProcessor
+            title = f"{parent_title} — {page_title}"[:120]
+            document = DocumentProcessor().process_text(
+                text=text, title=title, source_type=source_type,
+                metadata={"category": category, "date_issued": newsletter_date,
+                          "source_url": u, "ingested_from": "newsletter_link_crawl",
+                          "jurisdiction": "NYC"},
+            )
+            count = self.retriever.vector_store.upsert_chunks(document.chunks)
+            logger.info(f"  ✅ Crawled linked page '{page_title[:50]}' → {count} chunks")
+        except Exception as e:
+            logger.warning(f"  Skipped/failed crawl {u}: {e}")
 
     def _extract_html_body(self, payload: dict) -> str:
         """Extract HTML body from Gmail message payload.
@@ -803,6 +884,26 @@ Type: {source_type}
                     )
                 except Exception as e:
                     logger.error(f"  Failed to ingest source PDF {source_url}: {e}")
+
+            # --- 3b) Crawl linked nyc.gov HTML pages — the ACTUAL content behind the blurb.
+            # The email body only carries a summary + a link (e.g. the EBC newsletter points
+            # to training pages/FAQs); without this the linked substance is never learned.
+            if self.retriever:
+                crawl_urls = []
+                if source_url and not source_url.lower().endswith(".pdf"):
+                    crawl_urls.append(source_url)
+                crawl_urls += [l for l in referenced_links if l and not l.lower().endswith(".pdf")]
+                seen_u = set()
+                for cu in crawl_urls:
+                    if cu in seen_u:
+                        continue
+                    seen_u.add(cu)
+                    if len(seen_u) > 4:  # cap per update — avoid crawling every tracking link
+                        break
+                    try:
+                        self._crawl_and_ingest_page(cu, title, category, newsletter_date, source_type)
+                    except Exception as e:
+                        logger.error(f"  crawl failed {cu}: {e}")
 
             # --- 4) Feed Content Intelligence engine (dedup by title) ---
             if self.content_engine:
