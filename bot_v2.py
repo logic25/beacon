@@ -365,7 +365,9 @@ def initialize_app() -> None:
     global SUPABASE_ANALYTICS
     beacon_analytics_key = settings.beacon_analytics_key if hasattr(settings, 'beacon_analytics_key') else ""
     if not beacon_analytics_key:
-        import os
+        # `os` is imported at module level; a local `import os` here would make `os`
+        # a function-local for all of initialize_app() and UnboundLocalError any
+        # earlier os.* reference on paths where this branch doesn't run.
         beacon_analytics_key = os.getenv("BEACON_ANALYTICS_KEY", "")
 
     if SUPABASE_ANALYTICS_AVAILABLE and settings.supabase_url and beacon_analytics_key:
