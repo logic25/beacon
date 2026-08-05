@@ -139,6 +139,14 @@ try:
 except ImportError:
     CONTENT_SCHEDULER_AVAILABLE = False
 
+# Drive Objection Poller (optional — auto-ingests DOB NOW objection exports Chris
+# drops in a Drive folder; inert until DRIVE_OBJECTIONS_FOLDER_ID is set)
+try:
+    from features.drive_objection_poller import DriveObjectionPoller
+    DRIVE_POLLER_AVAILABLE = True
+except ImportError:
+    DRIVE_POLLER_AVAILABLE = False
+
 
 def _sanitize_pinecone_id(raw_id: str) -> str:
     """Convert a string to ASCII-safe Pinecone vector ID.
@@ -204,6 +212,7 @@ analytics_db: "AnalyticsDB | None" = None
 passive_listener: "PassiveListener | None" = None
 email_poller: "EmailPoller | None" = None
 content_scheduler: "ContentScheduler | None" = None
+drive_objection_poller: "DriveObjectionPoller | None" = None
 logger = logging.getLogger(__name__)
 
 # Warn loudly if the Flask session secret is the known default — a constant secret lets
@@ -460,6 +469,31 @@ def initialize_app() -> None:
         except Exception as e:
             logger.warning(f"Email poller initialization failed: {e}")
             email_poller = None
+
+    # Initialize Drive Objection Poller (auto-ingests DOB NOW objection exports from
+    # a Drive folder). Same one-worker file-lock guard as the email poller so only a
+    # single gunicorn worker polls. Inert unless DRIVE_OBJECTIONS_FOLDER_ID is set.
+    global drive_objection_poller
+    if DRIVE_POLLER_AVAILABLE and os.getenv("DRIVE_OBJECTIONS_FOLDER_ID", "").strip():
+        try:
+            import fcntl
+            _dp_lock = open("/tmp/beacon_drive_poller.lock", "w")
+            try:
+                fcntl.flock(_dp_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _have_dp_lock = True
+            except (IOError, OSError):
+                _have_dp_lock = False
+            if _have_dp_lock:
+                drive_objection_poller = DriveObjectionPoller(retriever=retriever, analytics_db=analytics_db)
+                drive_objection_poller.start()
+                globals()["_drive_poller_lock_fd"] = _dp_lock
+                logger.info("✅ Drive objection poller started (this worker holds the lock)")
+            else:
+                _dp_lock.close()
+                logger.info("Drive objection poller already running in another worker — skipping")
+        except Exception as e:
+            logger.warning(f"Drive objection poller initialization failed: {e}")
+            drive_objection_poller = None
 
     # Initialize Content Scheduler (auto-generates content candidates from team
     # questions and posts a Google Chat notification when new content appears).
@@ -2099,6 +2133,31 @@ def api_backfill_tags():
                     logger.warning(f"[Backfill Tags] update failed for {vec_id}: {e}")
     logger.info(f"[Backfill Tags] scanned {scanned}, tagged {tagged}")
     return jsonify({"success": True, "scanned": scanned, "tagged": tagged})
+
+
+@app.route("/api/objections/drive-sync", methods=["POST"])
+@require_beacon_key
+def api_drive_objection_sync():
+    """Run the Drive objection sync on demand (it also runs on a daily schedule).
+
+    Reads the objection-export Drive folder and ingests any export whose Job# isn't
+    already in the KB — idempotent, safe to call repeatedly. Body (optional):
+    {"folder_id": "..."} to override DRIVE_OBJECTIONS_FOLDER_ID (handy for a first
+    test before the env var is set)."""
+    if not DRIVE_POLLER_AVAILABLE:
+        return jsonify({"error": "Drive poller module not available"}), 503
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+    data = request.get_json(silent=True) or {}
+    folder_id = (data.get("folder_id") or "").strip() or None
+    global drive_objection_poller
+    poller = drive_objection_poller or DriveObjectionPoller(retriever=retriever, analytics_db=analytics_db)
+    try:
+        n = poller.sync_once(folder_id=folder_id)
+        return jsonify({"success": True, "ingested": n, "status": poller.status()})
+    except Exception as e:
+        logger.error(f"[Drive Sync] failed: {e}", exc_info=True)
+        return jsonify({"error": str(e), "status": poller.status()}), 500
 
 
 @app.route("/api/enrich-signal", methods=["POST"])

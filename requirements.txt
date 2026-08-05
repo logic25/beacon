@@ -13,6 +13,8 @@ flask-cors>=4.0.0          # CORS for web API access
 google-auth>=2.25.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
+google-api-python-client>=2.100.0   # Drive API (objection-export poller)
+openpyxl>=3.1.0                      # parse DOB NOW .xlsx objection exports
 
 # RAG / Vector Store
 pinecone>=5.0.0
