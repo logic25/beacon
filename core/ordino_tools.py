@@ -686,18 +686,23 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
         from config import get_settings
         client = anthropic.Anthropic(api_key=get_settings().anthropic_api_key)
         prompt = (
-            "You are a BD analyst for a NYC permit-expediting firm. From this real-estate news, "
-            "extract the CONCRETE opportunities — each a specific party and/or building that will "
-            "likely need permit / expediting / filing work. Ignore pure macro/finance news.\n"
+            "You are a senior BD analyst for Green Light Expediting, a NYC permit-expediting firm. "
+            "From this real-estate news AND the linked article text, extract the CONCRETE opportunities — "
+            "each a specific party and/or building that will likely need DOB permit / expediting / filing "
+            "work. Reason about WHY it needs filings and what GLE would do. Ignore pure macro/finance news.\n"
             'Return STRICT JSON: {"opportunities":[{"party":str,"address":str|null,'
-            '"deal_type":"lease|sale|development|renovation|other","angle":str}]}\n'
+            '"deal_type":"lease|sale|development|renovation|other","angle":str,"why":str}]}\n'
             "- party = the company/person (tenant, buyer, owner, developer).\n"
-            "- address = street address or building name if stated, else null.\n"
-            "- angle = one line on the permit opportunity (tenant fit-out, base-building/white-box, "
-            "new building, conversion, etc.).\n\n"
-            f"News:\n{enriched[:9000]}\n\nJSON only."
+            "- address = the STREET ADDRESS if the article states one (e.g. '20 Columbus Circle, New York, NY'); "
+            "else the building name; else null. Prefer a real street address.\n"
+            "- angle = the specific permit work (tenant fit-out, base-building/white-box, new building, "
+            "conversion, facade, etc.).\n"
+            "- why = 1-2 sentences on WHY this generates filing/expediting work and the timing "
+            "(e.g. 'A $450M retail repositioning = ALT-2 fit-out + facade filings once the buyer closes; "
+            "the pre-filing window is now').\n\n"
+            f"News + linked article text:\n{enriched[:12000]}\n\nJSON only."
         )
-        msg = client.messages.create(model="claude-haiku-4-5-20251001", max_tokens=700,
+        msg = client.messages.create(model="claude-sonnet-4-6", max_tokens=1500,
                                      temperature=0, messages=[{"role": "user", "content": prompt}])
         raw = re.sub(r"^```(?:json)?|```$", "", msg.content[0].text.strip(), flags=re.I | re.M).strip()
         opps = (json.loads(raw) or {}).get("opportunities", [])
@@ -725,7 +730,7 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
 
     for o in opps[:5]:
         lead = {"party": o.get("party"), "deal_type": o.get("deal_type"),
-                "angle": o.get("angle"), "address": o.get("address")}
+                "angle": o.get("angle"), "why": o.get("why"), "address": o.get("address")}
         # property / owner enrichment
         if o.get("address"):
             prop = json.loads(_resolve_owner({"address": o["address"]}))
@@ -748,6 +753,7 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
 
     return json.dumps({
         "found": True, "lead_count": len(leads), "leads": leads,
+        "story": (crawled[:6000] if crawled else ""),  # full crawled article text so the UI can show "read the full story"
         "summary": f"Cracked the signal into {len(leads)} lead(s). "
                    "Each includes the party, the permit angle, the building owner + incumbent expediter "
                    "(where an address was given), and who we already know — the warm path in.",
