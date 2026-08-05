@@ -376,7 +376,14 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
     name = (params.get("name") or "").strip()
     if not name:
         return json.dumps({"error": "name is required"})
-    like = f"ilike.%{name}%"
+    like = f"%{name}%"
+
+    def ilf(col):
+        # Ordino's query_ordino expects filters as an ARRAY of {column, operator, value}.
+        # Passing a dict (or an "ilike.%x%" string value) applies NO filter → every query
+        # returned all company-scoped rows up to the cap (the "25 contacts / 45 projects for
+        # everyone" false-positive bug). This builds the shape the proxy actually reads.
+        return [{"column": col, "operator": "ilike", "value": like}]
 
     def q(table, select, filters, limit=25):
         r = _proxy_call("query_ordino", {"table": table, "select": select,
@@ -394,7 +401,7 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
     # 1) Contacts we hold — match on the person's name OR their company_name.
     contacts, seen = [], set()
     csel = "name,first_name,last_name,email,phone,mobile,company_name,is_referrer,license_type"
-    for filt in ({"name": like}, {"company_name": like}):
+    for filt in (ilf("name"), ilf("company_name")):
         for c in q("client_contacts", csel, filt):
             key = f"{c.get('email') or ''}|{c.get('name') or ''}".strip("|")
             if key and key not in seen:
@@ -402,7 +409,7 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
                 contacts.append(c)
 
     # 2) Client companies on our roster.
-    companies = q("companies", "id,name,email,phone", {"name": like})
+    companies = q("companies", "id,name,email,phone", ilf("name"))
 
     # 3) Projects where they were the architect / GC / owner = a professional relationship.
     proj_sel = ("id,name,architect_company_name,architect_contact_name,"
@@ -411,7 +418,7 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
     for col, role in (("architect_company_name", "architect"),
                       ("gc_company_name", "general contractor"),
                       ("building_owner_name", "building owner")):
-        for p in q("projects", proj_sel, {col: like}, limit=15):
+        for p in q("projects", proj_sel, ilf(col), limit=15):
             firm = p.get(col)
             contact = (p.get("architect_contact_name") if col.startswith("architect")
                        else p.get("gc_contact_name") if col.startswith("gc") else None)
