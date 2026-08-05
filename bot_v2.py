@@ -800,6 +800,34 @@ Daily limits: 100 requests, 100K tokens"""
     return None  # Not a recognized command
 
 
+_GAP_HEDGE_PHRASES = (
+    "doesn't have specific", "does not have specific", "knowledge base doesn't",
+    "kb doesn't", "couldn't find", "could not find", "don't have specific",
+    "no specific guidance", "not have specific guidance", "worth confirming with",
+    "confirm with chris", "confirm with manny", "double-check against", "rules shift",
+    "not detailed", "isn't covered", "not covered in", "unable to find",
+    "i'm not certain", "not entirely certain", "don't have documentation",
+    "i don't have", "no documentation", "check the current", "check with",
+)
+
+
+def _answer_confidence(rag_sources, ai_response) -> float:
+    """Gap-aware confidence. Base = avg retrieval score, BUT a hedged/deferring answer
+    (Beacon saying it couldn't actually answer) caps it low so it registers as a KB gap
+    even when a tangential doc scored well. This is what makes the KB-gaps view catch
+    the real gaps (e.g. GChat's ACP-5 / DOB-fee-formula non-answers)."""
+    try:
+        scores = [float(s.get("score", 0.0)) for s in (rag_sources or []) if isinstance(s, dict)]
+        conf = (sum(scores) / len(scores)) if scores else 0.0
+    except Exception:
+        conf = 0.0
+    if not rag_sources:
+        conf = min(conf, 0.2)
+    if any(p in (ai_response or "").lower() for p in _GAP_HEDGE_PHRASES):
+        conf = min(conf, 0.3)
+    return round(conf, 3)
+
+
 def process_message_async(
     user_id: str,
     user_display_name: str,
@@ -1004,7 +1032,7 @@ def process_message_async(
                     tokens_used=tokens_used,
                     cost_usd=cost_usd,
                     response_time_ms=response_time,
-                    confidence=None,
+                    confidence=_answer_confidence(rag_sources, ai_response),
                     topic=None,  # Auto-categorized by analytics v2
                 )
 
@@ -1476,7 +1504,7 @@ def api_chat():
                     tokens_used=tokens_used,
                     cost_usd=cost_usd,
                     response_time_ms=response_time_ms,
-                    confidence=confidence,
+                    confidence=_answer_confidence(rag_sources_list, ai_response),
                     topic=None,
                 )
                 analytics_db.log_interaction(interaction)
