@@ -686,6 +686,15 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
     # the full story, not just the newsletter blurb (the Signals requirement).
     crawled = _crawl_signal_links(text)
     enriched = (text + "\n\n--- LINKED ARTICLE CONTENT ---\n" + crawled) if crawled else text
+    # The source article links, so the UI can offer "read the full article".
+    article_urls, _seen_u = [], set()
+    for _m in _SIGNAL_URL_RE.finditer(text or ""):
+        _u = _m.group(0).rstrip('.,);]”"')
+        if _u not in _seen_u and not _SIGNAL_SKIP_URL.search(_u):
+            _seen_u.add(_u)
+            article_urls.append(_u)
+        if len(article_urls) >= 5:
+            break
 
     # 1) Extract opportunities
     try:
@@ -762,6 +771,7 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
     return json.dumps({
         "found": True, "lead_count": len(leads), "leads": leads,
         "story": (crawled[:6000] if crawled else ""),  # full crawled article text so the UI can show "read the full story"
+        "article_urls": article_urls,  # source links so the UI can offer "read the article"
         "summary": f"Cracked the signal into {len(leads)} lead(s). "
                    "Each includes the party, the permit angle, the building owner + incumbent expediter "
                    "(where an address was given), and who we already know — the warm path in.",
