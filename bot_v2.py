@@ -2646,6 +2646,59 @@ def get_file_content():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/knowledge/scan-chunks", methods=["GET"])
+@require_beacon_key
+def scan_chunks():
+    """READ-ONLY forensic scan of ACTUAL content chunks (not manifests).
+
+    Enumerates every non-manifest vector and reports the true content inventory
+    straight from chunk metadata — which surfaces ORPHANS (chunks whose manifest
+    was pruned, so they don't appear in /api/knowledge/list) and lets us recover
+    content that a delete/dedup left behind. Optional ?term= greps source_file+text
+    (case-insensitive) and returns matching chunk TEXT so a doc can be reconstructed.
+    Does not write or delete anything.
+    """
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+    term = (request.args.get("term") or "").strip().lower()
+    index = retriever.vector_store.index
+    inventory = {}   # source_file -> {chunks, folder, source_type}
+    matches = []
+    scanned = 0
+    for id_batch in index.list(limit=100):
+        if not id_batch:
+            break
+        ids = [getattr(i, "id", i) for i in id_batch]
+        real_ids = [i for i in ids if isinstance(i, str) and not i.startswith("__file__:")]
+        if not real_ids:
+            continue
+        fetched = index.fetch(ids=real_ids)
+        for vec_id, vec_data in fetched.vectors.items():
+            scanned += 1
+            meta = vec_data.metadata or {}
+            sf = meta.get("source_file", "") or "(none)"
+            rec = inventory.setdefault(sf, {"chunks": 0, "folder": meta.get("folder", ""),
+                                            "source_type": meta.get("source_type", "")})
+            rec["chunks"] += 1
+            if term:
+                text = meta.get("text", "")
+                if term in sf.lower() or term in text.lower():
+                    matches.append({"id": vec_id, "source_file": sf,
+                                    "folder": meta.get("folder", ""),
+                                    "chunk_index": meta.get("chunk_index"),
+                                    "text": text})
+    inv_list = sorted(({"source_file": k, **v} for k, v in inventory.items()),
+                      key=lambda r: r["source_file"].lower())
+    out = {"scanned_chunks": scanned, "distinct_source_files": len(inv_list),
+           "inventory": inv_list}
+    if term:
+        matches.sort(key=lambda m: (m["source_file"].lower(), m.get("chunk_index") or 0))
+        out["term"] = term
+        out["match_count"] = len(matches)
+        out["matches"] = matches
+    return jsonify(out)
+
+
 @app.route("/api/knowledge/rebuild-manifest", methods=["POST"])
 @require_beacon_key
 def rebuild_knowledge_manifest():
