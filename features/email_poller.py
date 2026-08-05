@@ -300,6 +300,16 @@ class EmailPoller:
 
         logger.info(f"Processing email: '{subject}' from {sender}")
 
+        # A trusted staffer's forward always gets the general "teach" path (body + attachments
+        # + link crawl), even though their address is also in the main sender filter (manny@ is
+        # in EMAIL_SENDER_FILTERS) — otherwise the newsletter parser grabs it here and drops the
+        # body text. This must run before the newsletter path below.
+        sender_l = sender.lower()
+        if any(f"@{d}" in sender_l or sender_l.endswith(d) for d in TRUSTED_FORWARD_DOMAINS):
+            taught_label = self._get_or_create_label(headers, TAUGHT_LABEL)
+            self._handle_forward(msg_id, message, subject, sender, headers, taught_label)
+            return
+
         # Extract HTML body
         html_content = self._extract_html_body(message.get("payload", {}))
 
@@ -541,6 +551,17 @@ class EmailPoller:
             self._mark_processed(msg_id, headers, taught_label)
             return
 
+        self._handle_forward(msg_id, message, subject, sender, headers, taught_label)
+
+    def _handle_forward(self, msg_id: str, message: dict, subject: str, sender: str,
+                        headers: dict, taught_label: Optional[str]):
+        """Ingest a forwarded email as a general KB doc (body + attachments + nyc.gov links).
+
+        Shared by the forward pass AND the main pass: because a trusted staffer's address can
+        also be in the main sender filter (e.g. manny@ is in EMAIL_SENDER_FILTERS), the main
+        pass would otherwise grab the forward first and run the DOB-newsletter parser on it,
+        dropping the body text. Routing all staff forwards here guarantees the full treatment.
+        """
         logger.info(f"Processing forward: '{subject}' from {sender}")
 
         html_content = self._extract_html_body(message.get("payload", {}))
