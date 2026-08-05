@@ -224,6 +224,13 @@ class VectorStore:
                 if v is not None and v != "":
                     meta[k] = str(v)
 
+            # Topic-shelf tag: DOB form codes in this chunk (title + text), so tag-filtered
+            # retrieval can pull the right doc even when the query wording doesn't match.
+            from core.form_codes import extract_form_codes
+            codes = extract_form_codes(f"{chunk.text} {chunk.source_file}")
+            if codes:
+                meta["form_codes"] = sorted(codes)
+
             vectors.append({
                 "id": chunk.chunk_id,
                 "values": embedding,
@@ -298,6 +305,44 @@ class VectorStore:
             })
 
         return formatted_results
+
+    def search_by_tags(self, query: str, codes, top_k: int = 8,
+                       jurisdiction_filter: Optional[str] = None) -> list[dict]:
+        """Pull chunks TAGGED with any of these DOB form codes — the 'topic shelf'.
+
+        A metadata filter (form_codes $in codes) surfaces docs ABOUT the topic even when the
+        query wording doesn't match them (e.g. a PAA notice titled 'Amended Plans…' for a
+        'what's a PAA' question). Ranked by semantic relevance among the tagged chunks.
+        """
+        codes = list(codes or [])
+        if not codes:
+            return []
+        conditions = [{"form_codes": {"$in": codes}}]
+        if jurisdiction_filter:
+            conditions.append({"jurisdiction": {"$eq": jurisdiction_filter}})
+        filter_dict = conditions[0] if len(conditions) == 1 else {"$and": conditions}
+        try:
+            results = self.index.query(
+                vector=self.embed_query(query), top_k=top_k,
+                include_metadata=True, filter=filter_dict,
+            )
+        except Exception as e:
+            logger.warning(f"search_by_tags failed: {e}")
+            return []
+        out = []
+        for match in results.matches:
+            out.append({
+                "chunk_id": match.id,
+                "score": match.score,
+                "text": match.metadata.get("text", ""),
+                "source_file": match.metadata.get("source_file", "Unknown"),
+                "source_type": match.metadata.get("source_type", "document"),
+                "page_number": match.metadata.get("page_number"),
+                "jurisdiction": match.metadata.get("jurisdiction", ""),
+                "metadata": match.metadata,
+                "_tag_hit": True,
+            })
+        return out
 
     def delete_by_source(self, source_file: str) -> int:
         """Delete ALL chunks for a source file (Pinecone-serverless-safe). Returns count.

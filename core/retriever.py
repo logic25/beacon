@@ -29,34 +29,8 @@ logger = logging.getLogger(__name__)
 # Document authority hierarchy: higher number = higher authority
 # When docs conflict, prefer higher-authority sources.
 # Keys must match the source_type metadata values stored in Pinecone.
-# DOB form/report codes. Short alphanumeric codes ("TR2", "PW1", "PAA") don't embed
-# distinctively, so pure semantic search misses the right doc. We detect codes in the query
-# and keyword-boost candidate chunks that actually contain them. Word boundaries keep PA
-# (Place of Assembly) and PAA (Post Approval Amendment) — where PA ⊂ PAA — strictly separate.
-_FORM_CODES = ["PAA", "TR1", "TR2", "TR3", "TR8", "PW1", "PW2", "PW3", "ALT1", "ALT2", "ALT3",
-               "TPP", "TPA", "BPP", "AHV", "LNO", "TCO", "PACO", "EUP", "LAA", "FISP",
-               "PA", "NB", "DM", "COC", "OT"]
-
-
-def _code_pattern(code: str) -> str:
-    """Regex body for a code allowing a separator between letters and digits (TR2 / TR-2 / TR 2)."""
-    m = re.match(r"^([A-Za-z]+)(\d+)$", code)
-    if m:
-        return re.escape(m.group(1)) + r"[-\s]?" + re.escape(m.group(2))
-    return re.escape(code)
-
-
-# Longest codes first so 'PAA' is preferred over 'PA' in alternation.
-_FORM_CODE_RE = re.compile(
-    r"\b(" + "|".join(_code_pattern(c) for c in sorted(_FORM_CODES, key=len, reverse=True)) + r")s?\b",
-    re.I,
-)
-
-
-def _extract_form_codes(text: str) -> set:
-    """Normalized DOB form codes present in the text (TR-2/tr2s -> 'TR2')."""
-    return {re.sub(r"[-\s]", "", m.group(1).upper()) for m in _FORM_CODE_RE.finditer(text or "")}
-
+# DOB form-code detection lives in core.form_codes (shared with ingest-time tagging).
+from core.form_codes import extract_form_codes as _extract_form_codes, code_pattern as _code_pattern
 
 DOC_AUTHORITY = {
     "determination": 10,            # DOB rulings — highest authority
@@ -268,6 +242,14 @@ class Retriever:
             source_type_filter=source_type,
             jurisdiction_filter=jurisdiction,
         )
+        # TOPIC SHELF: also pull docs TAGGED with the query's form codes, regardless of
+        # semantic distance — so a topically-relevant doc worded differently (e.g. a PAA
+        # notice titled "Amended Plans…") still makes it into the candidate pool.
+        if query_codes:
+            tag_hits = self.vector_store.search_by_tags(
+                query, query_codes, top_k=8, jurisdiction_filter=jurisdiction)
+            seen_ids = {r.get("chunk_id") for r in results}
+            results += [t for t in tag_hits if t.get("chunk_id") not in seen_ids]
         results = self._rerank(results, query_codes=query_codes)[:top_k]
 
         # Filter by minimum score (on the raw vector score) — but keep a doc that matched a

@@ -2031,6 +2031,39 @@ def api_backfill_originals():
     return jsonify({"dry_run": False, "candidates": len(candidates), "stored": stored, "failed": failed})
 
 
+@app.route("/api/backfill-tags", methods=["POST"])
+@require_beacon_key
+def api_backfill_tags():
+    """Tag EXISTING chunks with the DOB form codes in their text (the 'topic shelf'), so
+    tag-filtered retrieval works retroactively — not just for docs ingested after tagging
+    shipped. Updates metadata in place (no re-embedding)."""
+    if retriever is None or not RAG_AVAILABLE:
+        return jsonify({"error": "RAG not available"}), 503
+    from core.form_codes import extract_form_codes
+    index = retriever.vector_store.index
+    tagged = scanned = 0
+    for id_batch in index.list(limit=100):
+        if not id_batch:
+            break
+        ids = [getattr(i, "id", i) for i in id_batch]
+        real_ids = [i for i in ids if isinstance(i, str) and not i.startswith("__file__:")]
+        if not real_ids:
+            continue
+        fetched = index.fetch(ids=real_ids)
+        for vec_id, vec_data in fetched.vectors.items():
+            scanned += 1
+            meta = vec_data.metadata or {}
+            codes = extract_form_codes(f"{meta.get('text', '')} {meta.get('source_file', '')}")
+            if codes:
+                try:
+                    index.update(id=vec_id, set_metadata={"form_codes": sorted(codes)})
+                    tagged += 1
+                except Exception as e:
+                    logger.warning(f"[Backfill Tags] update failed for {vec_id}: {e}")
+    logger.info(f"[Backfill Tags] scanned {scanned}, tagged {tagged}")
+    return jsonify({"success": True, "scanned": scanned, "tagged": tagged})
+
+
 @app.route("/api/enrich-signal", methods=["POST"])
 @require_beacon_key
 def api_enrich_signal():
