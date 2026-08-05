@@ -1942,6 +1942,41 @@ def api_ingest():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/enrich-signal", methods=["POST"])
+@require_beacon_key
+def api_enrich_signal():
+    """Crack a market-news SIGNAL into the LEADS inside it.
+
+    One Bisnow/CO/TRD email usually holds 2-3 opportunities (a sale + a fit-out, etc.).
+    This runs the reactive cascade (extract_deal_leads): LLM-extract each opportunity
+    (party + address + deal type + angle), then enrich each with DOB Open Data (owner /
+    incumbent expediter / GLE gap) and who-do-we-know. Returns a LIST so the Signals UI can
+    show the lead COUNT on the card and create one pre-filled lead per opportunity.
+
+    Body: {"text": "<signal summary or email text>"}
+    Auth: X-Beacon-Key + (optional) x-ordino-user-authorization for who-do-we-know.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify({"error": "text is required"}), 400
+
+        from core.ordino_tools import execute_tool
+        raw = execute_tool(
+            "extract_deal_leads", {"text": text},
+            user_jwt=request.headers.get("x-ordino-user-authorization"),
+        )
+        result = json.loads(raw)
+        # normalize for the UI: always expose lead_count + leads
+        result.setdefault("leads", [])
+        result["lead_count"] = len(result.get("leads") or [])
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"[Enrich Signal] failed: {e}", exc_info=True)
+        return jsonify({"error": str(e), "leads": [], "lead_count": 0}), 500
+
+
 @app.route("/api/ingest-email", methods=["POST"])
 @require_beacon_key
 def api_ingest_email():
