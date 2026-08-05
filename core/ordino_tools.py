@@ -257,6 +257,20 @@ TOOL_DEFINITIONS = [
             "required": ["table"],
         },
     },
+    {
+        "name": "who_do_we_know",
+        "description": "Find GLE's EXISTING relationship with a company or person in ONE call: contacts we hold, client companies, and past projects where they were the architect, GC, or building owner. Use this whenever someone asks 'who do we know at X', 'do we have a contact at X', 'have we worked with X', or is planning outreach/BD. Prefer this over composing multiple query_ordino calls — it searches all the relationship tables together and returns a consolidated answer.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Company or person name to look up (e.g. 'Tishman Speyer', 'Robert Derector', 'Frank Monterisi').",
+                },
+            },
+            "required": ["name"],
+        },
+    },
 ]
 
 
@@ -289,11 +303,81 @@ def execute_tool(tool_name: str, tool_input: dict, user_jwt: str = None) -> str:
             return json.dumps(result)
         elif tool_name == "draft_follow_up_email":
             return _draft_follow_up_email(tool_input, user_jwt=user_jwt)
+        elif tool_name == "who_do_we_know":
+            return _who_do_we_know(tool_input, user_jwt=user_jwt)
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})
     except Exception as e:
         logger.error(f"Tool execution error ({tool_name}): {e}")
         return json.dumps({"error": str(e)})
+
+
+def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
+    """Consolidated 'who/how do we know them' search across all relationship tables.
+
+    One tool call fans out to: client_contacts (by person name AND company name),
+    companies (client roster), and projects (where they were the architect / GC /
+    building owner). Returns contacts we hold + past project relationships + a summary,
+    so Beacon can answer 'who do we know at X' reliably instead of improvising queries.
+    """
+    name = (params.get("name") or "").strip()
+    if not name:
+        return json.dumps({"error": "name is required"})
+    like = f"ilike.%{name}%"
+
+    def q(table, select, filters, limit=25):
+        r = _proxy_call("query_ordino", {"table": table, "select": select,
+                                         "filters": filters, "limit": limit}, user_jwt=user_jwt)
+        if isinstance(r, list):
+            return r
+        if isinstance(r, dict):
+            if "error" in r:
+                return []
+            for k in ("data", "rows", "results"):
+                if isinstance(r.get(k), list):
+                    return r[k]
+        return []
+
+    # 1) Contacts we hold — match on the person's name OR their company_name.
+    contacts, seen = [], set()
+    csel = "name,first_name,last_name,email,phone,mobile,company_name,is_referrer,license_type"
+    for filt in ({"name": like}, {"company_name": like}):
+        for c in q("client_contacts", csel, filt):
+            key = f"{c.get('email') or ''}|{c.get('name') or ''}".strip("|")
+            if key and key not in seen:
+                seen.add(key)
+                contacts.append(c)
+
+    # 2) Client companies on our roster.
+    companies = q("companies", "id,name,email,phone", {"name": like})
+
+    # 3) Projects where they were the architect / GC / owner = a professional relationship.
+    proj_sel = ("id,name,architect_company_name,architect_contact_name,"
+                "gc_company_name,gc_contact_name,building_owner_name")
+    projects, pseen = [], set()
+    for col, role in (("architect_company_name", "architect"),
+                      ("gc_company_name", "general contractor"),
+                      ("building_owner_name", "building owner")):
+        for p in q("projects", proj_sel, {col: like}, limit=15):
+            firm = p.get(col)
+            contact = (p.get("architect_contact_name") if col.startswith("architect")
+                       else p.get("gc_contact_name") if col.startswith("gc") else None)
+            pkey = f"{p.get('id')}|{role}"
+            if pkey not in pseen:
+                pseen.add(pkey)
+                projects.append({"project": p.get("name"), "role": role,
+                                 "firm": firm, "contact": contact})
+
+    found = bool(contacts or companies or projects)
+    summary = (
+        f"We know '{name}': {len(contacts)} contact(s) on file, {len(companies)} client-company "
+        f"record(s), and {len(projects)} project(s) where they were an architect/GC/owner."
+        if found else
+        f"No existing relationship found for '{name}' in Ordino's contacts, clients, or projects."
+    )
+    return json.dumps({"query": name, "found": found, "summary": summary,
+                       "contacts": contacts[:25], "companies": companies[:10],
+                       "projects": projects[:20]})
 
 
 def _draft_follow_up_email(params: dict, user_jwt: str = None) -> str:
