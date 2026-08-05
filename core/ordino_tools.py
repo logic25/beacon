@@ -693,8 +693,9 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
             'Return STRICT JSON: {"opportunities":[{"party":str,"address":str|null,'
             '"deal_type":"lease|sale|development|renovation|other","angle":str,"why":str}]}\n'
             "- party = the company/person (tenant, buyer, owner, developer).\n"
-            "- address = the STREET ADDRESS if the article states one (e.g. '20 Columbus Circle, New York, NY'); "
-            "else the building name; else null. Prefer a real street address.\n"
+            "- address = ONLY an address or building name that appears VERBATIM in the article text — copy it "
+            "as written. NEVER invent, guess, or complete an address; do not add a street number the article "
+            "doesn't state. If the article gives only a neighborhood/area with no specific building, use null.\n"
             "- angle = the specific permit work (tenant fit-out, base-building/white-box, new building, "
             "conversion, facade, etc.).\n"
             "- why = 1-2 sentences on WHY this generates filing/expediting work and the timing "
