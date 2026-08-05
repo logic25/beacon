@@ -708,7 +708,10 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
             "work. Reason about WHY it needs filings and what GLE would do. Ignore pure macro/finance news.\n"
             'Return STRICT JSON: {"opportunities":[{"party":str,"address":str|null,'
             '"deal_type":"lease|sale|development|renovation|other","angle":str,"why":str}]}\n'
-            "- party = the company/person (tenant, buyer, owner, developer).\n"
+            "- party = the ACTUAL company/person name. Use the real entity name when it's clear "
+            "(e.g. 'Snap Inc.' rather than 'Snapchat parent company', 'Alexandria Real Estate Equities' "
+            "as written) so it can be matched against our CRM; if you're unsure of the real name, use it "
+            "as stated in the article — do not guess a name.\n"
             "- address = ONLY an address or building name that appears VERBATIM in the article text — copy it "
             "as written. NEVER invent, guess, or complete an address; do not add a street number the article "
             "doesn't state. If the article gives only a neighborhood/area with no specific building, use null.\n"
