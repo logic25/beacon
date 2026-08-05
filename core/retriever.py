@@ -270,8 +270,9 @@ class Retriever:
         )
         results = self._rerank(results, query_codes=query_codes)[:top_k]
 
-        # Filter by minimum score (on the raw vector score)
-        filtered_results = [r for r in results if r["score"] >= min_score]
+        # Filter by minimum score (on the raw vector score) — but keep a doc that matched a
+        # queried form code by keyword even if its raw semantic score is a touch low.
+        filtered_results = [r for r in results if r["score"] >= min_score or r.get("_keyword_hit")]
 
         # Build context with corrections at the top
         context_parts = []
@@ -392,6 +393,7 @@ class Retriever:
                 hay = f"{r.get('source_file', '')} {r.get('text', '')} {(r.get('metadata') or {}).get('text', '')}"
                 if any(p.search(hay) for p in code_res):
                     keyword_boost = 0.18  # exact form-code match in title/text = strong signal
+                    r["_keyword_hit"] = True  # survive the raw-score min filter below
             auth = DOC_AUTHORITY.get(r.get("source_type", "document"), 2)
             auth_boost = min(auth, 10) / 200.0  # up to +0.05
             recency_boost = 0.0

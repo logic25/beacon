@@ -1367,12 +1367,16 @@ def api_chat():
             skip_rag = any(w in _msg_lower for w in _followup_words)
         # Informational questions (fees, costs, requirements, how-to, forms) are ALWAYS
         # knowledge-base queries even when they mention an operational word like
-        # "violation", "compliance", or "project" — never skip RAG for these.
-        _info_intent = any(p in _msg_lower for p in [
+        # "violation", "compliance", or "project" — never skip RAG for these. A query that
+        # names a DOB form code (TR2, PW1, PAA...) is ALWAYS a KB question — this is what
+        # was wrongly skipped: "when are TR2s required" tripped the "when" follow-up rule
+        # and the old guard only matched "when is"/"requirement", not "when are"/"required".
+        from core.retriever import _extract_form_codes
+        _info_intent = bool(_extract_form_codes(user_message)) or any(p in _msg_lower for p in [
             "how much", "how to", "how do i file", "how long", "cost of", "fee for",
-            "fees for", "filing fee", "what's the fee", "what is the fee", "requirement",
-            "do i need", "which form", "what form", "difference between", "when do you",
-            "when is", "explain"])
+            "fees for", "filing fee", "what's the fee", "what is the fee", "requir",
+            "do i need", "which form", "what form", "difference between", "when do",
+            "when is", "when are", "when must", "when should", "explain"])
         if _info_intent:
             skip_rag = False
         if skip_rag:
