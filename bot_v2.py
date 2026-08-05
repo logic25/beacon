@@ -1908,6 +1908,16 @@ def api_ingest():
         except Exception:
             pass
 
+        # Who uploaded this doc (for the KB "Uploaded By" column). Comes from the
+        # multipart form field or the JSON metadata; blank if not provided.
+        _uploaded_by = ""
+        try:
+            _uploaded_by = (request.form.get("uploaded_by", "") or "").strip()
+        except Exception:
+            pass
+        if not _uploaded_by:
+            _uploaded_by = str(document.metadata.get("uploaded_by", "") or "").strip()
+
         # Store manifest vector so /api/knowledge/list can find this file.
         try:
             dim = vector_store.settings.embedding_dimension
@@ -1940,6 +1950,7 @@ def api_ingest():
                     "superseded_by": _superseded_by,
                     "content_hash": _content_hash,
                     "duplicate_of": _duplicate_of,
+                    "uploaded_by": _uploaded_by,
                 },
             }])
         except Exception as e:
@@ -2416,6 +2427,7 @@ def list_knowledge_files():
                     "is_current": meta.get("is_current", "true"),
                     "supersedes": meta.get("supersedes", ""),
                     "superseded_by": meta.get("superseded_by", ""),
+                    "uploaded_by": meta.get("uploaded_by", ""),
                 })
             if not file_details:
                 # Fallback 1: manifests missing OR present-but-unfetchable (serverless
@@ -2975,7 +2987,7 @@ def update_knowledge_metadata():
     source_file = (data.get("source_file") or "").strip()
     if not source_file:
         return jsonify({"error": "source_file is required"}), 400
-    set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction", "is_current", "superseded_by") if data.get(k) is not None}
+    set_meta = {k: data[k] for k in ("title", "folder", "jurisdiction", "is_current", "superseded_by", "uploaded_by") if data.get(k) is not None}
     # Optional rename: change the cited source_file across the doc's chunks + manifest.
     # Citations and the KB list key on the source_file METADATA, so this cleans up ugly
     # ingest names (e.g. tmpXXXX.pdf) with no re-embed. Chunks are found by the OLD name
