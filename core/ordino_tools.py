@@ -468,9 +468,15 @@ def _dob_building_where(target: str):
         feats = resp.json().get("features", [])
         if feats:
             props = feats[0].get("properties", {}) or {}
+            layer = (props.get("layer") or "").lower()
+            housenumber = props.get("housenumber")
             bin_ = ((props.get("addendum", {}) or {}).get("pad", {}) or {}).get("bin")
             label = props.get("label", t)
-            if bin_ and str(bin_).isdigit():
+            # Only trust a PRECISE address match (house number present / layer == 'address').
+            # A street ("Park Avenue") or venue/name ("Penn 2") match resolves to an arbitrary
+            # building → a confidently WRONG owner, which is worse than no owner. Skip those.
+            precise = layer == "address" or bool(housenumber)
+            if bin_ and str(bin_).isdigit() and precise:
                 return f"bin='{bin_}'", label, str(bin_)
     except Exception as e:
         logger.warning(f"GeoSearch failed for {t!r}: {e}")
