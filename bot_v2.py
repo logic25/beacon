@@ -2049,6 +2049,10 @@ def api_ingest():
                 if existing.vectors and _manifest_id in existing.vectors:
                     old_meta = existing.vectors[_manifest_id].metadata or {}
                     _version = int(old_meta.get("version", 1)) + 1
+                    # Preserve prior attribution on re-ingest (e.g. Ordino edit-in-place)
+                    # when the caller didn't pass one — else editing a doc blanks its uploader.
+                    if not _uploaded_by:
+                        _uploaded_by = str(old_meta.get("uploaded_by", "") or "").strip()
             except Exception:
                 pass
 
@@ -2931,23 +2935,39 @@ def rebuild_knowledge_manifest():
                 else:
                     seen_files[src]["chunk_count"] += 1
 
+        # Preserve user-set fields from any EXISTING manifest so a rebuild never wipes
+        # attribution/status again (uploaded_by, is_current, superseded_by, jurisdiction,
+        # title, real ingested_at). Dropping these was the bug that erased "Chris Henry"
+        # AND the real ingest dates on every rebuild.
+        prior = {}
+        try:
+            for _vid, _m in _all_manifests(index, vector_store):
+                sf = _m.get("source_file", "")
+                if sf:
+                    prior[sf] = _m
+        except Exception as _e:
+            logger.warning(f"[rebuild-manifest] couldn't read prior manifests to preserve fields: {_e}")
+
         # Create manifest vectors for each discovered file
         manifests = []
         for source_file, info in seen_files.items():
             folder = info["folder"]
             manifest_id = _sanitize_pinecone_id(f"__file__:{folder}/{source_file}" if folder else f"__file__:{source_file}")
-            manifests.append({
-                "id": manifest_id,
-                "values": [1e-7] * dim,
-                "metadata": {
-                    "source_file": source_file,
-                    "source_type": info["source_type"],
-                    "folder": folder,
-                    "chunks_created": info["chunk_count"],
-                    "ingested_at": "pre-manifest",
-                    "is_manifest": "true",
-                },
-            })
+            old = prior.get(source_file, {})
+            md = {
+                "source_file": source_file,
+                "source_type": info["source_type"] or old.get("source_type", "document"),
+                "folder": folder or old.get("folder", ""),
+                "chunks_created": info["chunk_count"],
+                "ingested_at": old.get("ingested_at") or "pre-manifest",
+                "is_manifest": "true",
+            }
+            # carry forward user-set fields when the prior manifest had them
+            for _k in ("uploaded_by", "is_current", "superseded_by", "supersedes", "jurisdiction", "title", "version"):
+                _v = old.get(_k)
+                if _v not in (None, ""):
+                    md[_k] = _v
+            manifests.append({"id": manifest_id, "values": [1e-7] * dim, "metadata": md})
 
         # Upsert manifest vectors in batches
         for i in range(0, len(manifests), 100):
