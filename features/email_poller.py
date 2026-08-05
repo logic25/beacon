@@ -330,6 +330,14 @@ class EmailPoller:
             text_for_class = ""
         category = self._classify_email(subject, sender, text_for_class)
 
+        # Official DOB / nyc.gov agency newsletters are KNOWLEDGE — force them to the KB even
+        # if the classifier saw event-ish content (e.g. a "Buildings News Update" digest that
+        # mentions "DOB in Your Community" events). Only the BD-sender feed (Bisnow etc.) and
+        # staff forwards are BD-eligible; official DOB mail must never route to the BD module.
+        if "nyc.gov" in sender_l and category in ("event", "market_news"):
+            logger.info(f"  Forcing nyc.gov newsletter to KB (classifier said {category}): '{subject}'")
+            category = "dob_regulatory"
+
         # 'other' = promos, personal mail, low-value newsletters. Skip entirely so they
         # never land in the permitting KB. (dob_regulatory still defaults to the KB below.)
         if category == "other":
