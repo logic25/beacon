@@ -475,9 +475,13 @@ class EmailPoller:
 
         logger.info(f"Email poller (forwards): searching for: {query}")
         try:
+            # Higher cap than the newsletter pass: when staff bulk-backfill by marking a
+            # stack of old forwards unread, we want to clear them in a cycle or two, not
+            # 10/hour. Configurable via BEACON_FORWARD_BATCH.
+            batch = int(os.getenv("BEACON_FORWARD_BATCH", "25"))
             resp = requests.get(
                 "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-                headers=headers, params={"q": query, "maxResults": 10}, timeout=30,
+                headers=headers, params={"q": query, "maxResults": batch}, timeout=30,
             )
             resp.raise_for_status()
             messages = resp.json().get("messages", [])
