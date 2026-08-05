@@ -2703,25 +2703,41 @@ def delete_knowledge_file():
         deleted_chunks = 0
         deleted_manifest = False
 
-        # 0. Back up the content BEFORE deleting, so a wrongful delete is restorable.
-        _backup_deleted_kb_doc(source_file, _reconstruct_kb_content(index, vector_store, source_file))
+        # The KB list DISPLAYS folder-prefixed names ("filing_guides/X.txt"), but chunk +
+        # manifest metadata store the BARE source_file ("X.txt") with a separate `folder`
+        # field. A delete by the displayed name therefore matched nothing (chunks_deleted:0 —
+        # the phantom-duplicate bug). Normalize: strip the folder prefix and match on the bare
+        # source_file, scoped to the folder when one was given so same-named files in OTHER
+        # folders survive.
+        if "/" in source_file:
+            folder_part, bare = source_file.rsplit("/", 1)
+        else:
+            folder_part, bare = "", source_file
 
-        # 1. Find and delete the manifest vector (serverless-safe manifest read).
+        # 0. Back up the content BEFORE deleting, so a wrongful delete is restorable.
+        _backup_deleted_kb_doc(source_file, _reconstruct_kb_content(index, vector_store, bare))
+
+        # 1. Find and delete the manifest vector (match the exact name OR bare+folder — this
+        #    also clears phantom manifest entries that have no backing chunks).
         for vid, meta in _all_manifests(index, vector_store):
-            if meta.get("source_file", "") == source_file:
+            m_src = meta.get("source_file", "")
+            m_folder = meta.get("folder", "")
+            if m_src == source_file or (m_src == bare and (not folder_part or m_folder == folder_part)):
                 index.delete(ids=[vid])
                 deleted_manifest = True
                 break
 
-        # 2. Find and delete all content chunks for this file.
-        # Use a dummy query filtered by source_file metadata.
-        dummy_query = vector_store.embed_query(f"content from {source_file}")
+        # 2. Find and delete all content chunks for this file (bare source_file, folder-scoped).
+        chunk_filter = {"source_file": {"$eq": bare}}
+        if folder_part:
+            chunk_filter = {"$and": [{"source_file": {"$eq": bare}}, {"folder": {"$eq": folder_part}}]}
+        dummy_query = vector_store.embed_query(f"content from {bare}")
         while True:
             results = index.query(
                 vector=dummy_query,
                 top_k=100,
                 include_metadata=True,
-                filter={"source_file": {"$eq": source_file}},
+                filter=chunk_filter,
             )
             if not results.matches:
                 break
