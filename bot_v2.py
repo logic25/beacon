@@ -2685,7 +2685,17 @@ def rebuild_knowledge_manifest():
             batch = manifests[i:i + 100]
             index.upsert(vectors=batch)
 
-        logger.info(f"[Rebuild Manifest] Created {len(manifests)} manifest vectors")
+        # Delete STALE / PHANTOM manifests — any existing manifest whose source_file has NO
+        # content chunks (seen_files was built from real chunks). These empty entries are what
+        # showed up in the Documents list as fake "duplicates" (e.g. two FDNY rows, 0 chunks
+        # each, while the real guide lives under a different name). rebuild used to only ADD
+        # manifests, never prune, so the phantoms survived every rebuild.
+        stale = 0
+        for vid, meta in _all_manifests(index, vector_store):
+            if meta.get("source_file", "") not in seen_files:
+                index.delete(ids=[vid])
+                stale += 1
+        logger.info(f"[Rebuild Manifest] Created {len(manifests)} manifests, pruned {stale} phantom(s)")
 
         return jsonify({
             "success": True,
