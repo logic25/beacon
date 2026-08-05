@@ -172,6 +172,12 @@ FORMATTING:
   summary (counts/totals), then show only the top 5-8 most relevant rows and
   offer to show more. Do NOT dump exhaustive multi-column tables the user has to
   scroll through — a short summary + a compact list beats a wide table
+- NEVER use markdown pipe tables (| a | b |) — they render badly in the chat widget.
+  For key-value facts (owner, incumbent expediter, BIN, capture rate, etc.), put each on
+  its own line with a bold label instead — e.g.
+    **Owner:** Brookfield
+    **Incumbent expediter:** William Vitacco Associates
+    **GLE filings here:** 0
 - End with a brief summary or next-step recommendation when appropriate"""
 
 # Supplemental prompt for specialized topics
