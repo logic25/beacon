@@ -1701,7 +1701,16 @@ def api_ingest():
 
             ext = os.path.splitext(filename)[1].lower()
             if ext not in {".pdf", ".md", ".txt"}:
-                return jsonify({"error": f"Unsupported file type: {ext}. Use .pdf, .md, or .txt"}), 400
+                # TOLERATE extensionless / oddly-named uploads instead of rejecting them.
+                # A missing/unknown extension was the #1 cause of SILENT ingest failure:
+                # Ordino would upload, Beacon 400'd here, and a 0-chunk phantom row was left
+                # behind (this is what put Chris's uploads at 0 chunks). Treat anything that
+                # isn't a PDF as UTF-8 text/markdown; a genuinely binary non-PDF payload is
+                # caught at the decode step below and rejected with a clear message.
+                logger.info(f"[API Ingest] Unrecognized extension {ext!r} for {filename!r} — treating as text/markdown")
+                if not os.path.splitext(filename)[1]:
+                    filename = f"{filename}.md"
+                ext = ".md"
 
             # Auto-detect source type from folder hint or filename
             if not source_type:
@@ -1738,7 +1747,13 @@ def api_ingest():
                 if ext == ".pdf":
                     document = processor.process_pdf(tmp_path, source_type=source_type)
                 else:
-                    text = open(tmp_path, "r", encoding="utf-8").read()
+                    try:
+                        text = open(tmp_path, "r", encoding="utf-8").read()
+                    except UnicodeDecodeError:
+                        return jsonify({"error": (
+                            f"'{filename}' looks like a binary file, not text. "
+                            "If it's a PDF, upload it with a .pdf extension; otherwise upload .md or .txt."
+                        )}), 400
                     from ingestion.ingest import extract_md_metadata
                     metadata = extract_md_metadata(text) if ext == ".md" else {}
                     metadata["file_path"] = filename
@@ -1786,6 +1801,17 @@ def api_ingest():
 
         # Upload chunks to Pinecone
         count = vector_store.upsert_chunks(document.chunks)
+
+        # Refuse to record a 0-chunk document. Writing a manifest here is exactly what
+        # produced the "phantom" rows that show up in Ordino at 0 chunks (unretrievable,
+        # unopenable) and read as fake duplicates. If nothing chunked, something upstream
+        # failed — surface it and write NOTHING, so the KB never gains a dead row.
+        if not count:
+            logger.warning(f"[API Ingest] 0 chunks produced for {locals().get('filename', document.title)!r} — refusing to write a phantom manifest")
+            return jsonify({
+                "error": "No content could be extracted from this document (0 chunks) — nothing was added to the knowledge base.",
+                "chunks_created": 0,
+            }), 422
 
         # Clean up stale chunks from previous version of this file.
         # Chunk IDs are deterministic (md5 of file_path:chunk_index), so if the
@@ -3014,6 +3040,31 @@ def delete_knowledge_batch():
     source_files = data.get("source_files", [])
     if not source_files or not isinstance(source_files, list):
         return jsonify({"error": "source_files (list) is required"}), 400
+
+    # SAFETY: dry-run PREVIEW (default). A bulk dedup once deleted real docs it mistook for
+    # duplicates, so batch delete now shows what it WOULD remove — each file's live chunk
+    # count — and deletes nothing unless the caller passes {"confirm": true}. This makes an
+    # over-broad dedup list visible (a "duplicate" with a big chunk count is a red flag)
+    # before anything is destroyed.
+    confirm = bool(data.get("confirm", False))
+    if not confirm:
+        vector_store = retriever.vector_store
+        index = vector_store.index
+        preview = []
+        for sf in source_files:
+            sf = (sf or "").strip()
+            if not sf:
+                continue
+            try:
+                res = index.query(vector=vector_store.embed_query(f"content from {sf}"),
+                                  top_k=100, include_metadata=False,
+                                  filter={"source_file": {"$eq": sf}})
+                preview.append({"source_file": sf, "chunks_present": len(res.matches or [])})
+            except Exception as e:
+                preview.append({"source_file": sf, "error": str(e)})
+        return jsonify({"dry_run": True, "would_delete": preview,
+                        "note": "Pass {\"confirm\": true} to actually delete. Any file with a large chunk count is likely a REAL doc, not a duplicate."})
+
     logger.warning(f"[KB Delete] AUDIT: BATCH delete of {len(source_files)} files by key-holder from {request.remote_addr}: {source_files}")
 
     results = []
