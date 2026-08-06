@@ -1472,10 +1472,16 @@ Type: email_digest
             resp.raise_for_status()
             labels = resp.json().get("labels", [])
 
-            for label in labels:
-                if label.get("name") == name:
-                    self._label_ids[name] = label["id"]
-                    return self._label_ids[name]
+            def _match(label_list):
+                for label in label_list:
+                    if (label.get("name") or "").strip().lower() == name.strip().lower():
+                        self._label_ids[name] = label["id"]
+                        return self._label_ids[name]
+                return None
+
+            hit = _match(labels)
+            if hit:
+                return hit
 
             # Create the label
             body = {
@@ -1484,6 +1490,14 @@ Type: email_digest
                 "messageListVisibility": "show",
             }
             resp = requests.post(url, headers=headers, json=body, timeout=10)
+            if resp.status_code == 409:
+                # Already exists — differing case, or a nested parent that labels.list omitted.
+                # Re-list and match case-insensitively to recover the id.
+                hit = _match(requests.get(url, headers=headers, timeout=10).json().get("labels", []))
+                if hit:
+                    return hit
+                logger.warning(f"Label {name!r} returned 409 but not found on re-list")
+                return None
             resp.raise_for_status()
             self._label_ids[name] = resp.json().get("id")
             logger.info(f"Created Gmail label: {name}")
