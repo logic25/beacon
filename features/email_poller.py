@@ -1456,7 +1456,8 @@ Type: email_digest
             if err:
                 summary[old_name]["error"] = err
             logger.info(f"[label-backfill] {old_name} -> {new_name}: {applied}/{len(ids)} messages")
-        return summary
+        beacon_labels = sorted(n for n in name_to_id if (n or "").lower().startswith("beacon"))
+        return {"remap": summary, "existing_beacon_labels": beacon_labels}
 
     def _get_or_create_label(self, headers: dict, name: str = INGESTED_LABEL) -> Optional[str]:
         """Get or create a Gmail label by name (cached per name across polls)."""
