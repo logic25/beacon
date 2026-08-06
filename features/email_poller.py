@@ -98,16 +98,19 @@ GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
 ]
 
-# Label name for processed emails
-INGESTED_LABEL = "Beacon-Ingested"
-# Label for emails that threw during ingest — so a poison email surfaces for review
-# instead of silently retry-failing every poll forever.
-FAILED_LABEL = "Beacon-Ingest-Failed"
-# Label for emails routed to the BD module (events / market news) instead of the KB, so
-# it's visible at a glance which inbound mail became BD intel vs. permitting knowledge.
-BD_LABEL = "Beacon-BD"
-# Label for internal forwards Beacon learned from a GLE staffer (the forward-to-teach path).
-TAUGHT_LABEL = "Beacon-Taught"
+# Nested Beacon/* label tree — the beacon@ inbox becomes a pipeline dashboard you can
+# eyeball. Gmail nests on "/". An email can carry MORE than one (a DOB newsletter that
+# both lands in the KB and spawns a content candidate = Beacon/KB + Beacon/Content).
+# Watch two: a pile-up in Beacon/Failed = something's breaking; Beacon/Content going
+# quiet = the content engine stalled (this label alone would have flagged the 29d outage).
+INGESTED_LABEL = "Beacon/KB"            # ingested into the knowledge base
+FAILED_LABEL = "Beacon/Failed"         # threw during ingest — surfaces for review (the alarm)
+BD_LABEL = "Beacon/BD"                  # parent; Signal/Event children carry the real routing
+BD_SIGNAL_LABEL = "Beacon/BD/Signal"   # routed to BD as market news (Bisnow/CO/TRD)
+BD_EVENT_LABEL = "Beacon/BD/Event"     # routed to BD as an industry event
+CONTENT_LABEL = "Beacon/Content"       # produced a content candidate (fed the content engine)
+SKIPPED_LABEL = "Beacon/Skipped"       # deliberately dropped as low-value ('other')
+TAUGHT_LABEL = "Beacon/Taught"         # internal staff forward Beacon learned from (teach path)
 
 
 class EmailPoller:
@@ -315,8 +318,9 @@ class EmailPoller:
 
         if not html_content:
             logger.warning(f"No HTML content found in email: {subject}")
-            # Mark as read anyway so we don't re-process
-            self._mark_processed(msg_id, headers, label_id)
+            # Mark as read anyway so we don't re-process. Nothing was ingested, so it's
+            # Skipped, not KB — keep the dashboard honest.
+            self._mark_processed(msg_id, headers, self._labels(headers, SKIPPED_LABEL))
             return
 
         # Classify + route automatically (no manual triage):
@@ -344,14 +348,15 @@ class EmailPoller:
         # 'other' = promos, personal mail, low-value newsletters. Skip entirely so they
         # never land in the permitting KB. (dob_regulatory still defaults to the KB below.)
         if category == "other":
-            self._mark_processed(msg_id, headers, label_id)
+            self._mark_processed(msg_id, headers, self._labels(headers, SKIPPED_LABEL))
             logger.info(f"⏭️  Skipped (other/low-value): '{subject}'")
             return
 
         if category in ("event", "market_news"):
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._route_to_bd(category, subject, sender, text_for_class, date_str):
-                bd_label = self._get_or_create_label(headers, BD_LABEL)
+                bd_label = self._get_or_create_label(
+                    headers, BD_SIGNAL_LABEL if category == "market_news" else BD_EVENT_LABEL)
                 self._mark_processed(msg_id, headers, bd_label)
                 logger.info(f"✅ Email routed to BD ({category}): '{subject}'")
                 return
@@ -364,7 +369,7 @@ class EmailPoller:
         # 'Beacon-Ingest-Failed' label so it surfaces for review instead of re-failing
         # every poll forever.
         try:
-            self._ingest_newsletter(subject, sender, html_content)
+            candidates_made = self._ingest_newsletter(subject, sender, html_content)
             # Also ingest any PDF attachments directly on the email
             self._ingest_attachments(message, subject, headers)
         except Exception as e:
@@ -386,8 +391,10 @@ class EmailPoller:
             except Exception as e:
                 logger.warning(f"KB ingest notify failed for '{subject}': {e}")
 
-        # Mark as read and label
-        self._mark_processed(msg_id, headers, label_id)
+        # Mark as read and label: Beacon/KB always, + Beacon/Content if this newsletter
+        # actually spawned a content candidate (so "Content went quiet" is a real signal).
+        kb_names = [INGESTED_LABEL] + ([CONTENT_LABEL] if candidates_made else [])
+        self._mark_processed(msg_id, headers, self._labels(headers, *kb_names))
 
         logger.info(f"✅ Email ingested: '{subject}'")
 
@@ -590,7 +597,8 @@ class EmailPoller:
         if category in ("event", "market_news"):
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             if self._route_to_bd(category, subject, sender, text_for_class, date_str):
-                bd_label = self._get_or_create_label(headers, BD_LABEL)
+                bd_label = self._get_or_create_label(
+                    headers, BD_SIGNAL_LABEL if category == "market_news" else BD_EVENT_LABEL)
                 self._mark_processed(msg_id, headers, bd_label)
                 logger.info(f"✅ Forward routed to BD ({category}): '{subject}'")
                 return
@@ -789,7 +797,7 @@ class EmailPoller:
             self._ingest_raw_email(subject, sender, html_content, "unknown")
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}' (fallback)")
-            return
+            return 0
 
         updates = result.get("updates", [])
         newsletter_date = result.get("newsletter_date", "unknown")
@@ -805,7 +813,7 @@ class EmailPoller:
             self._ingest_raw_email(subject, sender, html_content, newsletter_date)
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}'")
-            return
+            return 0
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
 
@@ -835,6 +843,7 @@ class EmailPoller:
             except Exception as e:
                 logger.warning(f"  Candidate dedup preload failed: {e}")
 
+        candidates_made = 0
         for update in updates:
             title = update.get("title", "Untitled Update")
             summary = update.get("summary", "")
@@ -949,9 +958,12 @@ Type: {source_type}
                             source_type="newsletter_email"
                         )
                         existing_titles.add(norm_title)
+                        candidates_made += 1
                         logger.info(f"  Content candidate: '{candidate.title}' ({candidate.priority})")
                     except Exception as e:
                         logger.error(f"  Content engine failed for '{title}': {e}")
+
+        return candidates_made
 
     def _classify_email(self, subject: str, sender: str, text: str) -> str:
         """Classify an inbound email so it can be auto-routed. Returns one of:
@@ -1344,22 +1356,29 @@ Type: email_digest
         except Exception as e:
             logger.error(f"  PDF ingestion failed for {pdf_url}: {e}", exc_info=True)
 
-    def _mark_processed(self, msg_id: str, headers: dict, label_id: Optional[str]):
-        """Mark an email as read and apply the ingested label."""
+    def _mark_processed(self, msg_id: str, headers: dict, label_id):
+        """Mark an email as read and apply one or more labels. `label_id` may be a single
+        label id or a list of ids (e.g. Beacon/KB + Beacon/Content for a newsletter)."""
         import requests
 
+        ids = [label_id] if isinstance(label_id, str) else list(label_id or [])
+        ids = [i for i in ids if i]
         url = f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}/modify"
         body = {
             "removeLabelIds": ["UNREAD"],
         }
-        if label_id:
-            body["addLabelIds"] = [label_id]
+        if ids:
+            body["addLabelIds"] = ids
 
         try:
             resp = requests.post(url, headers=headers, json=body, timeout=10)
             resp.raise_for_status()
         except Exception as e:
             logger.warning(f"Failed to mark email {msg_id} as processed: {e}")
+
+    def _labels(self, headers: dict, *names) -> list:
+        """Resolve label names → ids (creating each as needed), dropping any that fail."""
+        return [lid for lid in (self._get_or_create_label(headers, n) for n in names) if lid]
 
     def _get_or_create_label(self, headers: dict, name: str = INGESTED_LABEL) -> Optional[str]:
         """Get or create a Gmail label by name (cached per name across polls)."""
