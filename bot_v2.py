@@ -1415,6 +1415,12 @@ def api_chat():
             "when is", "when are", "when must", "when should", "explain"])
         if _info_intent:
             skip_rag = False
+        # Explicit KB toggle from the caller — the "Beacon vs LLM" tab's TRUE Mode-1:
+        # Beacon's SAME model with retrieval OFF, to measure exactly what the KB adds.
+        # Overrides all the heuristics above: when kb=false, never retrieve.
+        if data.get("kb") is False:
+            skip_rag = True
+            logger.info("[API Chat] kb=false — running the model with NO retrieval (benchmark control)")
         if skip_rag:
             logger.info("[API Chat] Skipping RAG — operational query will use Ordino tools")
 

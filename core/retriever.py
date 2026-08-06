@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 # When docs conflict, prefer higher-authority sources.
 # Keys must match the source_type metadata values stored in Pinecone.
 # DOB form-code detection lives in core.form_codes (shared with ingest-time tagging).
-from core.form_codes import extract_form_codes as _extract_form_codes, code_pattern as _code_pattern
+from core.form_codes import (extract_form_codes as _extract_form_codes,
+                             extract_section_codes as _extract_section_codes,
+                             code_pattern as _code_pattern)
 
 DOC_AUTHORITY = {
     "determination": 10,            # DOB rulings — highest authority
@@ -234,7 +236,7 @@ class Retriever:
         # keyword-matching doc that scored low on pure semantics is still in scope, then
         # keyword-boost it during rerank (this is what fixes "when are TR2s required" pulling
         # the TR2 guide, and keeps PA vs PAA distinct).
-        query_codes = _extract_form_codes(query)
+        query_codes = _extract_form_codes(query) | _extract_section_codes(query)
         candidate_k = max(top_k * 6, 40) if query_codes else max(top_k * 3, 15)
         results = self.vector_store.search(
             query=query,
@@ -392,7 +394,13 @@ class Retriever:
             if info and not info.get("is_current", True):
                 r["_superseded_by"] = info.get("superseded_by", "")
                 superseded_penalty = 0.12  # current ranks above; relevant old doc survives
-            r["_rerank_score"] = score + auth_boost + recency_boost + keyword_boost - superseded_penalty
+            # Targeted down-weight: Int 1321-A (Energy Code Enactment) is a large omnibus
+            # local-law doc whose chunks over-match unrelated queries — it was the wrong top
+            # source in 6/8 audited retrieval-misses. A small penalty lets the on-topic doc win;
+            # it still surfaces when it's genuinely the best match.
+            junk_penalty = 0.10 if "1321" in (r.get("source_file", "") or "").lower() else 0.0
+            r["_rerank_score"] = (score + auth_boost + recency_boost + keyword_boost
+                                  - superseded_penalty - junk_penalty)
         return sorted(
             results,
             key=lambda r: r.get("_rerank_score", r.get("score", 0.0)),

@@ -30,3 +30,26 @@ _FORM_CODE_RE = re.compile(
 def extract_form_codes(text: str) -> set:
     """Normalized DOB form codes present in the text (TR-2/tr2s -> 'TR2')."""
     return {re.sub(r"[-\s]", "", m.group(1).upper()) for m in _FORM_CODE_RE.finditer(text or "")}
+
+
+# Section numbers + OP-form codes that ALSO don't embed distinctively, so a broad omnibus
+# doc (e.g. "Int 1321-A" Energy Code Enactment) out-ranks the doc whose TITLE names the exact
+# section. Kept RAW (not separator-stripped) so the retriever's rerank can find the literal
+# string in a doc's title/text. High-precision patterns only, to avoid boosting on stray numbers.
+_SECTION_RE = re.compile(
+    r"(?:§\s?)?\b(28-\d{3}(?:\.\d+)*)\b"            # NYC Admin Code, e.g. 28-112.2, 28-105.4.2, 28-104
+    r"|§\s?(\d+[A-Za-z0-9]*(?:[.\-]\d+)+)"          # any §-prefixed section, e.g. §3202.2.1, §32-153
+    r"|\b(OP-?\d+)\b",                               # OP forms, e.g. OP-49
+    re.I,
+)
+
+
+def extract_section_codes(text: str) -> set:
+    """Section numbers / OP codes in the text, RAW (e.g. '28-112.2', 'OP-49') — for the
+    retriever's keyword boost so section-number queries surface the titling doc."""
+    out = set()
+    for m in _SECTION_RE.finditer(text or ""):
+        tok = next((g for g in m.groups() if g), None)
+        if tok:
+            out.add(re.sub(r"\s", "", tok.upper()))
+    return out
