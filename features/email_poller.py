@@ -1408,55 +1408,64 @@ Type: email_digest
             return {"error": f"list labels failed: {e}"}
         name_to_id = {l.get("name"): l.get("id") for l in labels}
 
-        summary = {}
-        for old_name, new_name in remap.items():
-            old_id = name_to_id.get(old_name)
-            if not old_id:
-                summary[old_name] = {"mapped_to": new_name, "messages": 0, "note": "old label not present"}
-                continue
-            new_id = self._get_or_create_label(headers, new_name)
-            if not new_id:
-                summary[old_name] = {"error": "could not create/find new label"}
-                continue
-
-            # Collect every message id carrying the old label (paginated).
-            ids, page, err = [], None, None
+        def _msg_ids(label_id):
+            ids, page = [], None
             while True:
-                params = {"labelIds": old_id, "maxResults": 500}
+                params = {"labelIds": label_id, "maxResults": 500}
                 if page:
                     params["pageToken"] = page
-                try:
-                    r = requests.get(
-                        "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-                        headers=headers, params=params, timeout=20).json()
-                except Exception as e:
-                    err = f"list failed: {e}"
-                    break
+                r = requests.get("https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                                 headers=headers, params=params, timeout=20).json()
                 ids += [m["id"] for m in r.get("messages", [])]
                 page = r.get("nextPageToken")
                 if not page:
                     break
+            return ids
 
-            # batchModify — add the new label in chunks of 1000 (Gmail's cap).
-            applied = 0
-            for i in range(0, len(ids), 1000):
-                chunk = ids[i:i + 1000]
-                try:
-                    resp = requests.post(
-                        "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
-                        headers=headers,
-                        json={"ids": chunk, "addLabelIds": [new_id]}, timeout=30)
-                    resp.raise_for_status()
-                    applied += len(chunk)
-                except Exception as e:
-                    err = f"batchModify failed: {e}"
-                    break
+        # Case-insensitive name → id (to detect a distinct real label already at the new name).
+        lname_to = {(n or "").lower(): (n, i) for n, i in name_to_id.items()}
+        summary = {}
+        for old_name, new_name in remap.items():
+            old_id = name_to_id.get(old_name)
+            if not old_id:
+                summary[old_name] = {"mapped_to": new_name, "note": "old label absent"}
+                continue
+            existing = lname_to.get(new_name.lower())
+            existing_id = existing[1] if (existing and existing[1] != old_id) else None
+            try:
+                if existing_id:
+                    # A distinct real label already lives at the new name (e.g. Beacon/KB I
+                    # created earlier). Add it to old's messages, then delete the old label.
+                    ids = _msg_ids(old_id)
+                    for i in range(0, len(ids), 1000):
+                        requests.post(
+                            "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+                            headers=headers,
+                            json={"ids": ids[i:i + 1000], "addLabelIds": [existing_id]},
+                            timeout=30).raise_for_status()
+                    requests.delete(
+                        f"https://gmail.googleapis.com/gmail/v1/users/me/labels/{old_id}",
+                        headers=headers, timeout=15)
+                    summary[old_name] = {"merged_into": new_name, "messages": len(ids)}
+                else:
+                    # Rename old → new. Moves its messages + nests it, and sidesteps the
+                    # '-'/'/' separator collision (Gmail treats Beacon-BD == Beacon/BD).
+                    r = requests.patch(
+                        f"https://gmail.googleapis.com/gmail/v1/users/me/labels/{old_id}",
+                        headers=headers, json={"name": new_name}, timeout=15)
+                    if r.ok:
+                        summary[old_name] = {"renamed_to": new_name}
+                    else:
+                        summary[old_name] = {"error": f"rename {r.status_code}: {r.text[:140]}"}
+            except Exception as e:
+                summary[old_name] = {"error": str(e)}
+            logger.info(f"[label-backfill] {old_name}: {summary[old_name]}")
 
-            summary[old_name] = {"mapped_to": new_name, "messages": len(ids), "applied": applied}
-            if err:
-                summary[old_name]["error"] = err
-            logger.info(f"[label-backfill] {old_name} -> {new_name}: {applied}/{len(ids)} messages")
-        beacon_labels = sorted(n for n in name_to_id if (n or "").lower().startswith("beacon"))
+        labels2 = requests.get(
+            "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+            headers=headers, timeout=15).json().get("labels", [])
+        beacon_labels = sorted(
+            (l.get("name") for l in labels2 if (l.get("name") or "").lower().startswith("beacon")))
         return {"remap": summary, "existing_beacon_labels": beacon_labels}
 
     def _get_or_create_label(self, headers: dict, name: str = INGESTED_LABEL) -> Optional[str]:
