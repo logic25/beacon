@@ -1461,6 +1461,14 @@ Type: email_digest
                 summary[old_name] = {"error": str(e)}
             logger.info(f"[label-backfill] {old_name}: {summary[old_name]}")
 
+        # Pre-create the full Beacon/* tree so every label shows in the sidebar immediately
+        # (even empty), and the BD/Signal + BD/Event children make Gmail nest the tree
+        # (collapsible Beacon ▸ BD ▸ …). Lets you see the structure + set a Beacon/Failed
+        # filter before any traffic arrives.
+        for lbl in (INGESTED_LABEL, CONTENT_LABEL, BD_LABEL, BD_SIGNAL_LABEL, BD_EVENT_LABEL,
+                    SKIPPED_LABEL, FAILED_LABEL, TAUGHT_LABEL):
+            self._get_or_create_label(headers, lbl)
+
         labels2 = requests.get(
             "https://gmail.googleapis.com/gmail/v1/users/me/labels",
             headers=headers, timeout=15).json().get("labels", [])
