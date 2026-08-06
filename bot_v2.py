@@ -2250,6 +2250,21 @@ def api_drive_objection_sync():
         return jsonify({"error": str(e), "status": poller.status()}), 500
 
 
+@app.route("/api/admin/backfill-email-labels", methods=["POST"])
+@require_beacon_key
+def api_backfill_email_labels():
+    """One-shot: remap the old flat Gmail labels onto the new Beacon/* tree (non-destructive
+    — adds new labels, leaves the old ones). Run once; safe to re-run (idempotent add)."""
+    try:
+        from features.email_poller import EmailPoller
+        poller = email_poller or EmailPoller()
+        result = poller.backfill_labels()
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"[label-backfill] failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/enrich-signal", methods=["POST"])
 @require_beacon_key
 def api_enrich_signal():

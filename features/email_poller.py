@@ -1380,6 +1380,84 @@ Type: email_digest
         """Resolve label names → ids (creating each as needed), dropping any that fail."""
         return [lid for lid in (self._get_or_create_label(headers, n) for n in names) if lid]
 
+    def backfill_labels(self) -> dict:
+        """One-time: remap the OLD flat labels onto the new Beacon/* tree. NON-DESTRUCTIVE —
+        ADDS the new label and leaves the old one, so it's fully reversible (delete the old
+        labels by hand once you've eyeballed the result). Exact remap only: the Signal/Event
+        and Content granularity was never recorded historically, so BD stays under the parent
+        Beacon/BD; new mail gets the precise split going forward.
+        """
+        import requests
+        creds = self._get_gmail_credentials()
+        if not creds:
+            return {"error": "could not get Gmail credentials"}
+        headers = {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
+
+        remap = {
+            "Beacon-Ingested": INGESTED_LABEL,      # -> Beacon/KB
+            "Beacon-BD": BD_LABEL,                   # -> Beacon/BD (parent)
+            "Beacon-Ingest-Failed": FAILED_LABEL,    # -> Beacon/Failed
+            "Beacon-Taught": TAUGHT_LABEL,           # -> Beacon/Taught
+        }
+
+        try:
+            labels = requests.get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/labels",
+                headers=headers, timeout=15).json().get("labels", [])
+        except Exception as e:
+            return {"error": f"list labels failed: {e}"}
+        name_to_id = {l.get("name"): l.get("id") for l in labels}
+
+        summary = {}
+        for old_name, new_name in remap.items():
+            old_id = name_to_id.get(old_name)
+            if not old_id:
+                summary[old_name] = {"mapped_to": new_name, "messages": 0, "note": "old label not present"}
+                continue
+            new_id = self._get_or_create_label(headers, new_name)
+            if not new_id:
+                summary[old_name] = {"error": "could not create/find new label"}
+                continue
+
+            # Collect every message id carrying the old label (paginated).
+            ids, page, err = [], None, None
+            while True:
+                params = {"labelIds": old_id, "maxResults": 500}
+                if page:
+                    params["pageToken"] = page
+                try:
+                    r = requests.get(
+                        "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                        headers=headers, params=params, timeout=20).json()
+                except Exception as e:
+                    err = f"list failed: {e}"
+                    break
+                ids += [m["id"] for m in r.get("messages", [])]
+                page = r.get("nextPageToken")
+                if not page:
+                    break
+
+            # batchModify — add the new label in chunks of 1000 (Gmail's cap).
+            applied = 0
+            for i in range(0, len(ids), 1000):
+                chunk = ids[i:i + 1000]
+                try:
+                    resp = requests.post(
+                        "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify",
+                        headers=headers,
+                        json={"ids": chunk, "addLabelIds": [new_id]}, timeout=30)
+                    resp.raise_for_status()
+                    applied += len(chunk)
+                except Exception as e:
+                    err = f"batchModify failed: {e}"
+                    break
+
+            summary[old_name] = {"mapped_to": new_name, "messages": len(ids), "applied": applied}
+            if err:
+                summary[old_name]["error"] = err
+            logger.info(f"[label-backfill] {old_name} -> {new_name}: {applied}/{len(ids)} messages")
+        return summary
+
     def _get_or_create_label(self, headers: dict, name: str = INGESTED_LABEL) -> Optional[str]:
         """Get or create a Gmail label by name (cached per name across polls)."""
         if name in self._label_ids:
