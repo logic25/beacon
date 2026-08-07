@@ -1332,7 +1332,9 @@ def api_chat():
         # === CHECK CACHE ===  (skip when kb=false — the benchmark control must compute fresh
         # with retrieval OFF; the cache is keyed on the question only and would hand back a
         # KB-grounded answer, defeating the same-question KB-on-vs-off comparison.)
-        if response_cache and CACHE_AVAILABLE and data.get("kb") is not False:
+        # Also skip when nocache=true — a retrieval benchmark must exercise the retriever, not
+        # return a stale cached answer (cache short-circuits BEFORE retrieval runs).
+        if response_cache and CACHE_AVAILABLE and data.get("kb") is not False and data.get("nocache") is not True:
             cached_entry = response_cache.get_entry(user_message)
             if cached_entry:
                 logger.info(f"[API Chat] Cache hit for: {user_message[:50]}")
@@ -1532,8 +1534,9 @@ def api_chat():
             session_manager.add_assistant_message(user_id, space_id, ai_response)
 
         # === CACHE RESPONSE ===  (never cache a kb=false control answer — it's ungrounded
-        # and would poison a later normal (KB-on) query for the same question.)
-        if response_cache and CACHE_AVAILABLE and data.get("kb") is not False:
+        # and would poison a later normal (KB-on) query for the same question. Likewise skip
+        # nocache=true runs so a benchmark pass leaves the production cache untouched.)
+        if response_cache and CACHE_AVAILABLE and data.get("kb") is not False and data.get("nocache") is not True:
             # Store the citation sources too, so a later cache hit still shows them
             # (previously a cached answer came back grounded but with empty sources).
             response_cache.set(user_message, ai_response, sources=rag_sources_list)
