@@ -19,6 +19,24 @@ class VectorStoreError(Exception):
     pass
 
 
+# Overlap jurisdictions: a doc tagged with an overlap value applies to EACH member.
+# State law (MDL, RPAPL) that also governs NYC buildings is tagged "NYC / New York State"
+# so it surfaces for BOTH "NYC" and "New York State" queries instead of being silently
+# excluded by an exact match. NYC (city) and New York State are distinct jurisdictions.
+_JURISDICTION_OVERLAPS = {
+    "NYC": ["NYC / New York State"],
+    "New York State": ["NYC / New York State"],
+}
+
+
+def _jurisdiction_condition(jurisdiction_filter: str) -> dict:
+    """Pinecone metadata clause matching the requested jurisdiction OR any overlap
+    tag that includes it. Falls back to a single-value $in (== $eq) for jurisdictions
+    with no overlaps (e.g. "Fairfax County, VA")."""
+    values = [jurisdiction_filter] + _JURISDICTION_OVERLAPS.get(jurisdiction_filter, [])
+    return {"jurisdiction": {"$in": values}}
+
+
 class VectorStore:
     """Pinecone vector store for document retrieval."""
 
@@ -275,7 +293,7 @@ class VectorStore:
             conditions.append({"source_type": {"$eq": source_type_filter}})
 
         if jurisdiction_filter:
-            conditions.append({"jurisdiction": {"$eq": jurisdiction_filter}})
+            conditions.append(_jurisdiction_condition(jurisdiction_filter))
 
         if len(conditions) == 1:
             filter_dict = conditions[0]
@@ -319,7 +337,7 @@ class VectorStore:
             return []
         conditions = [{"form_codes": {"$in": codes}}]
         if jurisdiction_filter:
-            conditions.append({"jurisdiction": {"$eq": jurisdiction_filter}})
+            conditions.append(_jurisdiction_condition(jurisdiction_filter))
         filter_dict = conditions[0] if len(conditions) == 1 else {"$and": conditions}
         try:
             results = self.index.query(
