@@ -188,13 +188,25 @@ app = Flask(__name__)
 import os
 import hmac
 from functools import wraps
-app.secret_key = os.getenv('FLASK_SECRET_KEY', 'dev-secret-change-in-production')
+logger = logging.getLogger(__name__)
+_DEV_SECRET_DEFAULT = 'dev-secret-change-in-production'
+app.secret_key = os.getenv('FLASK_SECRET_KEY', _DEV_SECRET_DEFAULT)
 
-# Enable CORS. Pin via env when origins are known (comma-separated CORS_ALLOWED_ORIGINS);
-# defaults to the prior permissive behavior so nothing breaks. Sensitive routes are
-# beacon-key gated (header auth, not cookies), so this is defense-in-depth, not the lock.
+# Enable CORS. Pin via env when origins are known (comma-separated CORS_ALLOWED_ORIGINS).
+# Reflecting any Origin WITH credentials lets a malicious page read a logged-in admin's
+# session-cookie routes cross-origin, so we never combine wildcard reflection with
+# credentials: an explicit allowlist keeps credentials; an unset allowlist falls back to
+# wildcard origins with credentials DISABLED. Sensitive routes are also beacon-key gated
+# (header auth, not cookies).
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-CORS(app, origins=(_cors_origins or "*"), supports_credentials=True)
+if _cors_origins:
+    CORS(app, origins=_cors_origins, supports_credentials=True)
+else:
+    logger.warning(
+        "CORS_ALLOWED_ORIGINS is unset — allowing any origin WITHOUT credentials. Set an "
+        "explicit allowlist to enable credentialed cross-origin requests."
+    )
+    CORS(app, origins="*", supports_credentials=False)
 
 # Initialize components (will be set up in main)
 settings: Settings | None = None
@@ -213,15 +225,22 @@ passive_listener: "PassiveListener | None" = None
 email_poller: "EmailPoller | None" = None
 content_scheduler: "ContentScheduler | None" = None
 drive_objection_poller: "DriveObjectionPoller | None" = None
-logger = logging.getLogger(__name__)
 
-# Warn loudly if the Flask session secret is the known default — a constant secret lets
-# an attacker forge signed session cookies (dashboard/OAuth auth).
-if app.secret_key == "dev-secret-change-in-production":
-    logger.critical(
-        "FLASK_SECRET_KEY is not set — using a publicly-known default; set it in the "
-        "Railway environment to prevent session-cookie forgery."
-    )
+# Fail CLOSED if the Flask session secret is unset or the publicly-known default — a
+# constant/known secret lets an attacker forge signed session cookies (dashboard/OAuth
+# auth). Local development can opt out explicitly with ALLOW_INSECURE_DEV=1.
+if app.secret_key == _DEV_SECRET_DEFAULT:
+    if os.environ.get("ALLOW_INSECURE_DEV") in ("1", "true", "True"):
+        logger.critical(
+            "FLASK_SECRET_KEY is not set — using a publicly-known default. Allowed only "
+            "because ALLOW_INSECURE_DEV is set; NEVER use this in production."
+        )
+    else:
+        raise RuntimeError(
+            "FLASK_SECRET_KEY is unset or the known dev default; refusing to start. Set a "
+            "strong FLASK_SECRET_KEY in the environment (or set ALLOW_INSECURE_DEV=1 for "
+            "local development only) to prevent session-cookie forgery."
+        )
 
 
 # ── Shared-secret auth for internet-facing endpoints ─────────────────────────────
@@ -1666,6 +1685,7 @@ def analytics_data() -> tuple[Response, int]:
 
 
 @app.route("/api/analytics", methods=["GET"])
+@require_beacon_key
 def api_analytics():
     """Analytics API for Ordino's admin panel.
     Returns Beacon usage stats, costs, and activity so Ordino can display
