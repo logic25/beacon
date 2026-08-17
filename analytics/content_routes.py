@@ -24,12 +24,32 @@ engine = ContentEngine()
 
 @content_bp.before_request
 def check_auth():
-    """Require login for all content engine routes."""
+    """Require an authorized (AUTHORIZED_EMAILS) session for all content routes.
+
+    Fails CLOSED: if OAuth is not configured on this server, access is denied
+    rather than granted. Reuses features.dashboard's OAuth config so it reads the
+    SAME env vars the real OAuth flow uses (GOOGLE_OAUTH_CLIENT_ID), and enforces
+    AUTHORIZED_EMAILS membership rather than mere presence of a session. Mirrors
+    features.dashboard.require_auth. These routes drive billable Claude calls and
+    persisted state, so they must not be public.
+    """
     import os
     from flask import session as flask_session, redirect, url_for
-    oauth_enabled = bool(os.environ.get("GOOGLE_CLIENT_ID"))
-    if oauth_enabled and 'user_email' not in flask_session:
+    # Lazy import to avoid a circular import at module load.
+    from features.dashboard import OAUTH_ENABLED, AUTHORIZED_EMAILS
+
+    if not OAUTH_ENABLED:
+        if os.getenv("ALLOW_INSECURE_DEV") == "1":
+            # Explicit local-dev opt-in only.
+            return None
+        return jsonify({"error": "Authentication is not configured on this server."}), 503
+
+    user_email = flask_session.get('user_email')
+    if not user_email:
         return redirect(url_for('login'))
+    if user_email not in AUTHORIZED_EMAILS:
+        return jsonify({"error": f"Access denied. {user_email} is not authorized."}), 403
+    return None
 
 # Full template with sidebar (inline, no imports needed)
 CONTENT_INTELLIGENCE_HTML = '''<!DOCTYPE html>

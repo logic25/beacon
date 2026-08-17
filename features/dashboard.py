@@ -2358,42 +2358,33 @@ LOGIN_HTML = """
 # ============================================================================
 
 def require_auth(f):
-    """Decorator to require authentication for routes."""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not OAUTH_CONFIGURED:
-            # If OAuth not configured, allow access (development mode)
-            return f(*args, **kwargs)
-        
-        if 'user_email' not in session:
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
+    """Decorator to require authentication + authorization for routes.
 
-
-
-
-
-
-
-def require_auth(f):
-    """Decorator to require authentication for routes."""
+    Fails CLOSED when OAuth is not configured: access is denied rather than
+    granted. The insecure "dev mode" bypass is only honored when an operator
+    explicitly opts in via ALLOW_INSECURE_DEV=1, so a production deploy that is
+    missing its OAuth env vars locks down instead of serving to everyone.
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if not OAUTH_ENABLED:
-            # If OAuth not configured, allow access (development mode)
-            return f(*args, **kwargs)
-        
+            if os.getenv("ALLOW_INSECURE_DEV") == "1":
+                # Explicit local-dev opt-in only.
+                return f(*args, **kwargs)
+            return render_template_string(LOGIN_HTML,
+                error="Authentication is not configured on this server.",
+                auth_url=url_for('login')), 503
+
         if 'user_email' not in session:
             return redirect(url_for('login'))
-        
+
         # Check if user is authorized
         user_email = session['user_email']
         if user_email not in AUTHORIZED_EMAILS:
-            return render_template_string(LOGIN_HTML, 
+            return render_template_string(LOGIN_HTML,
                 error=f"Access denied. {user_email} is not authorized.",
                 auth_url=url_for('login'))
-        
+
         return f(*args, **kwargs)
     return decorated_function
 
@@ -2463,17 +2454,20 @@ def add_dashboard_routes(app, analytics_db: AnalyticsDB):
                 GOOGLE_CLIENT_ID
             )
             
-            # Store user info in session
+            # Check if authorized BEFORE writing any session state, so a
+            # rejected account never walks away with a validly-signed session
+            # cookie carrying user_email (which presence-only guards would trust).
             user_email = idinfo['email']
-            session['user_email'] = user_email
-            session['user_name'] = idinfo.get('name', user_email)
-            
-            # Check if authorized
             if user_email not in AUTHORIZED_EMAILS:
+                session.clear()
                 return render_template_string(LOGIN_HTML,
                     error=f"Access denied. {user_email} is not authorized to access this dashboard.",
                     auth_url=url_for('login'))
-            
+
+            # Store user info in session (only after authorization succeeds)
+            session['user_email'] = user_email
+            session['user_name'] = idinfo.get('name', user_email)
+
             return redirect(url_for('dashboard'))
             
         except Exception as e:
