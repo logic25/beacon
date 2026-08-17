@@ -12,12 +12,44 @@ Requires:
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _to_int_or_none(v):
+    """Coerce a value to int, or None if it can't sensibly become one.
+
+    Postgres INTEGER columns (relevance_score, demand_score, expertise_score,
+    estimated_minutes, team_questions_count) reject floats/strings the LLM may
+    emit (e.g. 85.0 or "30-45"), so the beacon-analytics edge fn 500s. Normalize
+    here at the single save choke point.
+
+    Behavior:
+      - None            -> None
+      - bool            -> 1/0 (guarded before int, since bool subclasses int)
+      - int             -> unchanged
+      - float           -> int(round(v))  (85.0 -> 85, 44.6 -> 45)
+      - str             -> first integer via regex ("30-45" -> 30,
+                           "45 minutes" -> 45, "~87" -> 87); None if no digits
+      - anything else   -> None
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(round(v))
+    if isinstance(v, str):
+        m = re.search(r"-?\d+", v.strip())
+        return int(m.group()) if m else None
+    return None
 
 
 class SupabaseAnalyticsDB:
@@ -303,7 +335,22 @@ class SupabaseAnalyticsDB:
 
     def save_content_candidate(self, candidate: dict) -> dict:
         """Save or update a content candidate in Supabase."""
-        result = self._call("save_content_candidate", candidate)
+        # Coerce integer columns before sending. The content engine returns the
+        # LLM's JSON uncoerced, so a float (85.0) or string ("30-45") for these
+        # fields makes Postgres reject the row ("invalid input syntax for type
+        # integer") and the edge fn 500s. Copy first — never mutate the caller's
+        # dict; leave every other field untouched.
+        payload = dict(candidate)
+        for key in (
+            "relevance_score",
+            "demand_score",
+            "expertise_score",
+            "estimated_minutes",
+            "team_questions_count",
+        ):
+            if key in payload:
+                payload[key] = _to_int_or_none(payload[key])
+        result = self._call("save_content_candidate", payload)
         return result or {}
 
     def notify_ingest(self, title: str, body: str = None, link: str = None) -> dict:
