@@ -445,16 +445,27 @@ def _who_do_we_know(params: dict, user_jwt: str = None) -> str:
             pkey = f"{p.get('id')}|{role}"
             if pkey not in pseen:
                 pseen.add(pkey)
-                projects.append({"project": p.get("name"), "role": role,
-                                 "firm": firm, "contact": contact})
+                projects.append({"id": p.get("id"), "project": p.get("name"),
+                                 "role": role, "firm": firm, "contact": contact})
 
+    nc, ncomp, nproj = len(contacts), len(companies), len(projects)
     found = bool(contacts or companies or projects)
-    summary = (
-        f"We know '{name}': {len(contacts)} contact(s) on file, {len(companies)} client-company "
-        f"record(s), and {len(projects)} project(s) where they were an architect/GC/owner."
-        if found else
-        f"No existing relationship found for '{name}' in Ordino's contacts, clients, or projects."
-    )
+    if contacts or companies:
+        # Direct relationship: we actually hold a contact and/or have them on the client roster.
+        summary = (
+            f"We know '{name}' — {nc} contact(s), {ncomp} client record(s), and "
+            f"{nproj} project(s) where they were architect/GC/owner."
+        )
+    elif projects:
+        # Only a project trail — a warm angle, not a known account. Don't claim we "know" them.
+        summary = (
+            f"We've worked on {nproj} project(s) involving '{name}' (as architect/GC/owner) — "
+            "no direct contact or client record on file. Warm angle, not a known account."
+        )
+    else:
+        summary = (
+            f"No existing relationship found for '{name}' in Ordino's contacts, clients, or projects."
+        )
     return json.dumps({"query": name, "found": found, "summary": summary,
                        "contacts": contacts[:25], "companies": companies[:10],
                        "projects": projects[:20]})
@@ -848,12 +859,25 @@ def _extract_deal_leads(params: dict, user_jwt: str = None) -> str:
         owner = (lead.get("property") or {}).get("owner")
         wk_party = wdwk(o.get("party"))
         wk_owner = wdwk(owner)
-        rels = []
-        if wk_party:
-            rels.append(f"{o.get('party')}: {wk_party['summary']}")
-        if wk_owner and owner:
-            rels.append(f"{owner} (building owner): {wk_owner['summary']}")
+        # Keep who_we_know as human-readable summary lines (backward-compatible), and ALSO
+        # carry the structured projects (now with ids) so the UI can link each to /projects/:id.
+        rels, rel_projects, rp_seen = [], [], set()
+        for label, wk in ((o.get("party"), wk_party),
+                          (f"{owner} (building owner)", wk_owner if owner else None)):
+            if not wk:
+                continue
+            rels.append(f"{label}: {wk['summary']}")
+            for pr in (wk.get("projects") or []):
+                pkey = f"{pr.get('id')}|{pr.get('role')}"
+                if pkey in rp_seen:
+                    continue
+                rp_seen.add(pkey)
+                rel_projects.append({"id": pr.get("id"), "project": pr.get("project"),
+                                     "role": pr.get("role"), "firm": pr.get("firm"),
+                                     "contact": pr.get("contact"), "about": label})
         lead["who_we_know"] = rels or ["No existing relationship on file — cold."]
+        if rel_projects:
+            lead["who_we_know_projects"] = rel_projects
         leads.append(lead)
 
     return json.dumps({
