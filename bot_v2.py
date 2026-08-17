@@ -2605,13 +2605,15 @@ def api_backfill_content():
     Read-only w.r.t. mail — never sends/forwards/replies and never clears UNREAD; the
     only Gmail write is an optional Beacon/Backfilled audit label. Idempotent: candidates
     dedup by title, so re-runs create no duplicates (they land in skipped_dupe). Processes
-    oldest→newest. Content-only (uses the DOB sender filter, calls _ingest_newsletter
-    directly — never the BD/event router).
+    oldest→newest. Content-only by CLASSIFICATION: each message is re-run through the same
+    classify gate _process_email uses — only dob_regulatory is ingested; event/market_news
+    (already BD-routed live) and 'other' are skipped, so Bisnow/event/marketing forwards
+    that share manny@'s sender filter never pollute the KB.
 
     Body (optional JSON):
       {"after": "YYYY/MM/DD", "dry_run": true}
         after   — date floor; omit to auto-detect (last candidate − 3d, floored 2026-06-01)
-        dry_run — list what WOULD be processed, create nothing (recommended first pass)
+        dry_run — classify each message, report the clean would_ingest list, create nothing
     Auth: X-Beacon-Key (same shared secret as the other /api/admin routes)."""
     try:
         data = request.get_json(silent=True) or {}

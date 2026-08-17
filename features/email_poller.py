@@ -1139,6 +1139,26 @@ Type: {source_type}
             logger.warning(f"Email classify failed ('{subject[:40]}'), defaulting to dob_regulatory: {e}")
         return "dob_regulatory"
 
+    def _is_official_dob_source(self, text: str, raw_html: str = "") -> bool:
+        """Conservative test: does this email clearly ORIGINATE from an official NYC DOB /
+        nyc.gov source? Used ONLY by the content backfill to rescue genuine DOB newsletters
+        that arrive FORWARDED (sender=manny@), where the live nyc.gov sender-force can't see
+        the real source. Deliberately narrow: it keys on a distinctive SOURCE signal — the
+        official nyc.gov newsletter sender domain or the "Buildings News Update" masthead —
+        NOT a mere mention of "DOB"/"Department of Buildings" (a Bisnow market-news forward
+        that names the agency must NOT qualify). Checks the raw (pre-clean) HTML too, so the
+        forwarded "From: … <noreply@newsletters.nyc.gov>" attribution line still counts even
+        after _preclean_forwarded_html strips it out of the classifier text.
+        """
+        blob = f"{text or ''} {raw_html or ''}".lower()
+        strong = (
+            "newsletters.nyc.gov",   # official DOB newsletter sender domain
+            "buildings.nyc.gov",     # DOB official sender domain
+            "buildings@nyc.gov",     # DOB official sender address
+            "buildings news update",  # the DOB email-newsletter masthead
+        )
+        return any(s in blob for s in strong)
+
     @staticmethod
     def _strip_fwd(s: str) -> str:
         return re.sub(r"^(?:\s*(?:fwd?|re|fw)\s*:\s*)+", "", s or "", flags=re.I).strip()
@@ -1703,22 +1723,29 @@ Type: email_digest
     # The only Gmail write is an optional Beacon/Backfilled audit label (add-only).
     # IDEMPOTENT: candidate creation dedups by title inside _ingest_newsletter /
     # _create_fallback_candidate, so a re-run creates no duplicates (they land in
-    # skipped_dupe instead). Content-only by construction: uses SENDER_FILTERS (the
-    # DOB / nyc.gov newsletters) and deliberately EXCLUDES BD_SENDERS + trusted-forward
-    # domains, and calls _ingest_newsletter directly rather than the _process_email
-    # router — so it can never re-create BD signals / events / teach-path docs.
+    # skipped_dupe instead). Content-only by CLASSIFICATION, not just by sender: the
+    # SENDER_FILTERS query also catches manny@'s forwards (manny@ is in EMAIL_SENDER_FILTERS),
+    # and most of those are Bisnow CRE-news / event / marketing forwards that were ALREADY
+    # BD-routed when first seen live. So each message is re-run through the SAME classify gate
+    # _process_email applies — only dob_regulatory reaches _ingest_newsletter; event/market_news
+    # are skipped (never re-routed to BD → no duplicate signals) and 'other' is dropped. The
+    # teach-path (_handle_forward) is never invoked here, so no duplicate KB/teach writes.
     def backfill_content(self, after: Optional[str] = None, dry_run: bool = False) -> dict:
         """Re-process already-received DOB/nyc.gov newsletters through the fixed content
-        pipeline so the backlog since the freeze finally yields content candidates.
+        pipeline so the backlog since the freeze finally yields content candidates —
+        CONTENT ONLY, by replicating _process_email's classification gate so the Bisnow /
+        event / marketing forwards that share manny@'s sender filter never pollute the KB.
 
         Args:
             after:   Gmail date floor. None → auto-detect from the most recent content
                      candidate minus a 3-day safety buffer, floored at 2026-06-01.
                      Explicit value accepts YYYY/MM/DD, YYYY-MM-DD, or ISO.
-            dry_run: when True, list what WOULD be processed and create/label nothing.
+            dry_run: when True, classify each message and report the clean would_ingest
+                     list (dob_regulatory subjects) — create/label nothing.
 
         Returns a tally dict: {window_after, dry_run, scanned, candidates_created,
-        skipped_dupe, failed} (+ subjects on a dry_run).
+        skipped_bd, skipped_other, skipped_dupe, failed}, plus a would_ingest subject list
+        on a dry_run.
         """
         import requests
 
@@ -1763,10 +1790,12 @@ Type: email_digest
             "dry_run": dry_run,
             "scanned": 0,
             "candidates_created": 0,
-            "skipped_dupe": 0,
+            "skipped_bd": 0,      # event / market_news — already BD-routed live; not re-ingested
+            "skipped_other": 0,   # low-value 'other' — dropped, never touches the KB
+            "skipped_dupe": 0,    # dob_regulatory but produced no NEW candidate (title dedup / thin text)
             "failed": failed,
         }
-        subjects = []
+        would_ingest = []  # dry_run: subjects that classify as dob_regulatory (the clean content list)
 
         backfill_label = None
         if not dry_run:
@@ -1781,12 +1810,62 @@ Type: email_digest
                 elif n == "from":
                     sender = h.get("value", "")
             tally["scanned"] += 1
-            subjects.append(subject)
+
+            # Extract + PRE-CLEAN the HTML first, so a forwarded DOB newsletter classifies and
+            # parses on its ORIGINAL content, not the Gmail forward wrapper. Keep the raw HTML
+            # for the official-source check (the forwarded "From:" line lives in the wrapper
+            # _preclean strips out).
+            raw_html = self._extract_html_body(message.get("payload", {}))
+            html_content = self._preclean_forwarded_html(raw_html)
+
+            # Classifier text — same construction as live _process_email.
+            try:
+                from bs4 import BeautifulSoup
+                text_for_class = BeautifulSoup(html_content or "", "html.parser").get_text(" ", strip=True)
+            except Exception:
+                text_for_class = ""
+
+            # SAME classify gate the live poller applies — replicated here (never call
+            # _process_email; it drives live behavior). This is the whole fix: the backfill
+            # must ingest CONTENT ONLY, not the BD / marketing forwards that share manny@'s
+            # sender filter.
+            category = self._classify_email(subject, sender, text_for_class)
+
+            # Force official DOB / nyc.gov agency mail to the KB even if the classifier saw
+            # event-ish content or dismissed it as 'other'. Live keys on the SENDER being
+            # nyc.gov; here genuine DOB content is often FORWARDED (sender=manny@), so the
+            # sender-based force misses it — extend it CONSERVATIVELY to a clear official
+            # source signal in the (pre-clean) body.
+            sender_l = sender.lower()
+            if "nyc.gov" in sender_l and category in ("event", "market_news", "other"):
+                logger.info(f"[content-backfill] nyc.gov sender → KB (classifier said {category}): '{subject}'")
+                category = "dob_regulatory"
+            elif category in ("event", "market_news", "other") and \
+                    self._is_official_dob_source(text_for_class, raw_html):
+                logger.info(f"[content-backfill] forwarded official DOB source → KB "
+                            f"(classifier said {category}): '{subject}'")
+                category = "dob_regulatory"
+
+            # 'other' = promos / personal / low-value — drop; never touches the permitting KB.
+            if category == "other":
+                tally["skipped_other"] += 1
+                logger.info(f"[content-backfill] skipped (other): '{subject}'")
+                continue
+
+            # event / market_news = BD signals ALREADY routed to the BD module when first seen
+            # live. Do NOT re-route (that would create DUPLICATE BD signals) and do NOT ingest
+            # (KB pollution). Just skip for the content backfill.
+            if category in ("event", "market_news"):
+                tally["skipped_bd"] += 1
+                logger.info(f"[content-backfill] skipped (BD {category}, already routed live): '{subject}'")
+                continue
+
+            # dob_regulatory → CONTENT. This is the clean list the operator eyeballs on a dry_run.
+            would_ingest.append(subject)
 
             if dry_run:
                 continue
 
-            html_content = self._extract_html_body(message.get("payload", {}))
             if not html_content:
                 # Nothing parseable — count as a no-op skip, never a failure.
                 tally["skipped_dupe"] += 1
@@ -1815,7 +1894,7 @@ Type: email_digest
                 self._add_label_only(mid, headers, backfill_label)
 
         if dry_run:
-            tally["subjects"] = subjects
+            tally["would_ingest"] = would_ingest
 
         # Surface the recovery once in Ordino (the receiving /content handler ships in a
         # separate PR; this is a no-op until then, never an error).
