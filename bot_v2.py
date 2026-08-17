@@ -25,6 +25,15 @@ from typing import Any
 
 import requests
 
+# Google Chat request verification (bearer JWT). Optional import so the module still
+# loads in environments without google-auth, but the webhook fails CLOSED if unavailable.
+try:
+    from google.oauth2 import id_token as google_id_token
+    from google.auth.transport import requests as google_requests
+    CHAT_JWT_VERIFY_AVAILABLE = True
+except ImportError:
+    CHAT_JWT_VERIFY_AVAILABLE = False
+
 from flask import Flask, redirect, url_for, Response, jsonify, request
 from flask_cors import CORS
 
@@ -265,6 +274,73 @@ def require_beacon_key(f):
             return jsonify({"error": "Unauthorized"}), 403
         return f(*args, **kwargs)
     return _wrapped
+
+
+# Google Chat issues a signed bearer JWT on every request to a Chat app's endpoint.
+# Verifying it is the documented way to confirm a webhook call really came from Google
+# Chat (and not an attacker POSTing to the public Railway URL with a forged body).
+# See https://developers.google.com/workspace/chat/authenticate-webhook
+CHAT_JWT_ISSUER = "chat@system.gserviceaccount.com"
+
+
+def _verify_chat_request() -> bool:
+    """True iff the inbound request carries a valid Google-signed Chat bearer JWT whose
+    issuer is chat@system.gserviceaccount.com and whose audience matches this Chat app's
+    configured project number (GOOGLE_CHAT_PROJECT_NUMBER, or GOOGLE_CHAT_AUDIENCE alias).
+
+    Fails CLOSED: returns False on a missing/invalid token, a missing audience env var, or
+    an unavailable verification library. The webhook must reject the request when this is
+    False — identity is then derived from the verified payload, never from the POST body."""
+    if not CHAT_JWT_VERIFY_AVAILABLE:
+        logger.critical(
+            "Google Chat JWT verification library unavailable (google-auth) — refusing "
+            "webhook traffic. Install google-auth to enable the webhook."
+        )
+        return False
+
+    audience = (
+        os.getenv("GOOGLE_CHAT_PROJECT_NUMBER", "")
+        or os.getenv("GOOGLE_CHAT_AUDIENCE", "")
+    ).strip()
+    if not audience:
+        logger.critical(
+            "GOOGLE_CHAT_PROJECT_NUMBER is not set — cannot verify inbound Google Chat "
+            "requests; refusing webhook traffic (fail closed). Set it in the Railway "
+            "environment to the Chat app's Cloud project number."
+        )
+        return False
+
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        logger.warning(
+            f"[ChatAuth] BLOCKED {request.method} {request.path} from "
+            f"{request.remote_addr} — missing bearer token"
+        )
+        return False
+    token = auth_header[len("Bearer "):].strip()
+
+    try:
+        payload = google_id_token.verify_token(
+            token,
+            google_requests.Request(),
+            audience=audience,
+            certs_url="https://www.googleapis.com/service_accounts/v1/metadata/x509/chat@system.gserviceaccount.com",
+        )
+    except Exception as e:  # invalid signature, expired, wrong audience, etc.
+        logger.warning(
+            f"[ChatAuth] BLOCKED {request.method} {request.path} from "
+            f"{request.remote_addr} — token verification failed: {e}"
+        )
+        return False
+
+    if payload.get("iss") != CHAT_JWT_ISSUER:
+        logger.warning(
+            f"[ChatAuth] BLOCKED {request.method} {request.path} from "
+            f"{request.remote_addr} — unexpected issuer {payload.get('iss')!r}"
+        )
+        return False
+
+    return True
 
 
 # Admin whitelist for /correct (only these users can apply corrections immediately)
@@ -1122,6 +1198,15 @@ def process_message_async(
 @app.route("/webhook", methods=["POST"])
 def webhook() -> tuple[Response, int] | tuple[str, int]:
     """Handle incoming webhooks from Google Chat."""
+    # Verify the Google-signed Chat bearer JWT BEFORE reading any body fields. Without
+    # this, an attacker who knows the public Railway URL can POST a body with an arbitrary
+    # user_email and satisfy the /correct admin gate (KB poisoning), trigger Chat sends,
+    # and drive Claude spend. Fails closed — rejects all traffic until
+    # GOOGLE_CHAT_PROJECT_NUMBER is configured. Identity is derived from the (now trusted,
+    # Google-signed) payload below, never from unverified body fields.
+    if not _verify_chat_request():
+        return jsonify({"error": "Unauthorized"}), 401
+
     try:
         data: dict[str, Any] = request.get_json() or {}
 
