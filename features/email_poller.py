@@ -29,7 +29,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from google.oauth2 import service_account
@@ -111,6 +111,7 @@ BD_EVENT_LABEL = "Beacon/BD/Event"     # routed to BD as an industry event
 CONTENT_LABEL = "Beacon/Content"       # produced a content candidate (fed the content engine)
 SKIPPED_LABEL = "Beacon/Skipped"       # deliberately dropped as low-value ('other')
 TAUGHT_LABEL = "Beacon/Taught"         # internal staff forward Beacon learned from (teach path)
+BACKFILLED_LABEL = "Beacon/Backfilled"  # audit-only: re-processed by the one-time content backfill
 
 
 class EmailPoller:
@@ -1687,3 +1688,244 @@ Type: email_digest
             "last_error": self._last_error,
             "emails_processed": self._processed_count,
         }
+
+    # ------------------------------------------------------------------
+    # Content backfill (one-time, re-runnable)
+    # ------------------------------------------------------------------
+    # WHY this exists: the live poll only ever queries `is:unread (from:...)`. Once an
+    # email is read + labeled it never matches again, so it is never re-processed. PR #57
+    # FIXED the parser (_ingest_newsletter → _preclean_forwarded_html / fallback
+    # candidate), but fix-forward only — every newsletter received + labeled during the
+    # content-candidate freeze stays missed. This walks that backlog (read state ignored)
+    # back through the SAME fixed content path so those candidates are finally recovered.
+    #
+    # SAFETY: read-only w.r.t. mail — it NEVER sends, forwards, replies, or clears UNREAD.
+    # The only Gmail write is an optional Beacon/Backfilled audit label (add-only).
+    # IDEMPOTENT: candidate creation dedups by title inside _ingest_newsletter /
+    # _create_fallback_candidate, so a re-run creates no duplicates (they land in
+    # skipped_dupe instead). Content-only by construction: uses SENDER_FILTERS (the
+    # DOB / nyc.gov newsletters) and deliberately EXCLUDES BD_SENDERS + trusted-forward
+    # domains, and calls _ingest_newsletter directly rather than the _process_email
+    # router — so it can never re-create BD signals / events / teach-path docs.
+    def backfill_content(self, after: Optional[str] = None, dry_run: bool = False) -> dict:
+        """Re-process already-received DOB/nyc.gov newsletters through the fixed content
+        pipeline so the backlog since the freeze finally yields content candidates.
+
+        Args:
+            after:   Gmail date floor. None → auto-detect from the most recent content
+                     candidate minus a 3-day safety buffer, floored at 2026-06-01.
+                     Explicit value accepts YYYY/MM/DD, YYYY-MM-DD, or ISO.
+            dry_run: when True, list what WOULD be processed and create/label nothing.
+
+        Returns a tally dict: {window_after, dry_run, scanned, candidates_created,
+        skipped_dupe, failed} (+ subjects on a dry_run).
+        """
+        import requests
+
+        creds = self._get_gmail_credentials()
+        if not creds:
+            return {"error": "could not get Gmail credentials", "scanned": 0,
+                    "candidates_created": 0, "skipped_dupe": 0, "failed": 0}
+        headers = {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
+
+        after_date = self._backfill_after_date(after)
+
+        # SAME content senders the live poller keys on (DOB / nyc.gov newsletters). No
+        # `is:unread` — we WANT already-read+labeled mail. BD senders / staff forwards are
+        # excluded on purpose (they don't feed the content pipeline).
+        sender_query = " OR ".join(f"from:{s.strip()}" for s in SENDER_FILTERS if s.strip())
+        query = f"({sender_query}) after:{after_date}"
+        logger.info(f"[content-backfill] query: {query} (dry_run={dry_run})")
+
+        # 1) Fully paginate the match set (ALL messages, read or unread — no 10-cap).
+        msg_ids = self._list_all_message_ids(headers, query)
+        logger.info(f"[content-backfill] {len(msg_ids)} message(s) match the window")
+
+        # 2) Fetch each once (we need subject/sender/html anyway) and sort oldest→newest by
+        #    internalDate BEFORE processing, so candidates are created in chronological order.
+        fetched = []
+        failed = 0
+        for mid in msg_ids:
+            try:
+                r = requests.get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                    headers=headers, params={"format": "full"}, timeout=30)
+                r.raise_for_status()
+                m = r.json()
+                fetched.append((int(m.get("internalDate", "0") or 0), mid, m))
+            except Exception as e:
+                failed += 1
+                logger.warning(f"[content-backfill] fetch failed for {mid}: {e}")
+        fetched.sort(key=lambda t: t[0])  # oldest → newest
+
+        tally = {
+            "window_after": after_date,
+            "dry_run": dry_run,
+            "scanned": 0,
+            "candidates_created": 0,
+            "skipped_dupe": 0,
+            "failed": failed,
+        }
+        subjects = []
+
+        backfill_label = None
+        if not dry_run:
+            backfill_label = self._get_or_create_label(headers, BACKFILLED_LABEL)
+
+        for _internal_ms, mid, message in fetched:
+            subject, sender = "", ""
+            for h in message.get("payload", {}).get("headers", []):
+                n = (h.get("name") or "").lower()
+                if n == "subject":
+                    subject = h.get("value", "")
+                elif n == "from":
+                    sender = h.get("value", "")
+            tally["scanned"] += 1
+            subjects.append(subject)
+
+            if dry_run:
+                continue
+
+            html_content = self._extract_html_body(message.get("payload", {}))
+            if not html_content:
+                # Nothing parseable — count as a no-op skip, never a failure.
+                tally["skipped_dupe"] += 1
+                continue
+
+            try:
+                # Reuse PR #57's FIXED content path directly (NOT _process_email): parses,
+                # KB-ingests, and creates content candidates deduped by title. Returns the
+                # count of NEW candidates.
+                made = self._ingest_newsletter(subject, sender, html_content) or 0
+            except Exception as e:
+                tally["failed"] += 1
+                logger.error(f"[content-backfill] ingest failed for '{subject}': {e}",
+                             exc_info=True)
+                continue
+
+            if made > 0:
+                tally["candidates_created"] += made
+            else:
+                # Processed cleanly but produced no NEW candidate — already present (title
+                # dedup) on a re-run, or too little text. Idempotency lands re-runs here.
+                tally["skipped_dupe"] += 1
+
+            # Optional read-only audit label (add-only; never clears UNREAD, never sends).
+            if backfill_label:
+                self._add_label_only(mid, headers, backfill_label)
+
+        if dry_run:
+            tally["subjects"] = subjects
+
+        # Surface the recovery once in Ordino (the receiving /content handler ships in a
+        # separate PR; this is a no-op until then, never an error).
+        if not dry_run and tally["candidates_created"] > 0 and self.analytics_db:
+            try:
+                self.analytics_db.notify_ingest(
+                    title=f"Content backfill: {tally['candidates_created']} candidate(s) recovered",
+                    body=(f"Re-processed {tally['scanned']} newsletter(s) received since "
+                          f"{after_date} through the fixed parser — "
+                          f"{tally['candidates_created']} new content candidate(s), "
+                          f"{tally['skipped_dupe']} already present."),
+                    link="/content",
+                )
+            except Exception as e:
+                logger.warning(f"[content-backfill] notify_ingest failed: {e}")
+
+        logger.info(f"[content-backfill] done: {tally}")
+        return tally
+
+    def _list_all_message_ids(self, headers: dict, query: str) -> list:
+        """Return every message id matching `query`, fully paginated via nextPageToken
+        (500/page; no 10-cap). Ignores read/unread state — the query controls that."""
+        import requests
+        ids, page = [], None
+        while True:
+            params = {"q": query, "maxResults": 500}
+            if page:
+                params["pageToken"] = page
+            try:
+                r = requests.get(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                    headers=headers, params=params, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+            except Exception as e:
+                logger.error(f"[content-backfill] list failed: {e}")
+                break
+            ids += [m["id"] for m in data.get("messages", [])]
+            page = data.get("nextPageToken")
+            if not page:
+                break
+        return ids
+
+    def _add_label_only(self, msg_id: str, headers: dict, label_id: Optional[str]):
+        """Add a single label WITHOUT touching read/unread state — an audit trail only.
+        Distinct from _mark_processed (which clears UNREAD): the backfill must stay
+        read-only w.r.t. mail state."""
+        import requests
+        if not label_id:
+            return
+        try:
+            requests.post(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}/modify",
+                headers=headers, json={"addLabelIds": [label_id]}, timeout=10,
+            ).raise_for_status()
+        except Exception as e:
+            logger.warning(f"[content-backfill] audit-label failed for {msg_id}: {e}")
+
+    def _backfill_after_date(self, after: Optional[str]) -> str:
+        """Resolve the Gmail `after:` date (YYYY/MM/DD).
+
+        Explicit `after` wins (YYYY/MM/DD, YYYY-MM-DD, or ISO). Otherwise auto-detect:
+        the most recent content candidate date minus a 3-day safety buffer, floored at
+        2026-06-01 so we never scan the whole inbox."""
+        floor = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        if after:
+            dt = self._parse_ts(after)
+            if dt is not None:
+                return dt.strftime("%Y/%m/%d")
+            # Last resort — accept an already-Gmail-shaped string as-is.
+            s = str(after).strip().replace("-", "/")
+            return s or floor.strftime("%Y/%m/%d")
+        latest = self._latest_candidate_date()
+        start = (latest - timedelta(days=3)) if latest else floor
+        if start < floor:
+            start = floor
+        return start.strftime("%Y/%m/%d")
+
+    def _latest_candidate_date(self) -> Optional[datetime]:
+        """Most recent content_candidates.created_at across ALL statuses (tz-aware UTC),
+        via the same analytics call the content scheduler's staleness watchdog uses.
+        Returns None when the analytics store is unavailable or has no candidates."""
+        adb = self.analytics_db
+        if adb is None or not hasattr(adb, "get_content_candidates"):
+            return None
+        try:
+            # status=None → no server-side status filter → all statuses count as "created".
+            rows = adb.get_content_candidates(status=None, limit=1000) or []
+        except Exception as e:
+            logger.warning(f"[content-backfill] latest-candidate lookup failed: {e}")
+            return None
+        latest = None
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            dt = self._parse_ts(r.get("created_at"))
+            if dt and (latest is None or dt > latest):
+                latest = dt
+        return latest
+
+    @staticmethod
+    def _parse_ts(ts) -> Optional[datetime]:
+        """Parse an ISO-ish timestamp (or YYYY/MM/DD) to tz-aware UTC; naive input is
+        assumed UTC. Returns None on failure."""
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00").replace("/", "-"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
