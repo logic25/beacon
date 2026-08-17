@@ -2595,6 +2595,40 @@ def content_scheduler_status():
     return jsonify({"running": False, "reason": "not configured"}), 200
 
 
+@app.route("/api/admin/backfill-content", methods=["POST"])
+@require_beacon_key
+def api_backfill_content():
+    """One-time, re-runnable: re-process DOB/nyc.gov newsletters that Beacon already
+    received + labeled since the content-candidate freeze, running them through the FIXED
+    parser (PR #57) so they finally produce content candidates.
+
+    Read-only w.r.t. mail — never sends/forwards/replies and never clears UNREAD; the
+    only Gmail write is an optional Beacon/Backfilled audit label. Idempotent: candidates
+    dedup by title, so re-runs create no duplicates (they land in skipped_dupe). Processes
+    oldest→newest. Content-only (uses the DOB sender filter, calls _ingest_newsletter
+    directly — never the BD/event router).
+
+    Body (optional JSON):
+      {"after": "YYYY/MM/DD", "dry_run": true}
+        after   — date floor; omit to auto-detect (last candidate − 3d, floored 2026-06-01)
+        dry_run — list what WOULD be processed, create nothing (recommended first pass)
+    Auth: X-Beacon-Key (same shared secret as the other /api/admin routes)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        after = data.get("after") or None
+        dry_run = bool(data.get("dry_run", False))
+        from features.email_poller import EmailPoller
+        # Prefer the wired singleton; if this worker didn't win the poller lock,
+        # email_poller is None — build one with the same deps (retriever + analytics_db)
+        # so auto-window detection and the completion notify still work.
+        poller = email_poller or EmailPoller(retriever=retriever, analytics_db=analytics_db)
+        result = poller.backfill_content(after=after, dry_run=dry_run)
+        return jsonify({"success": True, "result": result})
+    except Exception as e:
+        logger.error(f"[content-backfill] failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 def main() -> None:
     """Main entry point."""
     initialize_app()

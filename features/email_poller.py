@@ -29,7 +29,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from google.oauth2 import service_account
@@ -111,6 +111,7 @@ BD_EVENT_LABEL = "Beacon/BD/Event"     # routed to BD as an industry event
 CONTENT_LABEL = "Beacon/Content"       # produced a content candidate (fed the content engine)
 SKIPPED_LABEL = "Beacon/Skipped"       # deliberately dropped as low-value ('other')
 TAUGHT_LABEL = "Beacon/Taught"         # internal staff forward Beacon learned from (teach path)
+BACKFILLED_LABEL = "Beacon/Backfilled"  # audit-only: re-processed by the one-time content backfill
 
 
 class EmailPoller:
@@ -785,19 +786,31 @@ class EmailPoller:
         # fewer confabulated fees/dates/code sections. _fetch_page_content is
         # bounded (10s timeout, 5000-char cap, fails soft) so a bad link can't
         # stall or crash ingestion.
+        # Forwarded copies (especially from Gmail mobile) wrap the newsletter in a
+        # gmail_quote container and prepend a "Forwarded message" attribution block,
+        # hiding the font-size section headings the parser keys on. Pre-clean to the
+        # original newsletter body first; no-op for non-forwarded mail, so the working
+        # path stays untouched.
+        clean_html = self._preclean_forwarded_html(html_content)
         try:
-            result = parser.parse_email(html_content, fetch_linked_pages=True)
+            result = parser.parse_email(clean_html, fetch_linked_pages=True)
         except Exception as e:
             # The structured parser crashed on this email's markup (heavy DOB NOW
             # newsletters have exercised edge cases the simple recaps don't). Never let
             # that lose the whole email — fall back to harvesting its linked documents
-            # plus the raw text, exactly like the no-updates path below.
+            # plus the raw text, exactly like the no-updates path below, AND still
+            # create a content candidate so a DOB newsletter always reaches the content
+            # pipeline, not only the KB.
             logger.error(f"Newsletter parser crashed on '{subject}', using harvest+raw fallback: {e}")
-            harvested = self._harvest_and_ingest_links(html_content, subject, "unknown")
+            harvested_texts: list = []
+            harvested = self._harvest_and_ingest_links(
+                html_content, subject, "unknown", collect_texts=harvested_texts)
             self._ingest_raw_email(subject, sender, html_content, "unknown")
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}' (fallback)")
-            return 0
+            summary_text = "\n\n".join(t for t in harvested_texts if t).strip() \
+                or self._email_text(html_content)
+            return self._create_fallback_candidate(subject, summary_text)
 
         updates = result.get("updates", [])
         newsletter_date = result.get("newsletter_date", "unknown")
@@ -807,13 +820,23 @@ class EmailPoller:
             # FORWARDED copies (Fwd: mangles the HTML it keys on) and changed newsletter
             # templates. Don't just ingest the summary text: the whole value of a DOB
             # newsletter is the documents it LINKS to. Harvest those links and follow
-            # them to the actual bulletins/notices, then keep the summary as context.
-            logger.info(f"No structured updates found in '{subject}' — harvesting links + raw fallback")
-            harvested = self._harvest_and_ingest_links(html_content, subject, newsletter_date)
+            # them to the actual bulletins/notices, keep the summary as context, AND
+            # (the fix) still create a content candidate — a DOB newsletter must reach
+            # the content pipeline regardless of HTML format, not only the KB. This is
+            # exactly the step that silently stopped ~2026-07-08 (return 0 here ingested
+            # to the KB but produced no Beacon/Content candidate).
+            logger.info(f"No structured updates found in '{subject}' — harvesting links + raw + candidate fallback")
+            harvested_texts: list = []
+            harvested = self._harvest_and_ingest_links(
+                html_content, subject, newsletter_date, collect_texts=harvested_texts)
             self._ingest_raw_email(subject, sender, html_content, newsletter_date)
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}'")
-            return 0
+            # Best available text: the followed article text if we captured any, else
+            # the raw email text stripped of HTML.
+            summary_text = "\n\n".join(t for t in harvested_texts if t).strip() \
+                or self._email_text(html_content)
+            return self._create_fallback_candidate(subject, summary_text)
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
 
@@ -965,6 +988,123 @@ Type: {source_type}
 
         return candidates_made
 
+    # ------------------------------------------------------------------
+    # Format-resilient fallback helpers (forwarded / re-templated newsletters)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _strip_fwd(subject: str) -> str:
+        """Strip leading Fwd:/Fw:/Re: boilerplate a forward accumulates, so the
+        content candidate gets the real newsletter subject as its title."""
+        s = (subject or "").strip()
+        while True:
+            m = re.match(r"^\s*(fwd?|fw|re)\s*:\s*", s, re.I)
+            if not m:
+                break
+            s = s[m.end():]
+        return s.strip()
+
+    def _preclean_forwarded_html(self, html_content: str) -> str:
+        """Unwrap Gmail's forwarded-message wrapper so the structured newsletter
+        parser sees the ORIGINAL newsletter markup.
+
+        Forwarding a DOB newsletter (especially from Gmail mobile) nests the original
+        inside a <div class="gmail_quote"> and prepends a "---------- Forwarded
+        message ----------" attribution block (div.gmail_attr). Both add noise the
+        section-parser keys off (font-size headings, the date line), so it extracts
+        zero structured updates and the email only reaches the KB, never the content
+        pipeline. Unwrap to the forwarded body.
+
+        No-op (returns the input unchanged) when there is no Gmail forward wrapper, so
+        the working non-forwarded path is untouched.
+        """
+        if not html_content:
+            return html_content
+        if "gmail_quote" not in html_content and "Forwarded message" not in html_content:
+            return html_content
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, "html.parser")
+            # Drop the "---------- Forwarded message ----------" attribution header(s).
+            for attr in soup.select("div.gmail_attr, .gmail_attr"):
+                attr.decompose()
+            # Promote the forwarded body: the original newsletter lives inside the
+            # gmail_quote container.
+            quote = soup.select_one("div.gmail_quote, blockquote.gmail_quote")
+            if quote is not None:
+                inner = quote.decode_contents()
+                if inner and len(inner) > 200:
+                    return inner
+            return str(soup)
+        except Exception as e:
+            logger.warning(f"Forwarded-HTML pre-clean failed, using original: {e}")
+            return html_content
+
+    def _email_text(self, html_content: str) -> str:
+        """Raw email text stripped of HTML — the last-resort source text for a
+        fallback content candidate when no linked article text was captured."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content or "", "html.parser")
+            for t in soup(["script", "style"]):
+                t.decompose()
+            return soup.get_text(separator="\n", strip=True)
+        except Exception:
+            return ""
+
+    def _create_fallback_candidate(self, subject: str, text: str,
+                                   source_url: str = "") -> int:
+        """Create a content candidate from a newsletter the structured parser couldn't
+        break into sections (forwarded copies, changed DOB templates).
+
+        This is the core of the fix: a DOB/nyc.gov newsletter must ALWAYS yield at
+        least one content candidate regardless of HTML format. Deduped by title so a
+        re-processed email doesn't duplicate. Returns candidates created (0 or 1).
+        """
+        # Lazy-load the content engine (the poller is constructed with
+        # content_engine=None to avoid heavy init at startup), mirroring the
+        # structured path.
+        if self.content_engine is None:
+            try:
+                from content_engine.engine import ContentEngine
+                self.content_engine = ContentEngine()
+                logger.info("  Content engine lazy-loaded for fallback candidate creation")
+            except Exception as e:
+                logger.warning(f"  Content engine unavailable, skipping fallback candidate: {e}")
+                return 0
+        if not self.content_engine:
+            return 0
+
+        title = self._strip_fwd(subject) or "DOB Newsletter Update"
+        summary = (text or "").strip()
+        if len(summary) < 40:
+            # Nothing substantive to analyze — don't manufacture an empty candidate.
+            logger.info(f"  Fallback candidate skipped (insufficient text) for '{subject}'")
+            return 0
+
+        # Title dedup against existing pending candidates (mirrors the structured path,
+        # so re-processing after a redeploy doesn't create duplicates).
+        try:
+            existing_titles = {
+                (c.title or "").strip().lower()
+                for c in self.content_engine.get_pending_candidates()
+            }
+        except Exception as e:
+            logger.warning(f"  Fallback dedup preload failed: {e}")
+            existing_titles = set()
+        if title.strip().lower() in existing_titles:
+            logger.info(f"  Skipping duplicate fallback candidate: '{title}'")
+            return 0
+
+        try:
+            candidate = self.content_engine.analyze_update(
+                title, summary[:2000], source_url, source_type="newsletter_email"
+            )
+            logger.info(f"  Fallback content candidate: '{candidate.title}' ({candidate.priority})")
+            return 1
+        except Exception as e:
+            logger.error(f"  Fallback content engine failed for '{subject}': {e}")
+            return 0
+
     def _classify_email(self, subject: str, sender: str, text: str) -> str:
         """Classify an inbound email so it can be auto-routed. Returns one of:
         dob_regulatory | event | market_news | other. Defaults to dob_regulatory on
@@ -1112,11 +1252,17 @@ Type: {source_type}
             logger.error(f"  BD routing failed for '{subject}': {e}")
             return False
 
-    def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str) -> int:
+    def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str,
+                                  collect_texts: list = None) -> int:
         """Fallback when structured parsing fails: scan the email for links to the
         ACTUAL DOB documents (PDF bulletins/notices and buildings.nyc.gov pages) and
         ingest those, not just the summary. This is what makes 'read the newsletter'
         mean 'capture the documents it references'.
+
+        collect_texts: when a list is passed, the text of each followed DOB HTML page
+        is appended to it so the caller can reuse it as the source text for a fallback
+        content candidate (harvested article text preferred over raw email text).
+        Default None keeps the original behavior for all other callers.
         """
         if not self.retriever:
             return 0
@@ -1168,6 +1314,8 @@ Type: {source_type}
                 try:
                     content, links = parser._fetch_page_content(url)
                     if content and len(content) > 200:
+                        if collect_texts is not None:
+                            collect_texts.append(content)
                         document = processor.process_text(
                             text=content,
                             title=f"{subject} — {url.split('/')[-1] or 'linked page'}",
@@ -1540,3 +1688,244 @@ Type: email_digest
             "last_error": self._last_error,
             "emails_processed": self._processed_count,
         }
+
+    # ------------------------------------------------------------------
+    # Content backfill (one-time, re-runnable)
+    # ------------------------------------------------------------------
+    # WHY this exists: the live poll only ever queries `is:unread (from:...)`. Once an
+    # email is read + labeled it never matches again, so it is never re-processed. PR #57
+    # FIXED the parser (_ingest_newsletter → _preclean_forwarded_html / fallback
+    # candidate), but fix-forward only — every newsletter received + labeled during the
+    # content-candidate freeze stays missed. This walks that backlog (read state ignored)
+    # back through the SAME fixed content path so those candidates are finally recovered.
+    #
+    # SAFETY: read-only w.r.t. mail — it NEVER sends, forwards, replies, or clears UNREAD.
+    # The only Gmail write is an optional Beacon/Backfilled audit label (add-only).
+    # IDEMPOTENT: candidate creation dedups by title inside _ingest_newsletter /
+    # _create_fallback_candidate, so a re-run creates no duplicates (they land in
+    # skipped_dupe instead). Content-only by construction: uses SENDER_FILTERS (the
+    # DOB / nyc.gov newsletters) and deliberately EXCLUDES BD_SENDERS + trusted-forward
+    # domains, and calls _ingest_newsletter directly rather than the _process_email
+    # router — so it can never re-create BD signals / events / teach-path docs.
+    def backfill_content(self, after: Optional[str] = None, dry_run: bool = False) -> dict:
+        """Re-process already-received DOB/nyc.gov newsletters through the fixed content
+        pipeline so the backlog since the freeze finally yields content candidates.
+
+        Args:
+            after:   Gmail date floor. None → auto-detect from the most recent content
+                     candidate minus a 3-day safety buffer, floored at 2026-06-01.
+                     Explicit value accepts YYYY/MM/DD, YYYY-MM-DD, or ISO.
+            dry_run: when True, list what WOULD be processed and create/label nothing.
+
+        Returns a tally dict: {window_after, dry_run, scanned, candidates_created,
+        skipped_dupe, failed} (+ subjects on a dry_run).
+        """
+        import requests
+
+        creds = self._get_gmail_credentials()
+        if not creds:
+            return {"error": "could not get Gmail credentials", "scanned": 0,
+                    "candidates_created": 0, "skipped_dupe": 0, "failed": 0}
+        headers = {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
+
+        after_date = self._backfill_after_date(after)
+
+        # SAME content senders the live poller keys on (DOB / nyc.gov newsletters). No
+        # `is:unread` — we WANT already-read+labeled mail. BD senders / staff forwards are
+        # excluded on purpose (they don't feed the content pipeline).
+        sender_query = " OR ".join(f"from:{s.strip()}" for s in SENDER_FILTERS if s.strip())
+        query = f"({sender_query}) after:{after_date}"
+        logger.info(f"[content-backfill] query: {query} (dry_run={dry_run})")
+
+        # 1) Fully paginate the match set (ALL messages, read or unread — no 10-cap).
+        msg_ids = self._list_all_message_ids(headers, query)
+        logger.info(f"[content-backfill] {len(msg_ids)} message(s) match the window")
+
+        # 2) Fetch each once (we need subject/sender/html anyway) and sort oldest→newest by
+        #    internalDate BEFORE processing, so candidates are created in chronological order.
+        fetched = []
+        failed = 0
+        for mid in msg_ids:
+            try:
+                r = requests.get(
+                    f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{mid}",
+                    headers=headers, params={"format": "full"}, timeout=30)
+                r.raise_for_status()
+                m = r.json()
+                fetched.append((int(m.get("internalDate", "0") or 0), mid, m))
+            except Exception as e:
+                failed += 1
+                logger.warning(f"[content-backfill] fetch failed for {mid}: {e}")
+        fetched.sort(key=lambda t: t[0])  # oldest → newest
+
+        tally = {
+            "window_after": after_date,
+            "dry_run": dry_run,
+            "scanned": 0,
+            "candidates_created": 0,
+            "skipped_dupe": 0,
+            "failed": failed,
+        }
+        subjects = []
+
+        backfill_label = None
+        if not dry_run:
+            backfill_label = self._get_or_create_label(headers, BACKFILLED_LABEL)
+
+        for _internal_ms, mid, message in fetched:
+            subject, sender = "", ""
+            for h in message.get("payload", {}).get("headers", []):
+                n = (h.get("name") or "").lower()
+                if n == "subject":
+                    subject = h.get("value", "")
+                elif n == "from":
+                    sender = h.get("value", "")
+            tally["scanned"] += 1
+            subjects.append(subject)
+
+            if dry_run:
+                continue
+
+            html_content = self._extract_html_body(message.get("payload", {}))
+            if not html_content:
+                # Nothing parseable — count as a no-op skip, never a failure.
+                tally["skipped_dupe"] += 1
+                continue
+
+            try:
+                # Reuse PR #57's FIXED content path directly (NOT _process_email): parses,
+                # KB-ingests, and creates content candidates deduped by title. Returns the
+                # count of NEW candidates.
+                made = self._ingest_newsletter(subject, sender, html_content) or 0
+            except Exception as e:
+                tally["failed"] += 1
+                logger.error(f"[content-backfill] ingest failed for '{subject}': {e}",
+                             exc_info=True)
+                continue
+
+            if made > 0:
+                tally["candidates_created"] += made
+            else:
+                # Processed cleanly but produced no NEW candidate — already present (title
+                # dedup) on a re-run, or too little text. Idempotency lands re-runs here.
+                tally["skipped_dupe"] += 1
+
+            # Optional read-only audit label (add-only; never clears UNREAD, never sends).
+            if backfill_label:
+                self._add_label_only(mid, headers, backfill_label)
+
+        if dry_run:
+            tally["subjects"] = subjects
+
+        # Surface the recovery once in Ordino (the receiving /content handler ships in a
+        # separate PR; this is a no-op until then, never an error).
+        if not dry_run and tally["candidates_created"] > 0 and self.analytics_db:
+            try:
+                self.analytics_db.notify_ingest(
+                    title=f"Content backfill: {tally['candidates_created']} candidate(s) recovered",
+                    body=(f"Re-processed {tally['scanned']} newsletter(s) received since "
+                          f"{after_date} through the fixed parser — "
+                          f"{tally['candidates_created']} new content candidate(s), "
+                          f"{tally['skipped_dupe']} already present."),
+                    link="/content",
+                )
+            except Exception as e:
+                logger.warning(f"[content-backfill] notify_ingest failed: {e}")
+
+        logger.info(f"[content-backfill] done: {tally}")
+        return tally
+
+    def _list_all_message_ids(self, headers: dict, query: str) -> list:
+        """Return every message id matching `query`, fully paginated via nextPageToken
+        (500/page; no 10-cap). Ignores read/unread state — the query controls that."""
+        import requests
+        ids, page = [], None
+        while True:
+            params = {"q": query, "maxResults": 500}
+            if page:
+                params["pageToken"] = page
+            try:
+                r = requests.get(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+                    headers=headers, params=params, timeout=30)
+                r.raise_for_status()
+                data = r.json()
+            except Exception as e:
+                logger.error(f"[content-backfill] list failed: {e}")
+                break
+            ids += [m["id"] for m in data.get("messages", [])]
+            page = data.get("nextPageToken")
+            if not page:
+                break
+        return ids
+
+    def _add_label_only(self, msg_id: str, headers: dict, label_id: Optional[str]):
+        """Add a single label WITHOUT touching read/unread state — an audit trail only.
+        Distinct from _mark_processed (which clears UNREAD): the backfill must stay
+        read-only w.r.t. mail state."""
+        import requests
+        if not label_id:
+            return
+        try:
+            requests.post(
+                f"https://gmail.googleapis.com/gmail/v1/users/me/messages/{msg_id}/modify",
+                headers=headers, json={"addLabelIds": [label_id]}, timeout=10,
+            ).raise_for_status()
+        except Exception as e:
+            logger.warning(f"[content-backfill] audit-label failed for {msg_id}: {e}")
+
+    def _backfill_after_date(self, after: Optional[str]) -> str:
+        """Resolve the Gmail `after:` date (YYYY/MM/DD).
+
+        Explicit `after` wins (YYYY/MM/DD, YYYY-MM-DD, or ISO). Otherwise auto-detect:
+        the most recent content candidate date minus a 3-day safety buffer, floored at
+        2026-06-01 so we never scan the whole inbox."""
+        floor = datetime(2026, 6, 1, tzinfo=timezone.utc)
+        if after:
+            dt = self._parse_ts(after)
+            if dt is not None:
+                return dt.strftime("%Y/%m/%d")
+            # Last resort — accept an already-Gmail-shaped string as-is.
+            s = str(after).strip().replace("-", "/")
+            return s or floor.strftime("%Y/%m/%d")
+        latest = self._latest_candidate_date()
+        start = (latest - timedelta(days=3)) if latest else floor
+        if start < floor:
+            start = floor
+        return start.strftime("%Y/%m/%d")
+
+    def _latest_candidate_date(self) -> Optional[datetime]:
+        """Most recent content_candidates.created_at across ALL statuses (tz-aware UTC),
+        via the same analytics call the content scheduler's staleness watchdog uses.
+        Returns None when the analytics store is unavailable or has no candidates."""
+        adb = self.analytics_db
+        if adb is None or not hasattr(adb, "get_content_candidates"):
+            return None
+        try:
+            # status=None → no server-side status filter → all statuses count as "created".
+            rows = adb.get_content_candidates(status=None, limit=1000) or []
+        except Exception as e:
+            logger.warning(f"[content-backfill] latest-candidate lookup failed: {e}")
+            return None
+        latest = None
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            dt = self._parse_ts(r.get("created_at"))
+            if dt and (latest is None or dt > latest):
+                latest = dt
+        return latest
+
+    @staticmethod
+    def _parse_ts(ts) -> Optional[datetime]:
+        """Parse an ISO-ish timestamp (or YYYY/MM/DD) to tz-aware UTC; naive input is
+        assumed UTC. Returns None on failure."""
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00").replace("/", "-"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except Exception:
+            return None
