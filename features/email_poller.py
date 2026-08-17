@@ -785,19 +785,31 @@ class EmailPoller:
         # fewer confabulated fees/dates/code sections. _fetch_page_content is
         # bounded (10s timeout, 5000-char cap, fails soft) so a bad link can't
         # stall or crash ingestion.
+        # Forwarded copies (especially from Gmail mobile) wrap the newsletter in a
+        # gmail_quote container and prepend a "Forwarded message" attribution block,
+        # hiding the font-size section headings the parser keys on. Pre-clean to the
+        # original newsletter body first; no-op for non-forwarded mail, so the working
+        # path stays untouched.
+        clean_html = self._preclean_forwarded_html(html_content)
         try:
-            result = parser.parse_email(html_content, fetch_linked_pages=True)
+            result = parser.parse_email(clean_html, fetch_linked_pages=True)
         except Exception as e:
             # The structured parser crashed on this email's markup (heavy DOB NOW
             # newsletters have exercised edge cases the simple recaps don't). Never let
             # that lose the whole email — fall back to harvesting its linked documents
-            # plus the raw text, exactly like the no-updates path below.
+            # plus the raw text, exactly like the no-updates path below, AND still
+            # create a content candidate so a DOB newsletter always reaches the content
+            # pipeline, not only the KB.
             logger.error(f"Newsletter parser crashed on '{subject}', using harvest+raw fallback: {e}")
-            harvested = self._harvest_and_ingest_links(html_content, subject, "unknown")
+            harvested_texts: list = []
+            harvested = self._harvest_and_ingest_links(
+                html_content, subject, "unknown", collect_texts=harvested_texts)
             self._ingest_raw_email(subject, sender, html_content, "unknown")
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}' (fallback)")
-            return 0
+            summary_text = "\n\n".join(t for t in harvested_texts if t).strip() \
+                or self._email_text(html_content)
+            return self._create_fallback_candidate(subject, summary_text)
 
         updates = result.get("updates", [])
         newsletter_date = result.get("newsletter_date", "unknown")
@@ -807,13 +819,23 @@ class EmailPoller:
             # FORWARDED copies (Fwd: mangles the HTML it keys on) and changed newsletter
             # templates. Don't just ingest the summary text: the whole value of a DOB
             # newsletter is the documents it LINKS to. Harvest those links and follow
-            # them to the actual bulletins/notices, then keep the summary as context.
-            logger.info(f"No structured updates found in '{subject}' — harvesting links + raw fallback")
-            harvested = self._harvest_and_ingest_links(html_content, subject, newsletter_date)
+            # them to the actual bulletins/notices, keep the summary as context, AND
+            # (the fix) still create a content candidate — a DOB newsletter must reach
+            # the content pipeline regardless of HTML format, not only the KB. This is
+            # exactly the step that silently stopped ~2026-07-08 (return 0 here ingested
+            # to the KB but produced no Beacon/Content candidate).
+            logger.info(f"No structured updates found in '{subject}' — harvesting links + raw + candidate fallback")
+            harvested_texts: list = []
+            harvested = self._harvest_and_ingest_links(
+                html_content, subject, newsletter_date, collect_texts=harvested_texts)
             self._ingest_raw_email(subject, sender, html_content, newsletter_date)
             if harvested:
                 logger.info(f"  Followed {harvested} linked document(s) from '{subject}'")
-            return 0
+            # Best available text: the followed article text if we captured any, else
+            # the raw email text stripped of HTML.
+            summary_text = "\n\n".join(t for t in harvested_texts if t).strip() \
+                or self._email_text(html_content)
+            return self._create_fallback_candidate(subject, summary_text)
 
         logger.info(f"Parsed {len(updates)} updates from '{subject}' ({newsletter_date})")
 
@@ -965,6 +987,123 @@ Type: {source_type}
 
         return candidates_made
 
+    # ------------------------------------------------------------------
+    # Format-resilient fallback helpers (forwarded / re-templated newsletters)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _strip_fwd(subject: str) -> str:
+        """Strip leading Fwd:/Fw:/Re: boilerplate a forward accumulates, so the
+        content candidate gets the real newsletter subject as its title."""
+        s = (subject or "").strip()
+        while True:
+            m = re.match(r"^\s*(fwd?|fw|re)\s*:\s*", s, re.I)
+            if not m:
+                break
+            s = s[m.end():]
+        return s.strip()
+
+    def _preclean_forwarded_html(self, html_content: str) -> str:
+        """Unwrap Gmail's forwarded-message wrapper so the structured newsletter
+        parser sees the ORIGINAL newsletter markup.
+
+        Forwarding a DOB newsletter (especially from Gmail mobile) nests the original
+        inside a <div class="gmail_quote"> and prepends a "---------- Forwarded
+        message ----------" attribution block (div.gmail_attr). Both add noise the
+        section-parser keys off (font-size headings, the date line), so it extracts
+        zero structured updates and the email only reaches the KB, never the content
+        pipeline. Unwrap to the forwarded body.
+
+        No-op (returns the input unchanged) when there is no Gmail forward wrapper, so
+        the working non-forwarded path is untouched.
+        """
+        if not html_content:
+            return html_content
+        if "gmail_quote" not in html_content and "Forwarded message" not in html_content:
+            return html_content
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, "html.parser")
+            # Drop the "---------- Forwarded message ----------" attribution header(s).
+            for attr in soup.select("div.gmail_attr, .gmail_attr"):
+                attr.decompose()
+            # Promote the forwarded body: the original newsletter lives inside the
+            # gmail_quote container.
+            quote = soup.select_one("div.gmail_quote, blockquote.gmail_quote")
+            if quote is not None:
+                inner = quote.decode_contents()
+                if inner and len(inner) > 200:
+                    return inner
+            return str(soup)
+        except Exception as e:
+            logger.warning(f"Forwarded-HTML pre-clean failed, using original: {e}")
+            return html_content
+
+    def _email_text(self, html_content: str) -> str:
+        """Raw email text stripped of HTML — the last-resort source text for a
+        fallback content candidate when no linked article text was captured."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content or "", "html.parser")
+            for t in soup(["script", "style"]):
+                t.decompose()
+            return soup.get_text(separator="\n", strip=True)
+        except Exception:
+            return ""
+
+    def _create_fallback_candidate(self, subject: str, text: str,
+                                   source_url: str = "") -> int:
+        """Create a content candidate from a newsletter the structured parser couldn't
+        break into sections (forwarded copies, changed DOB templates).
+
+        This is the core of the fix: a DOB/nyc.gov newsletter must ALWAYS yield at
+        least one content candidate regardless of HTML format. Deduped by title so a
+        re-processed email doesn't duplicate. Returns candidates created (0 or 1).
+        """
+        # Lazy-load the content engine (the poller is constructed with
+        # content_engine=None to avoid heavy init at startup), mirroring the
+        # structured path.
+        if self.content_engine is None:
+            try:
+                from content_engine.engine import ContentEngine
+                self.content_engine = ContentEngine()
+                logger.info("  Content engine lazy-loaded for fallback candidate creation")
+            except Exception as e:
+                logger.warning(f"  Content engine unavailable, skipping fallback candidate: {e}")
+                return 0
+        if not self.content_engine:
+            return 0
+
+        title = self._strip_fwd(subject) or "DOB Newsletter Update"
+        summary = (text or "").strip()
+        if len(summary) < 40:
+            # Nothing substantive to analyze — don't manufacture an empty candidate.
+            logger.info(f"  Fallback candidate skipped (insufficient text) for '{subject}'")
+            return 0
+
+        # Title dedup against existing pending candidates (mirrors the structured path,
+        # so re-processing after a redeploy doesn't create duplicates).
+        try:
+            existing_titles = {
+                (c.title or "").strip().lower()
+                for c in self.content_engine.get_pending_candidates()
+            }
+        except Exception as e:
+            logger.warning(f"  Fallback dedup preload failed: {e}")
+            existing_titles = set()
+        if title.strip().lower() in existing_titles:
+            logger.info(f"  Skipping duplicate fallback candidate: '{title}'")
+            return 0
+
+        try:
+            candidate = self.content_engine.analyze_update(
+                title, summary[:2000], source_url, source_type="newsletter_email"
+            )
+            logger.info(f"  Fallback content candidate: '{candidate.title}' ({candidate.priority})")
+            return 1
+        except Exception as e:
+            logger.error(f"  Fallback content engine failed for '{subject}': {e}")
+            return 0
+
     def _classify_email(self, subject: str, sender: str, text: str) -> str:
         """Classify an inbound email so it can be auto-routed. Returns one of:
         dob_regulatory | event | market_news | other. Defaults to dob_regulatory on
@@ -1112,11 +1251,17 @@ Type: {source_type}
             logger.error(f"  BD routing failed for '{subject}': {e}")
             return False
 
-    def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str) -> int:
+    def _harvest_and_ingest_links(self, html_content: str, subject: str, date: str,
+                                  collect_texts: list = None) -> int:
         """Fallback when structured parsing fails: scan the email for links to the
         ACTUAL DOB documents (PDF bulletins/notices and buildings.nyc.gov pages) and
         ingest those, not just the summary. This is what makes 'read the newsletter'
         mean 'capture the documents it references'.
+
+        collect_texts: when a list is passed, the text of each followed DOB HTML page
+        is appended to it so the caller can reuse it as the source text for a fallback
+        content candidate (harvested article text preferred over raw email text).
+        Default None keeps the original behavior for all other callers.
         """
         if not self.retriever:
             return 0
@@ -1168,6 +1313,8 @@ Type: {source_type}
                 try:
                     content, links = parser._fetch_page_content(url)
                     if content and len(content) > 200:
+                        if collect_texts is not None:
+                            collect_texts.append(content)
                         document = processor.process_text(
                             text=content,
                             title=f"{subject} — {url.split('/')[-1] or 'linked page'}",
