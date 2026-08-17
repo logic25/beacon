@@ -20,7 +20,7 @@ import threading
 import time
 import json
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -198,6 +198,20 @@ import os
 import hmac
 from functools import wraps
 logger = logging.getLogger(__name__)
+
+# Best-effort, per-worker status for the async content backfill (POST
+# /api/admin/backfill-content with dry_run=false). Gunicorn runs 2 workers, each
+# with its OWN copy of this dict — it is NOT shared across workers. The status
+# endpoint reflects only the worker that happens to serve the status request, so
+# treat 'idle' as "this worker didn't run it", not proof no backfill is running.
+# Authoritative completion signal is the greppable 'BACKFILL COMPLETE' log line.
+_BACKFILL_STATE = {
+    "status": "idle",       # idle | running | done | error
+    "result": None,
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
 _DEV_SECRET_DEFAULT = 'dev-secret-change-in-production'
 app.secret_key = os.getenv('FLASK_SECRET_KEY', _DEV_SECRET_DEFAULT)
 
@@ -2614,6 +2628,17 @@ def api_backfill_content():
       {"after": "YYYY/MM/DD", "dry_run": true}
         after   — date floor; omit to auto-detect (last candidate − 3d, floored 2026-06-01)
         dry_run — classify each message, report the clean would_ingest list, create nothing
+
+    Execution model:
+      dry_run=true  — SYNCHRONOUS. Only classifies (fast), so it stays well inside the
+                      gunicorn --timeout and returns the would_ingest tally to the operator.
+      dry_run=false — ASYNC. The real run crawls every newsletter link into Pinecone and
+                      ingests PDFs; for the dob_regulatory batch this exceeds gunicorn's
+                      120s request timeout and gets the worker killed (CRITICAL WORKER
+                      TIMEOUT -> HTTP 500). So we hand it to a background daemon thread
+                      (exactly how the email poller already runs the same heavy work) and
+                      return 202 immediately. Poll GET /api/admin/backfill-content/status
+                      or grep logs for 'BACKFILL COMPLETE'.
     Auth: X-Beacon-Key (same shared secret as the other /api/admin routes)."""
     try:
         data = request.get_json(silent=True) or {}
@@ -2624,11 +2649,65 @@ def api_backfill_content():
         # email_poller is None — build one with the same deps (retriever + analytics_db)
         # so auto-window detection and the completion notify still work.
         poller = email_poller or EmailPoller(retriever=retriever, analytics_db=analytics_db)
-        result = poller.backfill_content(after=after, dry_run=dry_run)
-        return jsonify({"success": True, "result": result})
+
+        # dry_run stays synchronous: it only classifies, so it's fast, and the operator
+        # needs the would_ingest list back in the response.
+        if dry_run:
+            result = poller.backfill_content(after=after, dry_run=True)
+            return jsonify({"success": True, "result": result})
+
+        # Real run: never bind it to the request timeout. Guard against concurrent runs
+        # on THIS worker (best-effort; see _BACKFILL_STATE caveat about per-worker state).
+        if _BACKFILL_STATE["status"] == "running":
+            return jsonify({
+                "status": "already_running",
+                "started_at": _BACKFILL_STATE["started_at"],
+            }), 409
+
+        _BACKFILL_STATE["status"] = "running"
+        _BACKFILL_STATE["started_at"] = datetime.now(timezone.utc).isoformat()
+        _BACKFILL_STATE["result"] = None
+        _BACKFILL_STATE["error"] = None
+        _BACKFILL_STATE["finished_at"] = None
+
+        def worker():
+            # Wrap the whole body so a failure never crashes the daemon thread silently.
+            try:
+                result = poller.backfill_content(after=after, dry_run=False)
+                _BACKFILL_STATE["result"] = result
+                _BACKFILL_STATE["status"] = "done"
+                _BACKFILL_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
+                logger.info(f"BACKFILL COMPLETE: {result}")
+            except Exception as e:
+                _BACKFILL_STATE["status"] = "error"
+                _BACKFILL_STATE["error"] = str(e)
+                _BACKFILL_STATE["finished_at"] = datetime.now(timezone.utc).isoformat()
+                logger.error(f"BACKFILL FAILED: {e}", exc_info=True)
+
+        threading.Thread(target=worker, name="content-backfill", daemon=True).start()
+        return jsonify({
+            "status": "started",
+            "message": (
+                "Backfill running in background; an Ordino notification will appear when "
+                "it finishes. Poll GET /api/admin/backfill-content/status or grep logs "
+                "for 'BACKFILL COMPLETE'."
+            ),
+        }), 202
     except Exception as e:
         logger.error(f"[content-backfill] failed: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/admin/backfill-content/status", methods=["GET"])
+@require_beacon_key
+def api_backfill_content_status():
+    """Best-effort status of the async content backfill (POST .../backfill-content with
+    dry_run=false). NOTE: _BACKFILL_STATE is per-gunicorn-worker and NOT shared across
+    workers — this reflects only the worker that happens to serve THIS request, which may
+    not be the worker that ran the job. 'idle' here does not prove no backfill is running.
+    The authoritative completion signal is the 'BACKFILL COMPLETE' log line.
+    Auth: X-Beacon-Key."""
+    return jsonify(_BACKFILL_STATE)
 
 
 def main() -> None:
