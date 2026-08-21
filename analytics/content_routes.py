@@ -24,19 +24,37 @@ engine = ContentEngine()
 
 @content_bp.before_request
 def check_auth():
-    """Require an authorized (AUTHORIZED_EMAILS) session for all content routes.
+    """Authorize either an interactive session OR a server-to-server admin secret.
 
-    Fails CLOSED: if OAuth is not configured on this server, access is denied
-    rather than granted. Reuses features.dashboard's OAuth config so it reads the
-    SAME env vars the real OAuth flow uses (GOOGLE_OAUTH_CLIENT_ID), and enforces
-    AUTHORIZED_EMAILS membership rather than mere presence of a session. Mirrors
-    features.dashboard.require_auth. These routes drive billable Claude calls and
+    Two legitimate callers hit these routes:
+      1. GLE staff in a browser → interactive Google OAuth session (AUTHORIZED_EMAILS).
+      2. Ordino's beacon-proxy   → server-to-server, no cookie, authenticating with the
+         shared ``x-beacon-key`` (BEACON_ANALYTICS_KEY) — the same secret the knowledge
+         routes and beacon-analytics already trust.
+
+    The server-to-server key is checked FIRST. Without this, Ordino's blog/newsletter
+    generation (which forwards only the key, never a session cookie) was redirected to
+    ``/login``; the beacon-proxy followed the redirect and returned the login HTML, so
+    every generated draft came back EMPTY (content='' word_count=0). See regression from
+    commit 2e41423 (fail-closed OAuth authz), which locked out this integration path.
+
+    The OAuth path still fails CLOSED: if OAuth is not configured on this server, browser
+    access is denied rather than granted. Enforces AUTHORIZED_EMAILS membership rather
+    than mere presence of a session. These routes drive billable Claude calls and
     persisted state, so they must not be public.
     """
     import os
+    import hmac
     from flask import session as flask_session, redirect, url_for
     # Lazy import to avoid a circular import at module load.
     from features.dashboard import OAUTH_ENABLED, AUTHORIZED_EMAILS
+
+    # ── Server-to-server: shared admin secret (Ordino beacon-proxy) ──
+    # Constant-time compare; fails CLOSED when the secret isn't configured.
+    expected = os.getenv("BEACON_ANALYTICS_KEY", "")
+    provided = request.headers.get("x-beacon-key", "")
+    if expected and hmac.compare_digest(provided, expected):
+        return None
 
     if not OAUTH_ENABLED:
         if os.getenv("ALLOW_INSECURE_DEV") == "1":
