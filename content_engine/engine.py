@@ -315,14 +315,36 @@ Format: Markdown with # headers"""
         # rules (_build_rag_instructions) actually fire — they were skipped before
         # because context was only baked into the prompt string. Low temperature for
         # factual generation.
-        content, _, _ = self.claude.get_response(
-            user_message=prompt,
-            conversation_history=[prompt_msg],
-            rag_context=context,
-            format_for="web",
-            max_tokens_override=4000,
-            temperature_override=0.2,
-        )
+        def _generate(temp: float) -> str:
+            text, _, _ = self.claude.get_response(
+                user_message=prompt,
+                conversation_history=[prompt_msg],
+                rag_context=context,
+                format_for="web",
+                max_tokens_override=4000,
+                temperature_override=temp,
+            )
+            return text or ""
+
+        content = _generate(0.2)
+
+        # Safety guard: a usable blog draft is hundreds of words. If generation comes
+        # back empty/near-empty (a transient text-less API response, a refusal, or a
+        # truncated header-only reply), retry ONCE at a slightly higher temperature. If
+        # it's still unusable, fail loudly rather than silently persisting an empty draft
+        # — Ordino would otherwise save content='' / word_count=0 and show a blank draft.
+        if len(content.split()) < 50:
+            logger.warning(
+                "Blog generation for '%s' returned near-empty (%d words); retrying once",
+                candidate.title, len(content.split()),
+            )
+            content = _generate(0.4)
+            if len(content.split()) < 50:
+                raise ValueError(
+                    f"Blog generation returned near-empty content "
+                    f"({len(content.split())} words) for candidate '{candidate.title}'. "
+                    f"Refusing to save an empty draft."
+                )
 
         # Post-generation grounding gate: flag specific claims (fees, dollar amounts,
         # code/section numbers) not backed by the retrieved documents, so they can be
@@ -430,14 +452,33 @@ Tone: Direct, actionable, expert
         from core.llm_client import Message
         prompt_msg = Message(role="user", content=prompt)
 
-        content, _, _ = self.claude.get_response(
-            user_message=prompt,
-            conversation_history=[prompt_msg],
-            rag_context=context,          # fires the anti-fabrication grounding rules
-            format_for="web",
-            max_tokens_override=4000,
-            temperature_override=0.2,     # factual generation
-        )
+        def _generate(temp: float) -> str:
+            text, _, _ = self.claude.get_response(
+                user_message=prompt,
+                conversation_history=[prompt_msg],
+                rag_context=context,          # fires the anti-fabrication grounding rules
+                format_for="web",
+                max_tokens_override=4000,
+                temperature_override=temp,    # factual generation
+            )
+            return text or ""
+
+        content = _generate(0.2)
+
+        # Safety guard: same rationale as generate_blog_post — never persist an empty
+        # draft. A newsletter section is 300-400 words; retry once, then fail loudly.
+        if len(content.split()) < 40:
+            logger.warning(
+                "Newsletter generation for '%s' returned near-empty (%d words); retrying once",
+                candidate.title, len(content.split()),
+            )
+            content = _generate(0.4)
+            if len(content.split()) < 40:
+                raise ValueError(
+                    f"Newsletter generation returned near-empty content "
+                    f"({len(content.split())} words) for candidate '{candidate.title}'. "
+                    f"Refusing to save an empty draft."
+                )
 
         # Populate grounding so Ordino gets the same object as for blog posts.
         self._last_grounding = self._grounding_check(content, retrieval_result.sources)
