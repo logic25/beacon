@@ -1,6 +1,12 @@
 # Core dependencies
 flask>=3.0.0
-anthropic>=0.40.0
+# Pin below the 1.x major: anthropic 1.0.0 removed the `temperature`/`top_p`/`top_k`
+# sampling kwargs (TypeError if passed), which core/llm_client.py passes on every
+# messages.create() call — an unpinned bump to 1.0.0 broke ALL LLM responses (chat +
+# content) with the "I apologize, but I encountered an error" fallback. Staying on 0.x
+# restores it. Moving to 1.x is a deliberate migration (drop temperature, httpx→httpx2,
+# Python >=3.10) — do that on its own branch, not via an unpinned resolve.
+anthropic>=0.40.0,<1.0.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
